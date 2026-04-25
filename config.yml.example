@@ -1,0 +1,32 @@
+# Sark config. Copy to `config.yml` and edit. `config.yml` is gitignored.
+#
+# Run with:
+#   SARK_CONFIG=config.yml mise exec -- mix run --no-halt
+# or, in a release:
+#   sark --config /etc/sark/config.yml
+
+# HTTP listener. Caddy (or similar) terminates TLS in front.
+# In prod use 0.0.0.0:8080; in dev keep loopback.
+listen: 127.0.0.1:8080
+
+# Where each plugin's SQLite file lives. Created if missing.
+data_dir: ./dev_data
+
+# debug | info | warning | error
+log_level: info
+
+# Name of the env var that holds the Anthropic API key for L2 workers.
+# Sark reads the value at boot. Leave commented until M7.
+# anthropic_api_key_env: ANTHROPIC_API_KEY
+
+# Bearer tokens. Each entry: { name: <operator label>, token: <opaque secret> }.
+# Logs reference `name`, never `token`. Generate with:
+#   openssl rand -hex 32
+# Use ${VAR} to pull from env (e.g. via direnv / mise.local.toml):
+#   - { name: laptop, token: "${SARK_LAPTOP_TOKEN}" }
+tokens:
+  - { name: dev, token: sk-CHANGEME }
+
+# Absolute paths or paths relative to this config file.
+# Empty in M1; populated once the plugin loader (M2+) lands.
+plugins: []

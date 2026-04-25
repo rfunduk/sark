@@ -1,0 +1,17 @@
+sark-*.tar
+
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+
+/tmp/
+.elixir_ls/
+.lexical/
+
+# local dev
+/dev_data/
+/config.yml
