@@ -15,3 +15,4 @@ erl_crash.dump
 # local dev
 /dev_data/
 /config.yml
+*.db

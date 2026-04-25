@@ -1,0 +1,60 @@
+version: 1
+
+queries:
+  get:
+    description: Get exactly one row by key.
+    returns: one_row
+    format: json
+    params:
+      key: { type: text, required: true, description: "Lookup key." }
+    sql: |
+      SELECT key, value FROM kv WHERE key = :key
+
+  find:
+    description: Maybe-row lookup by key, rendered as a template.
+    returns: maybe_row
+    format:
+      kind: template
+      template: |
+        key: {{key}}
+        value: {{value}}
+    params:
+      key: { type: text }
+    sql: |
+      SELECT key, value FROM kv WHERE key = :key
+
+  list:
+    description: List rows newest-first as bullets.
+    returns: rows
+    format: list
+    params:
+      limit: { type: integer, required: false, default: 10 }
+    sql: |
+      SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
+
+  list_table:
+    description: List rows as a markdown table.
+    returns: rows
+    format: table
+    params:
+      limit: { type: integer, required: false, default: 10 }
+    sql: |
+      SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
+
+  total:
+    description: Count of rows.
+    returns: scalar
+    sql: |
+      SELECT COUNT(*) AS n FROM kv
+
+  put:
+    description: Set a key (write — deferred to M4).
+    returns: one_row
+    write: true
+    params:
+      key:   { type: text }
+      value: { type: text }
+    sql: |
+      INSERT INTO kv (key, value) VALUES (:key, :value)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      RETURNING key

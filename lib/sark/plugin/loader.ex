@@ -2,11 +2,11 @@ defmodule Sark.Plugin.Loader do
   @moduledoc """
   Reads a plugin directory off disk into a `Sark.Plugin.Spec`.
 
-  M2 only loads L0 files (`schema.sql` + `metadata.yml`). L1+ files
-  (`queries.yml`, `workers.yml`, `feeds.yml`) land in later milestones
-  and are ignored here.
+  Loads L0 (`schema.sql` + `metadata.yml`) and L1 (`queries.yml`, optional).
+  L2+ (`workers.yml`, `feeds.yml`) are still ignored.
   """
 
+  alias Sark.Plugin.Query.YAML, as: QueriesYAML
   alias Sark.Plugin.Spec
 
   @spec load!(Path.t()) :: Spec.t()
@@ -25,12 +25,14 @@ defmodule Sark.Plugin.Loader do
 
     schema_sql = read_required!(abs, "schema.sql")
     metadata = read_metadata!(abs)
+    queries = QueriesYAML.load(abs)
 
     %Spec{
       name: name,
       dir: abs,
       schema_sql: schema_sql,
-      metadata: metadata
+      metadata: metadata,
+      queries: queries
     }
   end
 

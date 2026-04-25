@@ -18,6 +18,7 @@ defmodule Sark.Plugin do
   require Logger
 
   alias Exqlite.Sqlite3
+  alias Sark.MCP.Registration
   alias Sark.Plugin.DB
   alias Sark.Plugin.Spec
 
@@ -41,6 +42,7 @@ defmodule Sark.Plugin do
     File.mkdir_p!(Path.dirname(db_path))
 
     apply_schema!(db_path, spec)
+    Registration.register_plugin!(spec)
 
     Logger.info("plugin #{spec.name} ready — db=#{db_path}")
 

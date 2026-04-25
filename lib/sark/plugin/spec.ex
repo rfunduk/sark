@@ -8,12 +8,13 @@ defmodule Sark.Plugin.Spec do
   """
 
   @enforce_keys [:name, :dir, :schema_sql, :metadata]
-  defstruct [:name, :dir, :schema_sql, :metadata]
+  defstruct [:name, :dir, :schema_sql, :metadata, queries: []]
 
   @type t :: %__MODULE__{
           name: String.t(),
           dir: String.t(),
           schema_sql: String.t(),
-          metadata: map()
+          metadata: map(),
+          queries: [Sark.Plugin.Query.t()]
         }
 end

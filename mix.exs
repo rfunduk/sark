@@ -25,7 +25,8 @@ defmodule Sark.MixProject do
       {:exqlite, "~> 0.36"},
       {:plug_cowboy, "~> 2.7"},
       {:yaml_elixir, "~> 2.11"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:bbmustache, "~> 1.12"}
     ]
   end
 
