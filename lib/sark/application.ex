@@ -20,7 +20,7 @@ defmodule Sark.Application do
 
     children = [
       {Sark.AuthRegistry, config.tokens},
-      {Sark.PluginSupervisor, config.plugin_paths},
+      {Sark.PluginSupervisor, [plugin_paths: config.plugin_paths, data_dir: config.data_dir]},
       {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}
     ]
 

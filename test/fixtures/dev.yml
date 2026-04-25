@@ -5,4 +5,5 @@ log_level: debug
 tokens:
   - { name: dev, token: sk-dev }
 
-plugins: []
+plugins:
+  - plugins/kv
