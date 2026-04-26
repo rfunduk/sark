@@ -63,4 +63,36 @@ defmodule Sark.PluginTest do
     assert {:ok, ["journal_mode"], [%{"journal_mode" => "wal"}]} =
              DB.read(spec.name, "PRAGMA journal_mode", [])
   end
+
+  test "auto-decodes json_object / json_group_array columns", %{tmp_dir: dir} do
+    spec = Loader.load!(@kv_fixture)
+    start_plugin!(spec, dir)
+
+    {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["a", "1"])
+    {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["b", "2"])
+
+    sql = """
+    SELECT json_object('count', COUNT(*)) AS meta,
+           json_group_array(json_object('key', key, 'value', value)) AS items
+    FROM kv;
+    """
+
+    assert {:ok, _, [%{"meta" => %{"count" => 2}, "items" => items}]} =
+             DB.read(spec.name, sql, [])
+
+    assert [%{"key" => "a", "value" => "1"}, %{"key" => "b", "value" => "2"}] = items
+  end
+
+  test "leaves non-JSON strings starting with [ or { untouched", %{tmp_dir: dir} do
+    spec = Loader.load!(@kv_fixture)
+    start_plugin!(spec, dir)
+
+    {:ok, _} =
+      DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["x", "[not json"])
+
+    {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["y", "{also no"])
+
+    assert {:ok, _, rows} = DB.read(spec.name, "SELECT key, value FROM kv ORDER BY key", [])
+    assert [%{"value" => "[not json"}, %{"value" => "{also no"}] = rows
+  end
 end

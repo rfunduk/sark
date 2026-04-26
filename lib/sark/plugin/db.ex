@@ -125,11 +125,32 @@ defmodule Sark.Plugin.DB do
   @doc """
   Rows from an Exqlite result as a list of maps keyed by column name.
   Order is lost on the map; pair with `columns/1` if you need it.
+
+  String values that look like JSON (start with `[` or `{`) are decoded
+  with `Jason.decode/1`; on parse error the original string passes
+  through. Lets `json_object` / `json_group_array` composites in SQL
+  surface as nested data without the caller needing to decode.
   """
   @spec rows_to_maps(Result.t()) :: [map]
   def rows_to_maps(%Result{rows: nil}), do: []
 
   def rows_to_maps(%Result{rows: rows, columns: cols}) when is_list(rows) and is_list(cols) do
-    Enum.map(rows, fn row -> cols |> Enum.zip(row) |> Map.new() end)
+    Enum.map(rows, fn row ->
+      cols
+      |> Enum.zip(row)
+      |> Enum.map(fn {k, v} -> {k, maybe_decode_json(v)} end)
+      |> Map.new()
+    end)
+  end
+
+  defp maybe_decode_json(<<"[", _::binary>> = v), do: try_decode(v)
+  defp maybe_decode_json(<<"{", _::binary>> = v), do: try_decode(v)
+  defp maybe_decode_json(v), do: v
+
+  defp try_decode(v) do
+    case Jason.decode(v) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> v
+    end
   end
 end
