@@ -4,7 +4,6 @@ defmodule Sark.Plugin.Query.YAML do
 
   Format:
 
-      version: 1
       queries:
         <name>:
           description: ...
@@ -43,11 +42,6 @@ defmodule Sark.Plugin.Query.YAML do
   end
 
   defp parse_doc!(doc, path) do
-    case Map.get(doc, "version") do
-      1 -> :ok
-      v -> raise "queries.yml at #{path}: version must be 1, got #{inspect(v)}"
-    end
-
     queries = Map.get(doc, "queries", %{})
 
     unless is_map(queries) do

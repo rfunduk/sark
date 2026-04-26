@@ -1,5 +1,3 @@
-version: 1
-
 queries:
   get:
     description: Look up a row by key.
