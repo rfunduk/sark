@@ -18,18 +18,28 @@ defmodule Sark.MCP.Handlers.SqlQuery do
 
     cond do
       not is_binary(sql) or sql == "" ->
-        reply_error("sql is required", session)
+        reply_error("validation: sql is required", session)
 
       not allowed_keyword?(sql) ->
-        reply_error("only SELECT/WITH/PRAGMA queries are permitted", session)
+        reply_error("validation: only SELECT/WITH/PRAGMA queries are permitted", session)
 
       true ->
         case DB.read(plugin, sql, []) do
-          {:ok, rows} ->
-            {:reply, Tool.text(format_rows(rows)), session}
+          {:ok, _cols, []} ->
+            {:reply, Tool.text("(no rows)"), session}
+
+          {:ok, cols, rows} ->
+            {:reply, Tool.text(format_rows(cols, rows)), session}
+
+          {:error, %Exqlite.Error{message: msg}} ->
+            if msg =~ "constraint failed" or msg =~ "constraint violation" do
+              reply_error("constraint: #{msg}", session)
+            else
+              reply_error("internal: #{msg}", session)
+            end
 
           {:error, reason} ->
-            reply_error("sql error: #{inspect(reason)}", session)
+            reply_error("internal: #{inspect(reason)}", session)
         end
     end
   end
@@ -41,10 +51,7 @@ defmodule Sark.MCP.Handlers.SqlQuery do
     end
   end
 
-  defp format_rows([]), do: "(no rows)"
-
-  defp format_rows([first | _] = rows) do
-    cols = Map.keys(first)
+  defp format_rows(cols, rows) do
     header = "| " <> Enum.join(cols, " | ") <> " |"
     sep = "| " <> Enum.map_join(cols, " | ", fn _ -> "---" end) <> " |"
 

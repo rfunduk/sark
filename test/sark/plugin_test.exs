@@ -24,7 +24,7 @@ defmodule Sark.PluginTest do
     {:ok, _} =
       DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["greeting", "hello"])
 
-    assert {:ok, [%{"key" => "greeting", "value" => "hello"}]} =
+    assert {:ok, ["key", "value"], [%{"key" => "greeting", "value" => "hello"}]} =
              DB.read(spec.name, "SELECT key, value FROM kv WHERE key = ?", ["greeting"])
   end
 
@@ -38,7 +38,7 @@ defmodule Sark.PluginTest do
 
     _pid2 = start_plugin!(spec, dir)
 
-    assert {:ok, [%{"key" => "a", "value" => "1"}]} =
+    assert {:ok, ["key", "value"], [%{"key" => "a", "value" => "1"}]} =
              DB.read(spec.name, "SELECT key, value FROM kv", [])
   end
 
@@ -60,7 +60,7 @@ defmodule Sark.PluginTest do
     spec = Loader.load!(@kv_fixture)
     start_plugin!(spec, dir)
 
-    assert {:ok, [%{"journal_mode" => "wal"}]} =
+    assert {:ok, ["journal_mode"], [%{"journal_mode" => "wal"}]} =
              DB.read(spec.name, "PRAGMA journal_mode", [])
   end
 end

@@ -26,7 +26,8 @@ defmodule Sark.MixProject do
       {:plug_cowboy, "~> 2.7"},
       {:yaml_elixir, "~> 2.11"},
       {:jason, "~> 1.4"},
-      {:bbmustache, "~> 1.12"}
+      {:bbmustache, "~> 1.12"},
+      {:phoenix_pubsub, "~> 2.1"}
     ]
   end
 

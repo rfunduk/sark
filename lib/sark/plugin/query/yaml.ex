@@ -8,7 +8,7 @@ defmodule Sark.Plugin.Query.YAML do
       queries:
         <name>:
           description: ...
-          returns: rows | one_row | maybe_row | scalar | count | none
+          returns: results | scalar | count | none
           write: false
           params: { ... }
           format: list | json | table | { kind: template, template: "..." }

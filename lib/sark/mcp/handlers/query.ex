@@ -4,10 +4,17 @@ defmodule Sark.MCP.Handlers.Query do
 
   Each generated `Sark.MCP.Generated.<Plugin>.<plugin>_<query>/2` function
   delegates here with the plugin name + query name baked in.
+
+  Reads run on the read pool. Writes run inside a transaction on the
+  write pool, and on success broadcast a write event via
+  `Sark.MCP.EventBus`. Errors split into three classes:
+  validation / constraint / internal.
   """
 
   require Phantom.Tool, as: Tool
 
+  alias Exqlite.Result
+  alias Sark.MCP.EventBus
   alias Sark.MCP.Registry
   alias Sark.Plugin.DB
   alias Sark.Plugin.Query
@@ -18,10 +25,9 @@ defmodule Sark.MCP.Handlers.Query do
     raw_params = raw_params || %{}
 
     with {:ok, %Query{} = q} <- Registry.get(plugin, query_name),
-         :ok <- ensure_read(q),
          {:ok, bound} <- Query.validate_and_bind(q, raw_params),
-         {:ok, value} <- execute(plugin, q, bound) do
-      reply_text(Render.render(value, q.format, q.returns), session)
+         {:ok, cols, value} <- execute(plugin, q, bound, raw_params) do
+      reply_text(Render.render(value, q.format, q.returns, cols), session)
     else
       :error ->
         reply_error("query not found: #{plugin}.#{query_name}", session)
@@ -29,42 +35,68 @@ defmodule Sark.MCP.Handlers.Query do
       {:error, {:validation, errs}} ->
         reply_error("validation: " <> format_errs(errs), session)
 
-      {:error, :write_deferred} ->
-        reply_error("write tools land in M4", session)
+      {:error, {:constraint, msg}} ->
+        reply_error("constraint: #{msg}", session)
 
-      {:error, {:execute, reason}} ->
-        reply_error("sql error: #{inspect(reason)}", session)
-
-      {:error, :one_row_zero} ->
-        reply_error("expected exactly 1 row, got 0", session)
-
-      {:error, :one_row_many} ->
-        reply_error("expected exactly 1 row, got more than 1", session)
+      {:error, {:internal, reason}} ->
+        reply_error("internal: #{inspect(reason)}", session)
 
       {:error, :scalar_no_rows} ->
-        reply_error("expected at least 1 row for scalar return", session)
+        reply_error("constraint: expected at least 1 row for scalar return", session)
     end
   end
 
-  defp ensure_read(%Query{write: true}), do: {:error, :write_deferred}
-  defp ensure_read(%Query{}), do: :ok
+  defp execute(plugin, %Query{write: false} = q, bound, _raw_params) do
+    case DB.read(plugin, q.compiled_sql, bound) do
+      {:ok, cols, rows} ->
+        case coerce(rows, q.returns) do
+          {:ok, value} -> {:ok, cols, value}
+          err -> err
+        end
 
-  defp execute(plugin, %Query{compiled_sql: sql} = q, bound) do
-    case DB.read(plugin, sql, bound) do
-      {:ok, rows} -> coerce(rows, q.returns)
-      {:error, e} -> {:error, {:execute, e}}
+      {:error, e} ->
+        classify(e)
     end
   end
 
-  defp coerce(rows, :rows), do: {:ok, rows}
+  defp execute(plugin, %Query{write: true} = q, bound, raw_params) do
+    # `command:` lets exqlite report changes count via Result.num_rows,
+    # but suppresses columns — only safe for non-row-returning shapes.
+    opts =
+      if q.returns in [:none, :count] do
+        case detect_command(q.compiled_sql) do
+          nil -> []
+          cmd -> [command: cmd]
+        end
+      else
+        []
+      end
 
-  defp coerce([row], :one_row), do: {:ok, row}
-  defp coerce([], :one_row), do: {:error, :one_row_zero}
-  defp coerce(rows, :one_row) when length(rows) > 1, do: {:error, :one_row_many}
+    txn_result =
+      DB.txn(plugin, fn conn ->
+        case Exqlite.query(conn, q.compiled_sql, bound, opts) do
+          {:ok, %Result{} = r} -> {:ok, r}
+          {:error, e} -> DBConnection.rollback(conn, e)
+        end
+      end)
 
-  defp coerce([row], :maybe_row), do: {:ok, row}
-  defp coerce([], :maybe_row), do: {:ok, nil}
-  defp coerce(rows, :maybe_row) when length(rows) > 1, do: {:error, :one_row_many}
+    case txn_result do
+      {:ok, {:ok, %Result{} = r}} ->
+        case coerce_result(r, q.returns) do
+          {:ok, value} ->
+            EventBus.broadcast_write(plugin, q.name, raw_params, value)
+            {:ok, DB.columns(r), value}
+
+          err ->
+            err
+        end
+
+      {:error, e} ->
+        classify(e)
+    end
+  end
+
+  defp coerce(rows, :results), do: {:ok, rows}
 
   defp coerce([row | _], :scalar) when is_map(row) and map_size(row) > 0 do
     {:ok, row |> Map.values() |> hd()}
@@ -75,6 +107,32 @@ defmodule Sark.MCP.Handlers.Query do
   defp coerce(rows, :count), do: {:ok, length(rows)}
 
   defp coerce(_rows, :none), do: {:ok, nil}
+
+  defp coerce_result(%Result{} = r, :count), do: {:ok, r.num_rows || 0}
+  defp coerce_result(%Result{}, :none), do: {:ok, nil}
+
+  defp coerce_result(%Result{} = r, returns) do
+    coerce(DB.rows_to_maps(r), returns)
+  end
+
+  defp detect_command(sql) do
+    cond do
+      String.contains?(sql, "INSERT") -> :insert
+      String.contains?(sql, "UPDATE") -> :update
+      String.contains?(sql, "DELETE") -> :delete
+      true -> nil
+    end
+  end
+
+  defp classify(%Exqlite.Error{message: msg}) do
+    if msg =~ "constraint failed" or msg =~ "constraint violation" do
+      {:error, {:constraint, msg}}
+    else
+      {:error, {:internal, msg}}
+    end
+  end
+
+  defp classify(other), do: {:error, {:internal, other}}
 
   defp reply_text(str, session), do: {:reply, Tool.text(str), session}
   defp reply_error(msg, session), do: {:reply, Tool.error(msg), session}

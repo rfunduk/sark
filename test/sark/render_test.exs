@@ -8,83 +8,91 @@ defmodule Sark.RenderTest do
       assert Render.render(42, :json, :scalar) =~ "42"
     end
 
-    test "encodes rows" do
-      out = Render.render([%{"a" => 1}], :json, :rows)
+    test "encodes results" do
+      out = Render.render([%{"a" => 1}], :json, :results)
       assert out =~ "\"a\""
       assert out =~ "1"
     end
   end
 
   describe ":table" do
-    test "renders header + sep + body for rows" do
-      out = Render.render([%{"a" => 1, "b" => "x"}, %{"a" => 2, "b" => "y"}], :table, :rows)
+    test "renders header + sep + body for results" do
+      out = Render.render([%{"a" => 1, "b" => "x"}, %{"a" => 2, "b" => "y"}], :table, :results)
       assert out =~ "| a | b |"
       assert out =~ "| --- | --- |"
       assert out =~ "| 1 | x |"
       assert out =~ "| 2 | y |"
     end
 
-    test "(no rows) for empty" do
-      assert Render.render([], :table, :rows) == "(no rows)"
+    test "(no results) for empty" do
+      assert Render.render([], :table, :results) == "(no results)"
     end
 
-    test "wraps single row" do
-      out = Render.render(%{"a" => 1}, :table, :one_row)
-      assert out =~ "| a |"
-      assert out =~ "| 1 |"
+    test "honours explicit column order, ignoring map iteration" do
+      rows = [%{"z" => 1, "a" => 2, "m" => 3}]
+      out = Render.render(rows, :table, :results, ["z", "a", "m"])
+      assert out =~ "| z | a | m |"
+      assert out =~ "| 1 | 2 | 3 |"
     end
   end
 
   describe ":list" do
-    test "rows render as bullet blocks" do
-      out = Render.render([%{"a" => 1, "b" => "x"}, %{"a" => 2, "b" => "y"}], :list, :rows)
+    test "multi-row results render as bullet blocks" do
+      out = Render.render([%{"a" => 1, "b" => "x"}, %{"a" => 2, "b" => "y"}], :list, :results)
       assert out =~ "- a: 1"
       assert out =~ "  b: x"
       assert out =~ "- a: 2"
     end
 
-    test "one_row renders without bullet" do
-      out = Render.render(%{"a" => 1}, :list, :one_row)
+    test "single-row results render without bullet" do
+      out = Render.render([%{"a" => 1}], :list, :results)
       assert out == "a: 1"
     end
 
-    test "maybe_row nil → (no row)" do
-      assert Render.render(nil, :list, :maybe_row) == "(no row)"
+    test "empty results → (no results)" do
+      assert Render.render([], :list, :results) == "(no results)"
     end
 
-    test "empty rows → (no rows)" do
-      assert Render.render([], :list, :rows) == "(no rows)"
+    test "honours explicit column order across rows" do
+      rows = [%{"z" => 1, "a" => 2}, %{"z" => 3, "a" => 4}]
+      out = Render.render(rows, :list, :results, ["z", "a"])
+      assert out == "- z: 1\n  a: 2\n\n- z: 3\n  a: 4"
+    end
+
+    test "honours explicit column order on single-row results" do
+      out = Render.render([%{"z" => 1, "a" => 2}], :list, :results, ["z", "a"])
+      assert out == "z: 1\na: 2"
     end
   end
 
   describe "{:template, ...}" do
-    test "{{var}} substitution on one_row" do
-      out = Render.render(%{"name" => "Ryan"}, {:template, "Hi {{name}}"}, :one_row)
-      assert out == "Hi Ryan"
-    end
-
-    test "{{#rows}}…{{/rows}} iteration" do
-      tpl = "{{#rows}}- {{name}}\n{{/rows}}"
-      out = Render.render([%{"name" => "a"}, %{"name" => "b"}], {:template, tpl}, :rows)
+    test "{{#results}}…{{/results}} iteration" do
+      tpl = "{{#results}}- {{name}}\n{{/results}}"
+      out = Render.render([%{"name" => "a"}, %{"name" => "b"}], {:template, tpl}, :results)
       assert out == "- a\n- b\n"
     end
 
-    test "missing var renders as empty" do
-      out = Render.render(%{}, {:template, "[{{missing}}]"}, :one_row)
-      assert out == "[]"
+    test "single result still iterates once" do
+      tpl = "{{#results}}Hi {{name}}{{/results}}"
+      out = Render.render([%{"name" => "Ryan"}], {:template, tpl}, :results)
+      assert out == "Hi Ryan"
+    end
+
+    test "empty results renders empty body" do
+      tpl = "before {{#results}}x{{/results}} after"
+      out = Render.render([], {:template, tpl}, :results)
+      assert out == "before  after"
     end
   end
 
   describe "default_format/2 (via Query)" do
     test "matches the spec rule matrix" do
       alias Sark.Plugin.Query
-      assert Query.default_format(:rows, false) == :list
-      assert Query.default_format(:one_row, false) == :list
-      assert Query.default_format(:maybe_row, false) == :list
+      assert Query.default_format(:results, false) == :list
       assert Query.default_format(:scalar, false) == :json
       assert Query.default_format(:count, false) == :json
       assert Query.default_format(:none, false) == :json
-      assert Query.default_format(:rows, true) == :json
+      assert Query.default_format(:results, true) == :json
     end
   end
 end

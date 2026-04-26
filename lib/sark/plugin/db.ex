@@ -63,22 +63,24 @@ defmodule Sark.Plugin.DB do
   end
 
   @doc """
-  Run a SELECT against the read pool. Returns rows as a list of maps
-  keyed by column name.
+  Run a SELECT against the read pool. Returns the column list (in
+  SELECT order) alongside rows as a list of maps keyed by column name.
+  Callers that render output need the column list to preserve the
+  agent-supplied SELECT order; map iteration alone won't.
   """
-  @spec read(plugin_name, iodata, [term]) :: {:ok, [map]} | {:error, term}
+  @spec read(plugin_name, iodata, [term]) :: {:ok, [String.t()], [map]} | {:error, term}
   def read(name, sql, params \\ []) do
     case Exqlite.query(reader_name(name), sql, params) do
-      {:ok, %Result{} = r} -> {:ok, rows_to_maps(r)}
+      {:ok, %Result{} = r} -> {:ok, columns(r), rows_to_maps(r)}
       {:error, _} = e -> e
     end
   end
 
   @doc "Like `read/3` but raises on error."
-  @spec read!(plugin_name, iodata, [term]) :: [map]
+  @spec read!(plugin_name, iodata, [term]) :: {[String.t()], [map]}
   def read!(name, sql, params \\ []) do
     case read(name, sql, params) do
-      {:ok, rows} -> rows
+      {:ok, cols, rows} -> {cols, rows}
       {:error, e} -> raise e
     end
   end
@@ -113,9 +115,21 @@ defmodule Sark.Plugin.DB do
     DBConnection.transaction(writer_name(name), fun, opts)
   end
 
-  defp rows_to_maps(%Result{rows: nil}), do: []
+  @doc """
+  Column names (in SELECT order) from an Exqlite result.
+  """
+  @spec columns(Result.t()) :: [String.t()]
+  def columns(%Result{columns: cols}) when is_list(cols), do: cols
+  def columns(%Result{}), do: []
 
-  defp rows_to_maps(%Result{rows: rows, columns: cols}) when is_list(rows) and is_list(cols) do
+  @doc """
+  Rows from an Exqlite result as a list of maps keyed by column name.
+  Order is lost on the map; pair with `columns/1` if you need it.
+  """
+  @spec rows_to_maps(Result.t()) :: [map]
+  def rows_to_maps(%Result{rows: nil}), do: []
+
+  def rows_to_maps(%Result{rows: rows, columns: cols}) when is_list(rows) and is_list(cols) do
     Enum.map(rows, fn row -> cols |> Enum.zip(row) |> Map.new() end)
   end
 end

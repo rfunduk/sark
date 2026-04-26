@@ -19,6 +19,8 @@ defmodule Sark.Application do
     {ip, port} = config.listen
 
     children = [
+      {Phoenix.PubSub, name: Sark.PubSub},
+      {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Sark.PubSub]},
       {Sark.AuthRegistry, config.tokens},
       {Sark.PluginSupervisor, [plugin_paths: config.plugin_paths, data_dir: config.data_dir]},
       {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}

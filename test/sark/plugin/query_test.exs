@@ -8,7 +8,7 @@ defmodule Sark.Plugin.QueryTest do
       q =
         Query.parse!("recent", %{
           "description" => "Recent rows.",
-          "returns" => "rows",
+          "returns" => "results",
           "sql" => "SELECT * FROM t LIMIT :n",
           "params" => %{
             "n" => %{"type" => "integer", "required" => false, "default" => 10}
@@ -16,7 +16,7 @@ defmodule Sark.Plugin.QueryTest do
         })
 
       assert q.name == :recent
-      assert q.returns == :rows
+      assert q.returns == :results
       assert q.write == false
       assert q.compiled_sql == "SELECT * FROM t LIMIT ?"
       assert q.param_order == [:n]
@@ -33,7 +33,7 @@ defmodule Sark.Plugin.QueryTest do
       q =
         Query.parse!("ins", %{
           "description" => "Insert.",
-          "returns" => "one_row",
+          "returns" => "results",
           "write" => true,
           "sql" => "INSERT INTO t(a) VALUES (:a) RETURNING id",
           "params" => %{"a" => %{"type" => "text"}}
@@ -46,7 +46,7 @@ defmodule Sark.Plugin.QueryTest do
     test "parses explicit list/table/json/template formats" do
       base = %{
         "description" => "x",
-        "returns" => "rows",
+        "returns" => "results",
         "sql" => "SELECT 1"
       }
 
@@ -64,7 +64,7 @@ defmodule Sark.Plugin.QueryTest do
       q =
         Query.parse!("f", %{
           "description" => "x",
-          "returns" => "rows",
+          "returns" => "results",
           "sql" => "SELECT * FROM t WHERE feel = :feel",
           "params" => %{
             "feel" => %{"type" => "text", "enum" => ["easy", "right", "hard"]}
@@ -79,7 +79,7 @@ defmodule Sark.Plugin.QueryTest do
       assert_raise ArgumentError, ~r/SQL references :nope but it is not declared/, fn ->
         Query.parse!("bad", %{
           "description" => "x",
-          "returns" => "rows",
+          "returns" => "results",
           "sql" => "SELECT :nope FROM t"
         })
       end
@@ -99,7 +99,7 @@ defmodule Sark.Plugin.QueryTest do
       assert_raise ArgumentError, ~r/enum is only valid for text/, fn ->
         Query.parse!("bad", %{
           "description" => "x",
-          "returns" => "rows",
+          "returns" => "results",
           "sql" => "SELECT * FROM t WHERE n = :n",
           "params" => %{"n" => %{"type" => "integer", "enum" => [1, 2]}}
         })
@@ -112,7 +112,7 @@ defmodule Sark.Plugin.QueryTest do
       q =
         Query.parse!("get", %{
           "description" => "Get one.",
-          "returns" => "maybe_row",
+          "returns" => "results",
           "sql" => "SELECT * FROM t WHERE k = :k AND n >= :n",
           "params" => %{
             "k" => %{"type" => "text"},
@@ -146,7 +146,7 @@ defmodule Sark.Plugin.QueryTest do
       q =
         Query.parse!("f", %{
           "description" => "x",
-          "returns" => "rows",
+          "returns" => "results",
           "sql" => "SELECT * FROM t WHERE feel = :feel",
           "params" => %{
             "feel" => %{"type" => "text", "enum" => ["easy", "right", "hard"]}
@@ -165,7 +165,7 @@ defmodule Sark.Plugin.QueryTest do
       q =
         Query.parse!("get", %{
           "description" => "x",
-          "returns" => "rows",
+          "returns" => "results",
           "sql" => "SELECT * FROM t WHERE k = :k AND n >= :n",
           "params" => %{
             "k" => %{"type" => "text", "description" => "the key"},

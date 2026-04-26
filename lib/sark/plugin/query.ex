@@ -34,7 +34,7 @@ defmodule Sark.Plugin.Query do
   ]
 
   @type param_type :: :integer | :real | :text | :blob | :null
-  @type returns :: :rows | :one_row | :maybe_row | :scalar | :count | :none
+  @type returns :: :results | :scalar | :count | :none
   @type format :: :json | :table | :list | {:template, String.t()}
 
   @type param :: %{
@@ -58,7 +58,7 @@ defmodule Sark.Plugin.Query do
           param_order: [atom]
         }
 
-  @valid_returns ~w(rows one_row maybe_row scalar count none)a
+  @valid_returns ~w(results scalar count none)a
   @valid_types ~w(integer real text blob null)a
 
   @doc """
@@ -210,12 +210,12 @@ defmodule Sark.Plugin.Query do
   Default renderer rule:
     * `write: true` → `:json`
     * `returns: scalar | count | none` → `:json`
-    * reads (rows/one_row/maybe_row) → `:list`
+    * `returns: results` → `:list`
   """
   @spec default_format(returns, boolean) :: format
   def default_format(_returns, true), do: :json
   def default_format(r, false) when r in [:scalar, :count, :none], do: :json
-  def default_format(_returns, false), do: :list
+  def default_format(:results, false), do: :list
 
   @doc """
   Validate raw params (string-keyed map from MCP) and bind them in the

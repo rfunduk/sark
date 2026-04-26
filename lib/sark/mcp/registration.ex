@@ -72,6 +72,7 @@ defmodule Sark.MCP.Registration do
 
     catalog_fn = String.to_atom("#{plugin}_catalog")
     sql_query_fn = String.to_atom("#{plugin}_sql_query")
+    patch_text_fn = String.to_atom("#{plugin}_patch_text")
 
     catalog_func =
       quote do
@@ -87,9 +88,16 @@ defmodule Sark.MCP.Registration do
         end
       end
 
+    patch_text_func =
+      quote do
+        def unquote(patch_text_fn)(params, session) do
+          Sark.MCP.Handlers.PatchText.call(unquote(plugin), params, session)
+        end
+      end
+
     body =
       quote do
-        (unquote_splicing(query_funcs ++ [catalog_func, sql_query_func]))
+        (unquote_splicing(query_funcs ++ [catalog_func, sql_query_func, patch_text_func]))
       end
 
     purge_if_loaded(module)
@@ -140,6 +148,28 @@ defmodule Sark.MCP.Registration do
       meta: %{file: __ENV__.file, line: __ENV__.line}
     }
 
-    query_specs ++ [catalog_spec, sql_query_spec]
+    patch_text_spec = %{
+      name: "#{plugin}_patch_text",
+      handler: module,
+      function: String.to_atom("#{plugin}_patch_text"),
+      description:
+        "Optimistic-concurrency text patch on plugin `#{plugin}`. " <>
+          "Reads `col` from `table` where id matches; if it equals `old`, writes `new`. " <>
+          "Token-saver vs. re-emitting full bodies.",
+      input_schema: %{
+        type: "object",
+        required: ["table", "id", "col", "old", "new"],
+        properties: %{
+          "table" => %{type: "string", description: "Table name (identifier)."},
+          "id" => %{description: "Row id (integer or string)."},
+          "col" => %{type: "string", description: "Column name (identifier)."},
+          "old" => %{type: "string", description: "Expected current value."},
+          "new" => %{type: "string", description: "Replacement value."}
+        }
+      },
+      meta: %{file: __ENV__.file, line: __ENV__.line}
+    }
+
+    query_specs ++ [catalog_spec, sql_query_spec, patch_text_spec]
   end
 end
