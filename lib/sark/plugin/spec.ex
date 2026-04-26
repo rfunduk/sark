@@ -7,13 +7,15 @@ defmodule Sark.Plugin.Spec do
   the registered DB pool names.
   """
 
-  @enforce_keys [:name, :dir, :schema_sql, :metadata]
-  defstruct [:name, :dir, :schema_sql, :metadata, queries: []]
+  @enforce_keys [:name, :dir, :migrations, :metadata]
+  defstruct [:name, :dir, :migrations, :metadata, queries: []]
+
+  @type migration :: %{version: pos_integer, path: String.t(), sql: String.t()}
 
   @type t :: %__MODULE__{
           name: String.t(),
           dir: String.t(),
-          schema_sql: String.t(),
+          migrations: [migration],
           metadata: map(),
           queries: [Sark.Plugin.Query.t()]
         }

@@ -25,7 +25,10 @@ defmodule Sark.MCP.Handlers.Catalog do
           name: spec.name,
           title: Map.get(spec.metadata, "title"),
           description: Map.get(spec.metadata, "description"),
-          schema_sql: spec.schema_sql,
+          migrations:
+            Enum.map(spec.migrations, fn m ->
+              %{version: m.version, sql: m.sql}
+            end),
           tables: Map.get(spec.metadata, "tables", %{}),
           queries: Enum.map(queries, &query_to_map/1)
         }

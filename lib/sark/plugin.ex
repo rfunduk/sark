@@ -2,13 +2,13 @@ defmodule Sark.Plugin do
   @moduledoc """
   Per-plugin supervisor.
 
-  Owns one plugin's lifecycle: applies `schema.sql` idempotently against
+  Owns one plugin's lifecycle: applies any unapplied migrations against
   `{data_dir}/{name}.db` (creating the file + enabling WAL on first run),
   then starts the writer + reader DBConnection pools.
 
-  Schema apply happens before any pool is started — the supervisor's
-  start callback opens a one-shot raw connection, runs the schema, and
-  only then returns the child spec list. A schema-apply failure aborts
+  Migrations run before any pool is started — the supervisor's start
+  callback opens a one-shot raw connection, runs `Sark.Plugin.Migrations`,
+  and only then returns the child spec list. A migration failure aborts
   plugin startup, which keeps a busted plugin from poisoning the rest
   of the supervision tree (the parent `Sark.PluginSupervisor` is
   `:one_for_one`, so other plugins continue).
@@ -17,9 +17,9 @@ defmodule Sark.Plugin do
   use Supervisor
   require Logger
 
-  alias Exqlite.Sqlite3
   alias Sark.MCP.Registration
   alias Sark.Plugin.DB
+  alias Sark.Plugin.Migrations
   alias Sark.Plugin.Spec
 
   @type opts :: [spec: Spec.t(), data_dir: String.t()]
@@ -41,31 +41,12 @@ defmodule Sark.Plugin do
     db_path = Path.join(data_dir, "#{spec.name}.db")
     File.mkdir_p!(Path.dirname(db_path))
 
-    apply_schema!(db_path, spec)
+    :ok = Migrations.apply!(spec.name, db_path, spec.migrations)
     Registration.register_plugin!(spec)
 
     Logger.info("plugin #{spec.name} ready — db=#{db_path}")
 
     children = DB.pool_children(spec.name, db_path)
     Supervisor.init(children, strategy: :rest_for_one)
-  end
-
-  defp apply_schema!(db_path, %Spec{name: name, schema_sql: sql}) do
-    {:ok, db} = Sqlite3.open(db_path, mode: :readwrite)
-
-    try do
-      :ok = Sqlite3.execute(db, "PRAGMA journal_mode = WAL")
-      :ok = Sqlite3.execute(db, "PRAGMA foreign_keys = ON")
-
-      case Sqlite3.execute(db, sql) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          raise "plugin #{name}: schema.sql failed: #{inspect(reason)}"
-      end
-    after
-      Sqlite3.close(db)
-    end
   end
 end

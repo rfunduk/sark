@@ -162,7 +162,8 @@ defmodule Sark.MCP.RegistrationTest do
 
     assert doc.name == "kv"
     assert doc.title == "KV"
-    assert doc.schema_sql =~ "CREATE TABLE"
+    assert [%{version: 1, sql: sql}] = doc.migrations
+    assert sql =~ "CREATE TABLE"
     query_names = Enum.map(doc.queries, & &1.name) |> Enum.sort()
 
     assert query_names ==

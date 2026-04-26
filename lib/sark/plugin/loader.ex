@@ -2,10 +2,11 @@ defmodule Sark.Plugin.Loader do
   @moduledoc """
   Reads a plugin directory off disk into a `Sark.Plugin.Spec`.
 
-  Loads L0 (`schema.sql` + `metadata.yml`) and L1 (`queries.yml`, optional).
+  Loads L0 (`migrations/` + `metadata.yml`) and L1 (`queries.yml`, optional).
   L2+ (`workers.yml`, `feeds.yml`) are still ignored.
   """
 
+  alias Sark.Plugin.Migrations
   alias Sark.Plugin.Query.YAML, as: QueriesYAML
   alias Sark.Plugin.Spec
 
@@ -23,27 +24,17 @@ defmodule Sark.Plugin.Loader do
       raise "plugin #{abs}: invalid plugin name `#{name}` (basename must be a simple identifier)"
     end
 
-    schema_sql = read_required!(abs, "schema.sql")
+    migrations = Migrations.discover!(abs)
     metadata = read_metadata!(abs)
     queries = QueriesYAML.load(abs)
 
     %Spec{
       name: name,
       dir: abs,
-      schema_sql: schema_sql,
+      migrations: migrations,
       metadata: metadata,
       queries: queries
     }
-  end
-
-  defp read_required!(dir, file) do
-    path = Path.join(dir, file)
-
-    case File.read(path) do
-      {:ok, body} -> body
-      {:error, :enoent} -> raise "plugin #{dir}: missing required file `#{file}`"
-      {:error, reason} -> raise "plugin #{dir}: cannot read `#{file}` (#{inspect(reason)})"
-    end
   end
 
   defp read_metadata!(dir) do
