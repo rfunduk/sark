@@ -35,14 +35,14 @@ defmodule Sark.MCP.RegistrationTest do
     tools = Phantom.Cache.list(nil, Router, :tools)
     names = Enum.map(tools, & &1.name) |> Enum.sort()
 
-    assert "kv_get" in names
-    assert "kv_find" in names
-    assert "kv_list" in names
-    assert "kv_list_table" in names
-    assert "kv_total" in names
-    assert "kv_put" in names
-    assert "kv_catalog" in names
-    assert "kv_sql_query" in names
+    assert "get" in names
+    assert "find" in names
+    assert "list" in names
+    assert "list_table" in names
+    assert "total" in names
+    assert "put" in names
+    assert "catalog" in names
+    assert "sql_query" in names
     assert "ping" in names
   end
 
@@ -65,7 +65,7 @@ defmodule Sark.MCP.RegistrationTest do
            ]
   end
 
-  test "kv_get round-trips a row", %{tmp_dir: dir} do
+  test "get round-trips a row", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, _} =
@@ -74,54 +74,54 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.kv_get(%{"key" => "alpha"}, :session)
+      mod.get(%{"key" => "alpha"}, :session)
 
     assert text =~ "alpha"
     assert text =~ "one"
   end
 
-  test "kv_list renders bullets", %{tmp_dir: dir} do
+  test "list renders bullets", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["a", "1"])
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["b", "2"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
-    {:reply, %{content: [%{type: :text, text: text}]}, _} = mod.kv_list(%{}, :session)
+    {:reply, %{content: [%{type: :text, text: text}]}, _} = mod.list(%{}, :session)
 
     assert text =~ "- key: a"
     assert text =~ "- key: b"
   end
 
-  test "kv_find with template renders the row", %{tmp_dir: dir} do
+  test "find with template renders the row", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["k", "v"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
-    {:reply, %{content: [%{type: :text, text: text}]}, _} = mod.kv_find(%{"key" => "k"}, :session)
+    {:reply, %{content: [%{type: :text, text: text}]}, _} = mod.find(%{"key" => "k"}, :session)
 
     assert text =~ "key: k"
     assert text =~ "value: v"
   end
 
-  test "kv_total returns scalar count as JSON", %{tmp_dir: dir} do
+  test "total returns scalar count as JSON", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["x", "y"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
-    {:reply, %{content: [%{type: :text, text: text}]}, _} = mod.kv_total(%{}, :session)
+    {:reply, %{content: [%{type: :text, text: text}]}, _} = mod.total(%{}, :session)
 
     assert text == "1"
   end
 
-  test "kv_put writes and returns the inserted key", %{tmp_dir: dir} do
+  test "put writes and returns the inserted key", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.kv_put(%{"key" => "x", "value" => "y"}, :session)
+      mod.put(%{"key" => "x", "value" => "y"}, :session)
 
     # write format defaults to :json; one_row → returns the row map
     assert text =~ "x"
@@ -131,34 +131,34 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT value FROM kv WHERE key = ?", ["x"])
   end
 
-  test "kv_put broadcasts a write event on Sark.MCP.EventBus", %{tmp_dir: dir} do
+  test "put broadcasts a write event on Sark.MCP.EventBus", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     :ok = Sark.MCP.EventBus.subscribe("kv.put")
 
     mod = Sark.MCP.Registration.handler_module("kv")
-    {:reply, _, _} = mod.kv_put(%{"key" => "k", "value" => "v"}, :session)
+    {:reply, _, _} = mod.put(%{"key" => "k", "value" => "v"}, :session)
 
     assert_receive {:sark_write, "kv", :put, %{params: %{"key" => "k"}}}, 200
   end
 
-  test "kv_get validation error on missing required param", %{tmp_dir: dir} do
+  test "get validation error on missing required param", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.kv_get(%{}, :session)
+      mod.get(%{}, :session)
 
     assert text =~ "validation"
     assert text =~ "key"
   end
 
-  test "kv_catalog returns structured doc with queries", %{tmp_dir: dir} do
+  test "catalog returns structured doc with queries", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
-    {:reply, %{structuredContent: doc}, _} = mod.kv_catalog(%{}, :session)
+    {:reply, %{structuredContent: doc}, _} = mod.catalog(%{}, :session)
 
     assert doc.name == "kv"
     assert doc.title == "KV"
@@ -180,48 +180,48 @@ defmodule Sark.MCP.RegistrationTest do
              ]
   end
 
-  test "kv_sql_query allows SELECT, rejects DELETE", %{tmp_dir: dir} do
+  test "sql_query allows SELECT, rejects DELETE", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["q", "r"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: ok_text}]}, _} =
-      mod.kv_sql_query(%{"sql" => "SELECT key FROM kv"}, :session)
+      mod.sql_query(%{"sql" => "SELECT key FROM kv"}, :session)
 
     assert ok_text =~ "q"
 
     {:reply, %{content: [%{type: :text, text: bad_text}], isError: true}, _} =
-      mod.kv_sql_query(%{"sql" => "DELETE FROM kv"}, :session)
+      mod.sql_query(%{"sql" => "DELETE FROM kv"}, :session)
 
     assert bad_text =~ "only SELECT"
   end
 
-  test "kv_put_strict surfaces constraint error class on duplicate key", %{tmp_dir: dir} do
+  test "put_strict surfaces constraint error class on duplicate key", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["dup", "1"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.kv_put_strict(%{"key" => "dup", "value" => "2"}, :session)
+      mod.put_strict(%{"key" => "dup", "value" => "2"}, :session)
 
     assert text =~ "constraint"
   end
 
-  test "kv_delete returns count via :count returns", %{tmp_dir: dir} do
+  test "delete returns count via :count returns", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["d", "1"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.kv_delete(%{"key" => "d"}, :session)
+      mod.delete(%{"key" => "d"}, :session)
 
     assert text =~ "1"
   end
 
-  test "kv_patch_text happy path swaps the value", %{tmp_dir: dir} do
+  test "patch_text happy path swaps the value", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -230,7 +230,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.kv_patch_text(
+      mod.patch_text(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "alpha", "new" => "beta"},
         :session
       )
@@ -241,7 +241,7 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "kv_patch_text mismatch leaves row untouched", %{tmp_dir: dir} do
+  test "patch_text mismatch leaves row untouched", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -250,7 +250,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.kv_patch_text(
+      mod.patch_text(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "WRONG", "new" => "beta"},
         :session
       )
@@ -261,13 +261,13 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "kv_patch_text rejects bad identifier", %{tmp_dir: dir} do
+  test "patch_text rejects bad identifier", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.kv_patch_text(
+      mod.patch_text(
         %{
           "table" => "notes; DROP TABLE notes;--",
           "id" => 1,
@@ -281,13 +281,13 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "identifier pattern"
   end
 
-  test "kv_patch_text not found", %{tmp_dir: dir} do
+  test "patch_text not found", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.kv_patch_text(
+      mod.patch_text(
         %{"table" => "notes", "id" => 9999, "col" => "body", "old" => "x", "new" => "y"},
         :session
       )
@@ -295,7 +295,7 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "not found"
   end
 
-  test "kv_patch_text broadcasts a write event", %{tmp_dir: dir} do
+  test "patch_text broadcasts a write event", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -306,7 +306,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, _, _} =
-      mod.kv_patch_text(
+      mod.patch_text(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "a", "new" => "b"},
         :session
       )
@@ -320,6 +320,6 @@ defmodule Sark.MCP.RegistrationTest do
     tools = Phantom.Cache.list(nil, Router, :tools)
     names = Enum.map(tools, & &1.name)
 
-    assert "kv_patch_text" in names
+    assert "patch_text" in names
   end
 end

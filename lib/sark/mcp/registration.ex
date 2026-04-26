@@ -55,7 +55,7 @@ defmodule Sark.MCP.Registration do
 
     query_funcs =
       Enum.map(queries, fn q ->
-        fname = String.to_atom("#{plugin}_#{q.name}")
+        fname = q.name
         query_name = q.name
 
         quote do
@@ -70,27 +70,23 @@ defmodule Sark.MCP.Registration do
         end
       end)
 
-    catalog_fn = String.to_atom("#{plugin}_catalog")
-    sql_query_fn = String.to_atom("#{plugin}_sql_query")
-    patch_text_fn = String.to_atom("#{plugin}_patch_text")
-
     catalog_func =
       quote do
-        def unquote(catalog_fn)(params, session) do
+        def catalog(params, session) do
           Sark.MCP.Handlers.Catalog.call(unquote(plugin), params, session)
         end
       end
 
     sql_query_func =
       quote do
-        def unquote(sql_query_fn)(params, session) do
+        def sql_query(params, session) do
           Sark.MCP.Handlers.SqlQuery.call(unquote(plugin), params, session)
         end
       end
 
     patch_text_func =
       quote do
-        def unquote(patch_text_fn)(params, session) do
+        def patch_text(params, session) do
           Sark.MCP.Handlers.PatchText.call(unquote(plugin), params, session)
         end
       end
@@ -116,9 +112,9 @@ defmodule Sark.MCP.Registration do
     query_specs =
       Enum.map(queries, fn q ->
         %{
-          name: "#{plugin}_#{q.name}",
+          name: Atom.to_string(q.name),
           handler: module,
-          function: String.to_atom("#{plugin}_#{q.name}"),
+          function: q.name,
           description: q.description,
           input_schema: Query.to_json_schema(q),
           meta: %{file: __ENV__.file, line: __ENV__.line}
@@ -126,18 +122,18 @@ defmodule Sark.MCP.Registration do
       end)
 
     catalog_spec = %{
-      name: "#{plugin}_catalog",
+      name: "catalog",
       handler: module,
-      function: String.to_atom("#{plugin}_catalog"),
+      function: :catalog,
       description: "Catalog for plugin `#{plugin}` — schema, tables, and canned queries.",
       input_schema: %{type: "object", properties: %{}, required: []},
       meta: %{file: __ENV__.file, line: __ENV__.line}
     }
 
     sql_query_spec = %{
-      name: "#{plugin}_sql_query",
+      name: "sql_query",
       handler: module,
-      function: String.to_atom("#{plugin}_sql_query"),
+      function: :sql_query,
       description:
         "Run an arbitrary SELECT/WITH/PRAGMA query against plugin `#{plugin}`'s read pool.",
       input_schema: %{
@@ -149,9 +145,9 @@ defmodule Sark.MCP.Registration do
     }
 
     patch_text_spec = %{
-      name: "#{plugin}_patch_text",
+      name: "patch_text",
       handler: module,
-      function: String.to_atom("#{plugin}_patch_text"),
+      function: :patch_text,
       description:
         "Optimistic-concurrency text patch on plugin `#{plugin}`. " <>
           "Reads `col` from `table` where id matches; if it equals `old`, writes `new`. " <>
