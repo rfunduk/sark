@@ -65,6 +65,7 @@ defmodule Sark.MCP.Handlers.SqlQuery do
 
   defp cell(nil), do: ""
   defp cell(v) when is_binary(v), do: v
+  defp cell(v) when is_map(v) or is_list(v), do: Jason.encode!(v)
   defp cell(v), do: inspect(v)
 
   defp reply_error(msg, session), do: {:reply, Tool.error(msg), session}

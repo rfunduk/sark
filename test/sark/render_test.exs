@@ -63,6 +63,15 @@ defmodule Sark.RenderTest do
       out = Render.render([%{"z" => 1, "a" => 2}], :list, :results, ["z", "a"])
       assert out == "z: 1\na: 2"
     end
+
+    test "renders nested map/list values as JSON, not Elixir inspect" do
+      rows = [%{"name" => "Garage", "equipment" => [%{"category" => "barbell"}]}]
+      out = Render.render(rows, :list, :results, ["name", "equipment"])
+      assert out =~ "name: Garage"
+      assert out =~ ~s(equipment: [{"category":"barbell"}])
+      refute out =~ "%{"
+      refute out =~ "=>"
+    end
   end
 
   describe "{:template, ...}" do
