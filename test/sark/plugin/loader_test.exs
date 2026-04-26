@@ -62,15 +62,14 @@ defmodule Sark.Plugin.LoaderTest do
     end
   end
 
-  test "raises when metadata.yml missing", %{tmp_dir: dir} do
+  test "metadata.yml is optional — defaults to empty map", %{tmp_dir: dir} do
     plugin =
-      write_plugin(Path.join(dir, "broken"), %{
+      write_plugin(Path.join(dir, "no_meta"), %{
         "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);"
       })
 
-    assert_raise RuntimeError, ~r/missing required file `metadata.yml`/, fn ->
-      Loader.load!(plugin)
-    end
+    spec = Loader.load!(plugin)
+    assert spec.metadata == %{}
   end
 
   test "raises on non-directory path", %{tmp_dir: dir} do

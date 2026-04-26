@@ -2,8 +2,9 @@ defmodule Sark.Plugin.Loader do
   @moduledoc """
   Reads a plugin directory off disk into a `Sark.Plugin.Spec`.
 
-  Loads L0 (`migrations/` + `metadata.yml`) and L1 (`queries.yml`, optional).
-  L2+ (`workers.yml`, `feeds.yml`) are still ignored.
+  Loads L0 (`migrations/`) and L1 (`queries.yml`, optional). `metadata.yml`
+  is optional and surfaces in catalog output if present. L2+ (`workers.yml`,
+  `feeds.yml`) are still ignored.
   """
 
   alias Sark.Plugin.Migrations
@@ -51,7 +52,7 @@ defmodule Sark.Plugin.Loader do
         raise "plugin #{dir}: metadata.yml must be a map, got #{inspect(other)}"
 
       {:error, %YamlElixir.FileNotFoundError{}} ->
-        raise "plugin #{dir}: missing required file `metadata.yml`"
+        %{}
 
       {:error, reason} ->
         raise "plugin #{dir}: cannot parse metadata.yml (#{inspect(reason)})"
