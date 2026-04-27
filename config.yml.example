@@ -15,6 +15,12 @@ data_dir: ./dev_data
 # debug | info | warning | error
 log_level: info
 
+# When true, each plugin runs a file watcher that re-registers MCP tools
+# on `queries.yml` / `metadata.yml` edits without restart. Migrations are
+# never re-run by hot reload — restart for schema changes. Default true;
+# set false in prod deploys where the plugin dir shouldn't move.
+# hot_reload: true
+
 # Name of the env var that holds the Anthropic API key for L2 workers.
 # Sark reads the value at boot. Leave commented until M7.
 # anthropic_api_key_env: ANTHROPIC_API_KEY

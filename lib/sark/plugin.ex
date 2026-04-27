@@ -21,8 +21,9 @@ defmodule Sark.Plugin do
   alias Sark.Plugin.DB
   alias Sark.Plugin.Migrations
   alias Sark.Plugin.Spec
+  alias Sark.Plugin.Watcher
 
-  @type opts :: [spec: Spec.t(), data_dir: String.t()]
+  @type opts :: [spec: Spec.t(), data_dir: String.t(), hot_reload: boolean()]
 
   @spec start_link(opts) :: Supervisor.on_start()
   def start_link(opts) do
@@ -37,6 +38,7 @@ defmodule Sark.Plugin do
   def init(opts) do
     %Spec{} = spec = Keyword.fetch!(opts, :spec)
     data_dir = Keyword.fetch!(opts, :data_dir)
+    hot_reload = Keyword.get(opts, :hot_reload, false)
 
     db_path = Path.join(data_dir, "#{spec.name}.db")
     File.mkdir_p!(Path.dirname(db_path))
@@ -46,7 +48,15 @@ defmodule Sark.Plugin do
 
     Logger.info("plugin #{spec.name} ready — db=#{db_path}")
 
-    children = DB.pool_children(spec.name, db_path)
-    Supervisor.init(children, strategy: :rest_for_one)
+    pool_children = DB.pool_children(spec.name, db_path)
+
+    watcher_child =
+      if hot_reload do
+        [{Watcher, plugin_name: spec.name, plugin_dir: spec.dir}]
+      else
+        []
+      end
+
+    Supervisor.init(pool_children ++ watcher_child, strategy: :rest_for_one)
   end
 end

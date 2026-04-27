@@ -4,8 +4,9 @@ defmodule Sark.PluginSupervisor do
   (`Sark.Plugin`); `:one_for_one` so a crashing plugin doesn't take
   the rest down.
 
-  M2 loads plugins eagerly at boot. Hot reload is deferred — restart
-  the OTP application to pick up plugin changes.
+  Plugins are loaded eagerly at boot. With `hot_reload: true`, each
+  `Sark.Plugin` also runs a `Sark.Plugin.Watcher` that re-registers
+  MCP tools on `queries.yml`/`metadata.yml` edits.
   """
 
   use Supervisor
@@ -14,7 +15,7 @@ defmodule Sark.PluginSupervisor do
   alias Sark.Plugin
   alias Sark.Plugin.Loader
 
-  @type opts :: [plugin_paths: [String.t()], data_dir: String.t()]
+  @type opts :: [plugin_paths: [String.t()], data_dir: String.t(), hot_reload: boolean()]
 
   @spec start_link(opts) :: Supervisor.on_start()
   def start_link(opts) do
@@ -25,13 +26,14 @@ defmodule Sark.PluginSupervisor do
   def init(opts) do
     plugin_paths = Keyword.fetch!(opts, :plugin_paths)
     data_dir = Keyword.fetch!(opts, :data_dir)
+    hot_reload = Keyword.get(opts, :hot_reload, false)
 
     children =
       Enum.map(plugin_paths, fn path ->
         spec = Loader.load!(path)
 
         Supervisor.child_spec(
-          {Plugin, spec: spec, data_dir: data_dir},
+          {Plugin, spec: spec, data_dir: data_dir, hot_reload: hot_reload},
           id: {Plugin, spec.name}
         )
       end)

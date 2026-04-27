@@ -22,7 +22,12 @@ defmodule Sark.Application do
       {Phoenix.PubSub, name: Sark.PubSub},
       {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Sark.PubSub]},
       {Sark.AuthRegistry, config.tokens},
-      {Sark.PluginSupervisor, [plugin_paths: config.plugin_paths, data_dir: config.data_dir]},
+      {Sark.PluginSupervisor,
+       [
+         plugin_paths: config.plugin_paths,
+         data_dir: config.data_dir,
+         hot_reload: config.hot_reload
+       ]},
       {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}
     ]
 
