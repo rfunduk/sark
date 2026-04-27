@@ -1,0 +1,9 @@
+queries:
+  add_note:
+    description: Insert a note, returns the new id.
+    returns: results
+    write: true
+    params:
+      body: { type: text }
+    sql: |
+      INSERT INTO notes (body) VALUES (:body) RETURNING id

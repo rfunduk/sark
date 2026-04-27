@@ -1,87 +1,10 @@
+include:
+  - queries/reads.yml
+  - queries/writes/*.yml
+
 queries:
-  get:
-    description: Look up a row by key.
-    returns: results
-    format: json
-    params:
-      key: { type: text, required: true, description: "Lookup key." }
-    sql: |
-      SELECT key, value FROM kv WHERE key = :key
-
-  find:
-    description: Look up a row by key, rendered as a template.
-    returns: results
-    format:
-      kind: template
-      template: |
-        {{#results}}key: {{key}}
-        value: {{value}}
-        {{/results}}
-    params:
-      key: { type: text }
-    sql: |
-      SELECT key, value FROM kv WHERE key = :key
-
-  list:
-    description: List rows newest-first as bullets.
-    returns: results
-    format: list
-    params:
-      limit: { type: integer, required: false, default: 10 }
-    sql: |
-      SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
-
-  list_table:
-    description: List rows as a markdown table.
-    returns: results
-    format: table
-    params:
-      limit: { type: integer, required: false, default: 10 }
-    sql: |
-      SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
-
   total:
     description: Count of rows.
     returns: scalar
     sql: |
       SELECT COUNT(*) AS n FROM kv
-
-  put:
-    description: Upsert a key (write).
-    returns: results
-    write: true
-    params:
-      key:   { type: text }
-      value: { type: text }
-    sql: |
-      INSERT INTO kv (key, value) VALUES (:key, :value)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      RETURNING key
-
-  put_strict:
-    description: Insert a key, fails on conflict (used to exercise constraint errors).
-    returns: results
-    write: true
-    params:
-      key:   { type: text }
-      value: { type: text }
-    sql: |
-      INSERT INTO kv (key, value) VALUES (:key, :value) RETURNING key
-
-  delete:
-    description: Delete a key, returns affected row count.
-    returns: count
-    write: true
-    params:
-      key: { type: text }
-    sql: |
-      DELETE FROM kv WHERE key = :key
-
-  add_note:
-    description: Insert a note, returns the new id.
-    returns: results
-    write: true
-    params:
-      body: { type: text }
-    sql: |
-      INSERT INTO notes (body) VALUES (:body) RETURNING id

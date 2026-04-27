@@ -1,0 +1,41 @@
+queries:
+  get:
+    description: Look up a row by key.
+    returns: results
+    format: json
+    params:
+      key: { type: text, required: true, description: "Lookup key." }
+    sql: |
+      SELECT key, value FROM kv WHERE key = :key
+
+  find:
+    description: Look up a row by key, rendered as a template.
+    returns: results
+    format:
+      kind: template
+      template: |
+        {{#results}}key: {{key}}
+        value: {{value}}
+        {{/results}}
+    params:
+      key: { type: text }
+    sql: |
+      SELECT key, value FROM kv WHERE key = :key
+
+  list:
+    description: List rows newest-first as bullets.
+    returns: results
+    format: list
+    params:
+      limit: { type: integer, required: false, default: 10 }
+    sql: |
+      SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
+
+  list_table:
+    description: List rows as a markdown table.
+    returns: results
+    format: table
+    params:
+      limit: { type: integer, required: false, default: 10 }
+    sql: |
+      SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
