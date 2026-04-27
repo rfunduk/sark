@@ -16,12 +16,19 @@ defmodule Sark.MCP.Handlers.Query do
   alias Exqlite.Result
   alias Sark.MCP.EventBus
   alias Sark.MCP.Registry
+  alias Sark.MCP.Telemetry
   alias Sark.Plugin.DB
   alias Sark.Plugin.Query
   alias Sark.Render
 
   @spec call(String.t(), atom, map, term) :: {:reply, map, term}
   def call(plugin, query_name, raw_params, session) do
+    Telemetry.with_logging("#{plugin}.#{query_name}", raw_params, fn ->
+      do_call(plugin, query_name, raw_params, session)
+    end)
+  end
+
+  defp do_call(plugin, query_name, raw_params, session) do
     raw_params = raw_params || %{}
 
     with {:ok, %Query{} = q} <- Registry.get(plugin, query_name),

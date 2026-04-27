@@ -19,12 +19,19 @@ defmodule Sark.MCP.Handlers.PatchText do
 
   alias Exqlite.Result
   alias Sark.MCP.EventBus
+  alias Sark.MCP.Telemetry
   alias Sark.Plugin.DB
 
   @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
 
   @spec call(String.t(), map, term) :: {:reply, map, term}
   def call(plugin, params, session) do
+    Telemetry.with_logging("#{plugin}.patch_text", params, fn ->
+      do_call(plugin, params, session)
+    end)
+  end
+
+  defp do_call(plugin, params, session) do
     params = params || %{}
 
     with {:ok, table} <- ident(params, "table"),
