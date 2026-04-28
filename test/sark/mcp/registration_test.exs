@@ -250,7 +250,7 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "patch_text mismatch leaves row untouched", %{tmp_dir: dir} do
+  test "patch_text substring not found leaves row untouched", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -264,9 +264,55 @@ defmodule Sark.MCP.RegistrationTest do
         :session
       )
 
-    assert text =~ "mismatch"
+    assert text =~ "substring not found"
 
     {:ok, _, [%{"body" => "alpha"}]} =
+      DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
+  end
+
+  test "patch_text replaces a substring inside larger text", %{tmp_dir: dir} do
+    spec = boot_kv!(dir)
+
+    {:ok, %{rows: [[id]]}} =
+      DB.write(
+        spec.name,
+        "INSERT INTO notes (body) VALUES (?) RETURNING id",
+        ["There are 50 servers in the pool."]
+      )
+
+    mod = Sark.MCP.Registration.handler_module("kv")
+
+    {:reply, %{content: [%{type: :text, text: text}]}, _} =
+      mod.patch_text(
+        %{"table" => "notes", "id" => id, "col" => "body", "old" => "50", "new" => "100"},
+        :session
+      )
+
+    assert text =~ "\"replacements\":1"
+
+    {:ok, _, [%{"body" => "There are 100 servers in the pool."}]} =
+      DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
+  end
+
+  test "patch_text replaces every occurrence", %{tmp_dir: dir} do
+    spec = boot_kv!(dir)
+
+    {:ok, %{rows: [[id]]}} =
+      DB.write(spec.name, "INSERT INTO notes (body) VALUES (?) RETURNING id", [
+        "foo bar foo baz foo"
+      ])
+
+    mod = Sark.MCP.Registration.handler_module("kv")
+
+    {:reply, %{content: [%{type: :text, text: text}]}, _} =
+      mod.patch_text(
+        %{"table" => "notes", "id" => id, "col" => "body", "old" => "foo", "new" => "qux"},
+        :session
+      )
+
+    assert text =~ "\"replacements\":3"
+
+    {:ok, _, [%{"body" => "qux bar qux baz qux"}]} =
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
