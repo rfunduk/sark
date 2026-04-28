@@ -2,10 +2,11 @@ defmodule Sark.Plugin.Query do
   @moduledoc """
   Parsed canned query loaded from `queries.yml`.
 
-  Holds the compiled SQL (with `:names` rewritten to `?` placeholders),
-  the ordered list of parameter names matching those placeholders, the
-  declared parameter spec, return shape, and output format. Knows how to
-  validate + bind raw param maps from MCP tool calls.
+  A query may have one or more SQL statements. `sql:` accepts a string
+  (one statement) or a list of strings (statements run in order, in a
+  single transaction for writes / in sequence on the read pool for
+  reads). All statements share the declared `params:` and reference
+  them by `:name`. The response is the last statement's result.
   """
 
   alias Sark.Plugin.Query.SQL
@@ -17,9 +18,7 @@ defmodule Sark.Plugin.Query do
     :write,
     :params,
     :format,
-    :raw_sql,
-    :compiled_sql,
-    :param_order
+    :statements
   ]
   defstruct [
     :name,
@@ -28,9 +27,7 @@ defmodule Sark.Plugin.Query do
     :write,
     :params,
     :format,
-    :raw_sql,
-    :compiled_sql,
-    :param_order
+    :statements
   ]
 
   @type param_type :: :integer | :real | :text | :blob | :null
@@ -46,6 +43,12 @@ defmodule Sark.Plugin.Query do
           description: String.t() | nil
         }
 
+  @type statement :: %{
+          raw_sql: String.t(),
+          compiled_sql: String.t(),
+          param_order: [atom]
+        }
+
   @type t :: %__MODULE__{
           name: atom,
           description: String.t(),
@@ -53,9 +56,7 @@ defmodule Sark.Plugin.Query do
           write: boolean,
           params: [param],
           format: format,
-          raw_sql: String.t(),
-          compiled_sql: String.t(),
-          param_order: [atom]
+          statements: [statement]
         }
 
   @valid_returns ~w(results scalar count none)a
@@ -63,10 +64,6 @@ defmodule Sark.Plugin.Query do
 
   @doc """
   Parse a single entry from `queries.yml` into a `%Query{}`.
-
-  `name_str` is the YAML map key (a string); `entry` is the value map.
-  Raises `ArgumentError` with `where: "queries.yml: <name>"` context on
-  any malformed field.
   """
   @spec parse!(String.t(), map) :: t
   def parse!(name_str, entry) when is_binary(name_str) and is_map(entry) do
@@ -74,7 +71,7 @@ defmodule Sark.Plugin.Query do
     where = "queries.yml: #{name_str}"
 
     description = fetch_string!(entry, "description", where)
-    raw_sql = fetch_string!(entry, "sql", where)
+    raw_sqls = parse_sql!(Map.get(entry, "sql"), where)
 
     write = Map.get(entry, "write", false)
     unless is_boolean(write), do: bad!(where, "write must be boolean, got #{inspect(write)}")
@@ -83,14 +80,20 @@ defmodule Sark.Plugin.Query do
     params = parse_params!(Map.get(entry, "params", %{}), where)
     format = parse_format!(Map.get(entry, "format"), returns, write, where)
 
-    {compiled_sql, param_order} = SQL.compile(raw_sql)
     declared = MapSet.new(params, & &1.name)
 
-    Enum.each(param_order, fn p ->
-      unless MapSet.member?(declared, p) do
-        bad!(where, "SQL references :#{p} but it is not declared in params")
-      end
-    end)
+    statements =
+      Enum.map(raw_sqls, fn raw ->
+        {compiled, order} = SQL.compile(raw)
+
+        Enum.each(order, fn p ->
+          unless MapSet.member?(declared, p) do
+            bad!(where, "SQL references :#{p} but it is not declared in params")
+          end
+        end)
+
+        %{raw_sql: raw, compiled_sql: compiled, param_order: order}
+      end)
 
     %__MODULE__{
       name: name,
@@ -99,10 +102,29 @@ defmodule Sark.Plugin.Query do
       write: write,
       params: params,
       format: format,
-      raw_sql: raw_sql,
-      compiled_sql: compiled_sql,
-      param_order: param_order
+      statements: statements
     }
+  end
+
+  defp parse_sql!(nil, where), do: bad!(where, "sql is required")
+
+  defp parse_sql!(s, _where) when is_binary(s), do: [s]
+
+  defp parse_sql!(list, where) when is_list(list) do
+    if list == [] do
+      bad!(where, "sql list must not be empty")
+    end
+
+    Enum.each(list, fn s ->
+      unless is_binary(s),
+        do: bad!(where, "every sql list entry must be a string, got #{inspect(s)}")
+    end)
+
+    list
+  end
+
+  defp parse_sql!(other, where) do
+    bad!(where, "sql must be a string or list of strings, got #{inspect(other)}")
   end
 
   defp parse_returns!(entry, where) do
@@ -219,17 +241,21 @@ defmodule Sark.Plugin.Query do
 
   @doc """
   Validate raw params (string-keyed map from MCP) and bind them in the
-  positional order required by `compiled_sql`. Returns the bound list or
-  a structured validation error.
+  positional order required by each statement. Returns a list of bind
+  lists (one per statement) or a structured validation error.
   """
   @spec validate_and_bind(t, map) ::
-          {:ok, [term]} | {:error, {:validation, [%{param: atom, reason: String.t()}]}}
+          {:ok, [[term]]} | {:error, {:validation, [%{param: atom, reason: String.t()}]}}
   def validate_and_bind(%__MODULE__{} = q, raw_params) when is_map(raw_params) do
     {coerced, errs} = coerce_each(q.params, raw_params)
 
     if errs == [] do
-      bound = Enum.map(q.param_order, fn name -> Map.fetch!(coerced, name) end)
-      {:ok, bound}
+      binds =
+        Enum.map(q.statements, fn s ->
+          Enum.map(s.param_order, fn name -> Map.fetch!(coerced, name) end)
+        end)
+
+      {:ok, binds}
     else
       {:error, {:validation, Enum.reverse(errs)}}
     end

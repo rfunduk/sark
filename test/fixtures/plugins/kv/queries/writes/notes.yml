@@ -7,3 +7,13 @@ queries:
       body: { type: text }
     sql: |
       INSERT INTO notes (body) VALUES (:body) RETURNING id
+
+  reset_note:
+    description: Multi-statement — delete any note with this body, then insert a fresh one.
+    returns: results
+    write: true
+    params:
+      body: { type: text }
+    sql:
+      - DELETE FROM notes WHERE body = :body
+      - INSERT INTO notes (body) VALUES (:body) RETURNING id

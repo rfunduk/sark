@@ -1,4 +1,4 @@
-# sark
+<img src="./assets/sark.png" alt="SARK" />
 
 A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations) and a set of canned queries (YAML); sark exposes each query as a typed MCP tool. Agents call the tools, sark validates parameters, runs the SQL, and renders results.
 
@@ -68,6 +68,8 @@ queries:                       # optional. Inline queries, merged with includes.
 
 All `queries:` blocks across `queries.yml` and any included files are merged into one map. Duplicate names are a hard error.
 
+The MCP tools sark exposes are named `<plugin>_<query>` (e.g. a query `get` in plugin `kv` becomes the tool `kv_get`). Hyphens in plugin names are normalized to underscores. The prefix prevents collisions when multiple plugins running in one sark instance both declare common names like `get` or `list`.
+
 Per-query shape:
 
 ```yaml
@@ -86,6 +88,25 @@ queries:
       INSERT INTO sets (session_id, reps, weight_lbs, feeling)
       VALUES (:session_id, :reps, :weight_lbs, :feeling)
       RETURNING id;
+```
+
+`sql:` accepts a string (one statement) or a list of strings. With a list, statements run in order, sharing the declared `params:`. Writes wrap all of them in a single transaction. The response is the last statement's result.
+
+```yaml
+queries:
+  reset_plan:
+    description: Wipe pending plan and start a new one.
+    write: true
+    returns: results
+    params:
+      location_id: { type: integer, required: true }
+      notes:       { type: text, required: false }
+    sql:
+      - DELETE FROM planned_sessions
+      - |
+        INSERT INTO planned_sessions (location_id, notes)
+        VALUES (:location_id, :notes)
+        RETURNING id
 ```
 
 **`params` spec:**
@@ -168,7 +189,7 @@ When enabled:
 
 Most plugins should leave `allow_sql: false` and expose only their curated canned queries — those have validated parameter types, structured response formats, and stable contracts the skill is written against. Leaving it enabled with unsupervised agents will probably eventually result in something like `DELETE FROM tasks;`.
 
-## patch_text
+## `patch_text`
 
 Every plugin gets a `patch_text(table, id, col, old, new)` tool. It reads `col` from the row matching `id`, replaces every occurrence of the `old` substring with `new`, and writes the result back — all in one writer transaction. Returns the number of replacements made. Errors if `old` doesn't appear in the column (so a typo doesn't silently no-op).
 
@@ -190,7 +211,7 @@ Migrations and database files (`*.db`, `*.db-shm`, `*.db-wal`) are ignored. Relo
 
 Disable per-deployment with `hot_reload: false` in config.
 
-> Note: tool changes take effect server-side immediately, but most MCP clients (Claude Code included) cache the tool list at session start and need a reconnect to see new tools. Existing tools work without reconnect.
+> Note: tool changes take effect server-side immediately, but most MCP clients (Claude Code included) cache the tool list at session start and need a reconnect to see new tools. Existing tools work without reconnect if they have the same params.
 
 ## Config
 
@@ -216,19 +237,95 @@ plugins:                          # required. Absolute, or relative to config fi
 
 Shortest path:
 
-1. Create the plugin directory with `migrations/0001_initial.sql`.
-2. Add the path to `plugins:` in `config.yml`.
-3. Boot sark. The plugin's database is created and migration 1 is applied. `patch_text` registers automatically.
-4. Add `queries.yml` (and optionally `include:` + a `queries/` subdirectory). Save the file — hot reload re-registers tools.
-5. Reconnect your MCP client to see the new tool names.
-6. Iterate on queries; restart for schema changes (a new migration).
+1. Create the plugin directory (example here is `kv`) with `migrations/0001_initial.sql`.
 
-Notes:
+    ```sql
+    CREATE TABLE IF NOT EXISTS kv (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    ```
 
-- **Skills carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark queries are the verbs the skill orchestrates.
+2. Add `queries.yml`:
+
+    ```yaml
+    queries:
+      put:
+        description: Upsert a key
+        returns: results
+        write: true
+        params:
+          key:   { type: text }
+          value: { type: text }
+        sql: |
+          INSERT INTO kv (key, value) VALUES (:key, :value)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          RETURNING key
+
+      get:
+        description: Look up a row by key, rendered as a template.
+        returns: results
+        params:
+          key: { type: text }
+        sql: |
+          SELECT key, value FROM kv WHERE key = :key
+    ```
+
+3. Add the path to `plugins:` in `config.yml`.
+4. Boot sark. The plugin's database is created and migration 1 is applied.
+5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project mysark http://localhost:8080/mcp --header "Authorization: Bearer sk-mytoken"`
+6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`
+
+Usage:
+
+- **Skills should carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark queries are the verbs the skill orchestrates.
 - **Composite reads.** Bundle nested data using `json_object` / `json_group_array` in SQL. Sark auto-decodes the JSON-string columns; templates iterate them directly.
-- **Multi-step writes.** No native multi-statement query body — either inline the steps as `;`-separated SQL in one query (single transaction), or sequence multiple tool calls.
 - **Atomic per tool call.** Each `write: true` query wraps in a writer-pool transaction; failures roll back automatically.
-- **Per-write events.** Every successful write broadcasts on `Phoenix.PubSub` topic `<plugin>.<query>` for any in-process subscribers.
 
 The `kv` test fixture under `test/fixtures/plugins/kv/` is the canonical example — it covers every return shape × format and demonstrates the `include:` split (literal + glob + inline coexistence).
+
+### Versioning a column
+
+Use a trigger:
+
+```sql
+-- shadow table — one row per pre-update snapshot
+CREATE TABLE notes_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  replaced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- trigger pushes the old row into history before every UPDATE
+CREATE TRIGGER notes_versioning
+BEFORE UPDATE ON notes
+BEGIN
+  INSERT INTO notes_history (note_id, body) VALUES (OLD.id, OLD.body);
+END;
+```
+
+Any `UPDATE` to `notes` fires the trigger and lands a snapshot in `notes_history`. Reads against `notes_history` work like any other table — expose them via canned queries.
+
+You could do bounded retention in the trigger, or add a prune query the skill can run:
+
+```yaml
+prune_notes_history:
+  description: Keep the most recent N versions per note.
+  write: true
+  returns: count
+  params:
+    note_id: { type: integer, required: true }
+    keep:    { type: integer, required: false, default: 10 }
+  sql: |
+    DELETE FROM notes_history
+    WHERE note_id = :note_id
+      AND id NOT IN (
+        SELECT id FROM notes_history
+        WHERE note_id = :note_id
+        ORDER BY replaced_at DESC
+        LIMIT :keep
+      )
+```
+

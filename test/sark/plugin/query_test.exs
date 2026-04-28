@@ -18,8 +18,7 @@ defmodule Sark.Plugin.QueryTest do
       assert q.name == :recent
       assert q.returns == :results
       assert q.write == false
-      assert q.compiled_sql == "SELECT * FROM t LIMIT ?"
-      assert q.param_order == [:n]
+      assert [%{compiled_sql: "SELECT * FROM t LIMIT ?", param_order: [:n]}] = q.statements
       # default format for reads is :list
       assert q.format == :list
       [p] = q.params
@@ -124,12 +123,31 @@ defmodule Sark.Plugin.QueryTest do
     end
 
     test "binds in compiled order, applying defaults", %{q: q} do
-      assert {:ok, ["foo", 0]} = Query.validate_and_bind(q, %{"k" => "foo"})
-      assert {:ok, ["foo", 5]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => 5})
+      assert {:ok, [["foo", 0]]} = Query.validate_and_bind(q, %{"k" => "foo"})
+      assert {:ok, [["foo", 5]]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => 5})
     end
 
     test "coerces stringified integer", %{q: q} do
-      assert {:ok, ["foo", 7]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => "7"})
+      assert {:ok, [["foo", 7]]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => "7"})
+    end
+
+    test "multi-statement query produces one bind list per statement" do
+      q =
+        Query.parse!("multi", %{
+          "description" => "Two-step write.",
+          "returns" => "results",
+          "write" => true,
+          "sql" => [
+            "DELETE FROM t WHERE k = :k",
+            "INSERT INTO t (k, n) VALUES (:k, :n) RETURNING id"
+          ],
+          "params" => %{
+            "k" => %{"type" => "text"},
+            "n" => %{"type" => "integer"}
+          }
+        })
+
+      assert {:ok, [["foo"], ["foo", 5]]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => 5})
     end
 
     test "missing required → validation error", %{q: q} do

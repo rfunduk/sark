@@ -2,13 +2,13 @@ defmodule Sark.MCP.Handlers.Query do
   @moduledoc """
   Runtime dispatcher for canned-query MCP tools.
 
-  Each generated `Sark.MCP.Generated.<Plugin>.<plugin>_<query>/2` function
-  delegates here with the plugin name + query name baked in.
+  A query may have one or more SQL statements (`sql:` accepts a string
+  or a list of strings). All statements run in order, sharing the
+  declared params; the response is the last statement's result.
 
-  Reads run on the read pool. Writes run inside a transaction on the
-  write pool, and on success broadcast a write event via
-  `Sark.MCP.EventBus`. Errors split into three classes:
-  validation / constraint / internal.
+  Reads run on the read pool. Writes run inside one transaction on the
+  write pool, broadcasting a single write event after success. Errors
+  split into validation / constraint / internal classes.
   """
 
   require Phantom.Tool, as: Tool
@@ -32,8 +32,8 @@ defmodule Sark.MCP.Handlers.Query do
     raw_params = raw_params || %{}
 
     with {:ok, %Query{} = q} <- Registry.get(plugin, query_name),
-         {:ok, bound} <- Query.validate_and_bind(q, raw_params),
-         {:ok, cols, value} <- execute(plugin, q, bound, raw_params) do
+         {:ok, binds} <- Query.validate_and_bind(q, raw_params),
+         {:ok, cols, value} <- execute(plugin, q, binds, raw_params) do
       reply_text(Render.render(value, q.format, q.returns, cols), session)
     else
       :error ->
@@ -53,8 +53,8 @@ defmodule Sark.MCP.Handlers.Query do
     end
   end
 
-  defp execute(plugin, %Query{write: false} = q, bound, _raw_params) do
-    case DB.read(plugin, q.compiled_sql, bound) do
+  defp execute(plugin, %Query{write: false} = q, binds, _raw_params) do
+    case run_reads(plugin, q.statements, binds) do
       {:ok, cols, rows} ->
         case coerce(rows, q.returns) do
           {:ok, value} -> {:ok, cols, value}
@@ -66,22 +66,10 @@ defmodule Sark.MCP.Handlers.Query do
     end
   end
 
-  defp execute(plugin, %Query{write: true} = q, bound, raw_params) do
-    # `command:` lets exqlite report changes count via Result.num_rows,
-    # but suppresses columns — only safe for non-row-returning shapes.
-    opts =
-      if q.returns in [:none, :count] do
-        case detect_command(q.compiled_sql) do
-          nil -> []
-          cmd -> [command: cmd]
-        end
-      else
-        []
-      end
-
+  defp execute(plugin, %Query{write: true} = q, binds, raw_params) do
     txn_result =
       DB.txn(plugin, fn conn ->
-        case Exqlite.query(conn, q.compiled_sql, bound, opts) do
+        case run_writes(conn, q, binds) do
           {:ok, %Result{} = r} -> {:ok, r}
           {:error, e} -> DBConnection.rollback(conn, e)
         end
@@ -101,6 +89,45 @@ defmodule Sark.MCP.Handlers.Query do
       {:error, e} ->
         classify(e)
     end
+  end
+
+  # Run all read statements on the read pool. Earlier statements are
+  # executed for side effects (rare for reads — PRAGMAs, temp views,
+  # etc.); the last statement's rows are what gets returned.
+  defp run_reads(plugin, statements, binds) do
+    Enum.zip(statements, binds)
+    |> Enum.reduce_while({:ok, [], []}, fn {stmt, bind}, _acc ->
+      case DB.read(plugin, stmt.compiled_sql, bind) do
+        {:ok, cols, rows} -> {:cont, {:ok, cols, rows}}
+        {:error, e} -> {:halt, {:error, e}}
+      end
+    end)
+  end
+
+  # Iterate write statements inside the caller's transaction. Last
+  # statement gets the `command:` opt for `:none`/`:count` returns
+  # (lets exqlite report num_rows without materializing rows).
+  defp run_writes(conn, %Query{statements: statements, returns: returns}, binds) do
+    last_idx = length(statements) - 1
+
+    Enum.zip(statements, binds)
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, nil}, fn {{stmt, bind}, idx}, _acc ->
+      opts =
+        if idx == last_idx and returns in [:none, :count] do
+          case detect_command(stmt.compiled_sql) do
+            nil -> []
+            cmd -> [command: cmd]
+          end
+        else
+          []
+        end
+
+      case Exqlite.query(conn, stmt.compiled_sql, bind, opts) do
+        {:ok, %Result{} = r} -> {:cont, {:ok, r}}
+        {:error, e} -> {:halt, {:error, e}}
+      end
+    end)
   end
 
   defp coerce(rows, :results), do: {:ok, rows}

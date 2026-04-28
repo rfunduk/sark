@@ -35,14 +35,14 @@ defmodule Sark.MCP.RegistrationTest do
     tools = Phantom.Cache.list(nil, Router, :tools)
     names = Enum.map(tools, & &1.name) |> Enum.sort()
 
-    assert "get" in names
-    assert "find" in names
-    assert "list" in names
-    assert "list_table" in names
-    assert "total" in names
-    assert "put" in names
-    assert "catalog" in names
-    assert "sql_query" in names
+    assert "kv_get" in names
+    assert "kv_find" in names
+    assert "kv_list" in names
+    assert "kv_list_table" in names
+    assert "kv_total" in names
+    assert "kv_put" in names
+    assert "kv_catalog" in names
+    assert "kv_sql_query" in names
     assert "ping" in names
   end
 
@@ -61,6 +61,7 @@ defmodule Sark.MCP.RegistrationTest do
              :list_table,
              :put,
              :put_strict,
+             :reset_note,
              :total
            ]
   end
@@ -185,6 +186,7 @@ defmodule Sark.MCP.RegistrationTest do
                "list_table",
                "put",
                "put_strict",
+               "reset_note",
                "total"
              ]
   end
@@ -204,6 +206,23 @@ defmodule Sark.MCP.RegistrationTest do
       mod.sql_query(%{"sql" => "DELETE FROM kv"}, :session)
 
     assert bad_text =~ "only SELECT"
+  end
+
+  test "multi-statement write runs all statements in order", %{tmp_dir: dir} do
+    spec = boot_kv!(dir)
+
+    {:ok, _} = DB.write(spec.name, "INSERT INTO notes (body) VALUES (?)", ["hello"])
+    {:ok, _} = DB.write(spec.name, "INSERT INTO notes (body) VALUES (?)", ["hello"])
+
+    mod = Sark.MCP.Registration.handler_module("kv")
+
+    {:reply, %{content: [%{type: :text, text: text}]}, _} =
+      mod.reset_note(%{"body" => "hello"}, :session)
+
+    assert text =~ "\"id\""
+
+    {:ok, _, [%{"n" => 1}]} =
+      DB.read(spec.name, "SELECT COUNT(*) AS n FROM notes WHERE body = ?", ["hello"])
   end
 
   test "put_strict surfaces constraint error class on duplicate key", %{tmp_dir: dir} do
@@ -375,6 +394,6 @@ defmodule Sark.MCP.RegistrationTest do
     tools = Phantom.Cache.list(nil, Router, :tools)
     names = Enum.map(tools, & &1.name)
 
-    assert "patch_text" in names
+    assert "kv_patch_text" in names
   end
 end

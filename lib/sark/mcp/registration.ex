@@ -112,7 +112,7 @@ defmodule Sark.MCP.Registration do
     query_specs =
       Enum.map(queries, fn q ->
         %{
-          name: Atom.to_string(q.name),
+          name: tool_name(plugin, Atom.to_string(q.name)),
           handler: module,
           function: q.name,
           description: q.description,
@@ -125,7 +125,7 @@ defmodule Sark.MCP.Registration do
       if allow_sql do
         [
           %{
-            name: "catalog",
+            name: tool_name(plugin, "catalog"),
             handler: module,
             function: :catalog,
             description:
@@ -134,7 +134,7 @@ defmodule Sark.MCP.Registration do
             meta: %{file: __ENV__.file, line: __ENV__.line}
           },
           %{
-            name: "sql_query",
+            name: tool_name(plugin, "sql_query"),
             handler: module,
             function: :sql_query,
             description:
@@ -152,13 +152,13 @@ defmodule Sark.MCP.Registration do
       end
 
     patch_text_spec = %{
-      name: "patch_text",
+      name: tool_name(plugin, "patch_text"),
       handler: module,
       function: :patch_text,
       description:
-        "Optimistic-concurrency text patch on plugin `#{plugin}`. " <>
-          "Reads `col` from `table` where id matches; if it equals `old`, writes `new`. " <>
-          "Token-saver vs. re-emitting full bodies.",
+        "Substring text patch on plugin `#{plugin}`. " <>
+          "Reads `col` from `table` where id matches; replaces every occurrence " <>
+          "of `old` with `new`. Token-saver vs. re-emitting full bodies.",
       input_schema: %{
         type: "object",
         required: ["table", "id", "col", "old", "new"],
@@ -166,8 +166,8 @@ defmodule Sark.MCP.Registration do
           "table" => %{type: "string", description: "Table name (identifier)."},
           "id" => %{description: "Row id (integer or string)."},
           "col" => %{type: "string", description: "Column name (identifier)."},
-          "old" => %{type: "string", description: "Expected current value."},
-          "new" => %{type: "string", description: "Replacement value."}
+          "old" => %{type: "string", description: "Substring to find."},
+          "new" => %{type: "string", description: "Replacement string."}
         }
       },
       meta: %{file: __ENV__.file, line: __ENV__.line}
@@ -175,4 +175,13 @@ defmodule Sark.MCP.Registration do
 
     query_specs ++ sql_specs ++ [patch_text_spec]
   end
+
+  # Plugin-name to identifier-safe form. Tool names exposed to the MCP
+  # client are `<plugin>_<name>` so multiple plugins running in one sark
+  # instance can't collide on common names like `get` or `list`.
+  defp tool_name(plugin, name) do
+    "#{normalize_plugin(plugin)}_#{name}"
+  end
+
+  defp normalize_plugin(plugin), do: String.replace(plugin, "-", "_")
 end
