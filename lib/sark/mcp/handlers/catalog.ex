@@ -1,16 +1,21 @@
 defmodule Sark.MCP.Handlers.Catalog do
   @moduledoc """
-  Per-plugin catalog handler. Returns the plugin's schema.sql, metadata,
-  and the list of canned queries (with descriptions, return shape, params,
-  and format) as a structured JSON document.
+  Per-plugin catalog handler. Returns the live schema (read from
+  `sqlite_master`) and the list of canned queries with their MCP-relevant
+  metadata as a structured JSON document.
 
-  Each plugin gets a `<plugin>_catalog` tool that delegates here.
+  Schema reflects the post-migration state of the DB — `ALTER TABLE`
+  outcomes, dropped columns, etc. Internal tables (`sqlite_*`,
+  `_sark_*`) are filtered out.
+
+  Only registered when the plugin's `queries.yml` sets `allow_sql: true`.
   """
 
   require Phantom.Tool, as: Tool
 
   alias Sark.MCP.Registry
   alias Sark.MCP.Telemetry
+  alias Sark.Plugin.DB
   alias Sark.Plugin.Query
 
   @spec call(String.t(), map, term) :: {:reply, map, term}
@@ -30,17 +35,37 @@ defmodule Sark.MCP.Handlers.Catalog do
 
         doc = %{
           name: spec.name,
-          title: Map.get(spec.metadata, "title"),
-          description: Map.get(spec.metadata, "description"),
-          migrations:
-            Enum.map(spec.migrations, fn m ->
-              %{version: m.version, sql: m.sql}
-            end),
-          tables: Map.get(spec.metadata, "tables", %{}),
+          schema: live_schema(plugin),
           queries: Enum.map(queries, &query_to_map/1)
         }
 
         {:reply, Tool.text(doc), session}
+    end
+  end
+
+  defp live_schema(plugin) do
+    sql = """
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE sql IS NOT NULL
+      AND name NOT LIKE 'sqlite_%'
+      AND name NOT LIKE '_sark_%'
+    ORDER BY CASE type
+               WHEN 'table' THEN 0
+               WHEN 'view' THEN 1
+               WHEN 'index' THEN 2
+               WHEN 'trigger' THEN 3
+             END, name
+    """
+
+    case DB.read(plugin, sql, []) do
+      {:ok, _cols, rows} ->
+        Enum.map(rows, fn %{"type" => type, "name" => name, "sql" => ddl} ->
+          %{type: type, name: name, sql: ddl}
+        end)
+
+      _ ->
+        []
     end
   end
 

@@ -2,9 +2,11 @@ defmodule Sark.Plugin.Loader do
   @moduledoc """
   Reads a plugin directory off disk into a `Sark.Plugin.Spec`.
 
-  Loads L0 (`migrations/`) and L1 (`queries.yml`, optional). `metadata.yml`
-  is optional and surfaces in catalog output if present. L2+ (`workers.yml`,
-  `feeds.yml`) are still ignored.
+  Plugin layout:
+
+    * `migrations/` — required, forward-only SQL files (`NNNN_name.sql`)
+    * `queries.yml` — optional, MCP tool definitions (+ optional `include:`,
+      `allow_sql:` flags)
   """
 
   alias Sark.Plugin.Migrations
@@ -26,36 +28,14 @@ defmodule Sark.Plugin.Loader do
     end
 
     migrations = Migrations.discover!(abs)
-    metadata = read_metadata!(abs)
-    queries = QueriesYAML.load(abs)
+    {queries, opts} = QueriesYAML.load(abs)
 
     %Spec{
       name: name,
       dir: abs,
       migrations: migrations,
-      metadata: metadata,
-      queries: queries
+      queries: queries,
+      allow_sql: Map.get(opts, :allow_sql, false)
     }
-  end
-
-  defp read_metadata!(dir) do
-    path = Path.join(dir, "metadata.yml")
-
-    case YamlElixir.read_from_file(path) do
-      {:ok, map} when is_map(map) ->
-        map
-
-      {:ok, nil} ->
-        %{}
-
-      {:ok, other} ->
-        raise "plugin #{dir}: metadata.yml must be a map, got #{inspect(other)}"
-
-      {:error, %YamlElixir.FileNotFoundError{}} ->
-        %{}
-
-      {:error, reason} ->
-        raise "plugin #{dir}: cannot parse metadata.yml (#{inspect(reason)})"
-    end
   end
 end

@@ -18,16 +18,10 @@ defmodule Sark.Plugin.LoaderTest do
     dir
   end
 
-  test "loads migrations/ + metadata.yml", %{tmp_dir: dir} do
+  test "loads migrations/", %{tmp_dir: dir} do
     plugin =
       write_plugin(Path.join(dir, "kv"), %{
-        "migrations/0001_initial.sql" => "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT);",
-        "metadata.yml" => """
-        title: KV
-        tables:
-          kv:
-            description: Test
-        """
+        "migrations/0001_initial.sql" => "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT);"
       })
 
     spec = Loader.load!(plugin)
@@ -36,15 +30,28 @@ defmodule Sark.Plugin.LoaderTest do
     assert spec.dir == plugin
     assert [%{version: 1, sql: sql}] = spec.migrations
     assert sql =~ "CREATE TABLE kv"
-    assert spec.metadata["title"] == "KV"
-    assert get_in(spec.metadata, ["tables", "kv", "description"]) == "Test"
+    assert spec.allow_sql == false
+    assert spec.queries == []
+  end
+
+  test "queries.yml allow_sql flows into Spec", %{tmp_dir: dir} do
+    plugin =
+      write_plugin(Path.join(dir, "kv"), %{
+        "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);",
+        "queries.yml" => """
+        allow_sql: true
+        queries: {}
+        """
+      })
+
+    spec = Loader.load!(plugin)
+    assert spec.allow_sql == true
   end
 
   test "uses dir basename as plugin name", %{tmp_dir: dir} do
     plugin =
       write_plugin(Path.join(dir, "my_plugin"), %{
-        "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);",
-        "metadata.yml" => "title: x"
+        "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);"
       })
 
     spec = Loader.load!(plugin)
@@ -52,24 +59,11 @@ defmodule Sark.Plugin.LoaderTest do
   end
 
   test "raises when migrations/ missing", %{tmp_dir: dir} do
-    plugin =
-      write_plugin(Path.join(dir, "broken"), %{
-        "metadata.yml" => "title: x"
-      })
+    plugin = write_plugin(Path.join(dir, "broken"), %{})
 
     assert_raise RuntimeError, ~r/missing required `migrations\/` directory/, fn ->
       Loader.load!(plugin)
     end
-  end
-
-  test "metadata.yml is optional — defaults to empty map", %{tmp_dir: dir} do
-    plugin =
-      write_plugin(Path.join(dir, "no_meta"), %{
-        "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);"
-      })
-
-    spec = Loader.load!(plugin)
-    assert spec.metadata == %{}
   end
 
   test "raises on non-directory path", %{tmp_dir: dir} do
@@ -84,8 +78,7 @@ defmodule Sark.Plugin.LoaderTest do
   test "raises on bad migration filename", %{tmp_dir: dir} do
     plugin =
       write_plugin(Path.join(dir, "broken"), %{
-        "migrations/initial.sql" => "CREATE TABLE x(y TEXT);",
-        "metadata.yml" => "title: x"
+        "migrations/initial.sql" => "CREATE TABLE x(y TEXT);"
       })
 
     assert_raise RuntimeError, ~r/bad migration filename/, fn ->
@@ -97,8 +90,7 @@ defmodule Sark.Plugin.LoaderTest do
     plugin =
       write_plugin(Path.join(dir, "broken"), %{
         "migrations/0001_a.sql" => "CREATE TABLE x(y TEXT);",
-        "migrations/0003_c.sql" => "CREATE TABLE z(w TEXT);",
-        "metadata.yml" => "title: x"
+        "migrations/0003_c.sql" => "CREATE TABLE z(w TEXT);"
       })
 
     assert_raise RuntimeError, ~r/migration versions must be contiguous/, fn ->
@@ -109,7 +101,6 @@ defmodule Sark.Plugin.LoaderTest do
   test "raises on empty migrations dir", %{tmp_dir: dir} do
     plugin = Path.join(dir, "broken")
     File.mkdir_p!(Path.join(plugin, "migrations"))
-    File.write!(Path.join(plugin, "metadata.yml"), "title: x")
 
     assert_raise RuntimeError, ~r/`migrations\/` is empty/, fn ->
       Loader.load!(plugin)

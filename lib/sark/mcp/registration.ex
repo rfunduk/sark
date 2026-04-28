@@ -108,7 +108,7 @@ defmodule Sark.MCP.Registration do
     end
   end
 
-  defp build_tool_specs(%Spec{name: plugin, queries: queries}, module) do
+  defp build_tool_specs(%Spec{name: plugin, queries: queries, allow_sql: allow_sql}, module) do
     query_specs =
       Enum.map(queries, fn q ->
         %{
@@ -121,28 +121,35 @@ defmodule Sark.MCP.Registration do
         }
       end)
 
-    catalog_spec = %{
-      name: "catalog",
-      handler: module,
-      function: :catalog,
-      description: "Catalog for plugin `#{plugin}` — schema, tables, and canned queries.",
-      input_schema: %{type: "object", properties: %{}, required: []},
-      meta: %{file: __ENV__.file, line: __ENV__.line}
-    }
-
-    sql_query_spec = %{
-      name: "sql_query",
-      handler: module,
-      function: :sql_query,
-      description:
-        "Run an arbitrary SELECT/WITH/PRAGMA query against plugin `#{plugin}`'s read pool.",
-      input_schema: %{
-        type: "object",
-        required: ["sql"],
-        properties: %{"sql" => %{type: "string", description: "Read-only SQL to execute."}}
-      },
-      meta: %{file: __ENV__.file, line: __ENV__.line}
-    }
+    sql_specs =
+      if allow_sql do
+        [
+          %{
+            name: "catalog",
+            handler: module,
+            function: :catalog,
+            description:
+              "Live schema (from sqlite_master) and canned queries for plugin `#{plugin}`.",
+            input_schema: %{type: "object", properties: %{}, required: []},
+            meta: %{file: __ENV__.file, line: __ENV__.line}
+          },
+          %{
+            name: "sql_query",
+            handler: module,
+            function: :sql_query,
+            description:
+              "Run an arbitrary SELECT/WITH/PRAGMA query against plugin `#{plugin}`'s read pool.",
+            input_schema: %{
+              type: "object",
+              required: ["sql"],
+              properties: %{"sql" => %{type: "string", description: "Read-only SQL to execute."}}
+            },
+            meta: %{file: __ENV__.file, line: __ENV__.line}
+          }
+        ]
+      else
+        []
+      end
 
     patch_text_spec = %{
       name: "patch_text",
@@ -166,6 +173,6 @@ defmodule Sark.MCP.Registration do
       meta: %{file: __ENV__.file, line: __ENV__.line}
     }
 
-    query_specs ++ [catalog_spec, sql_query_spec, patch_text_spec]
+    query_specs ++ sql_specs ++ [patch_text_spec]
   end
 end

@@ -27,14 +27,45 @@ defmodule Sark.Plugin.Query.YAMLTest do
     """
   end
 
-  test "absent queries.yml → []", %{tmp_dir: dir} do
+  test "absent queries.yml → empty queries + default opts", %{tmp_dir: dir} do
     plugin = write(Path.join(dir, "p"), %{})
-    assert YAML.load(plugin) == []
+    assert YAML.load(plugin) == {[], %{allow_sql: false}}
   end
 
   test "loads inline queries", %{tmp_dir: dir} do
     plugin = write(Path.join(dir, "p"), %{"queries.yml" => q_yaml("a")})
-    assert [%{name: :a}] = YAML.load(plugin)
+    {queries, opts} = YAML.load(plugin)
+    assert [%{name: :a}] = queries
+    assert opts == %{allow_sql: false}
+  end
+
+  test "allow_sql: true picked up", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        allow_sql: true
+        queries:
+          a:
+            description: q
+            returns: scalar
+            sql: SELECT 1
+        """
+      })
+
+    {_, opts} = YAML.load(plugin)
+    assert opts == %{allow_sql: true}
+  end
+
+  test "allow_sql non-boolean raises", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        allow_sql: yes_please
+        queries: {}
+        """
+      })
+
+    assert_raise RuntimeError, ~r/allow_sql must be boolean/, fn -> YAML.load(plugin) end
   end
 
   test "include: list of literal files", %{tmp_dir: dir} do
@@ -52,7 +83,8 @@ defmodule Sark.Plugin.Query.YAMLTest do
         "extra.yml" => q_yaml("b")
       })
 
-    names = YAML.load(plugin) |> Enum.map(& &1.name)
+    {queries, _} = YAML.load(plugin)
+    names = Enum.map(queries, & &1.name)
     assert names == [:a, :b]
   end
 
@@ -67,7 +99,8 @@ defmodule Sark.Plugin.Query.YAMLTest do
         "queries/bar.yml" => q_yaml("bar")
       })
 
-    names = YAML.load(plugin) |> Enum.map(& &1.name)
+    {queries, _} = YAML.load(plugin)
+    names = Enum.map(queries, & &1.name)
     assert names == [:bar, :foo]
   end
 
@@ -117,7 +150,8 @@ defmodule Sark.Plugin.Query.YAMLTest do
         """
       })
 
-    assert [%{name: :a}] = YAML.load(plugin)
+    {queries, _} = YAML.load(plugin)
+    assert [%{name: :a}] = queries
   end
 
   test "include must be a list", %{tmp_dir: dir} do

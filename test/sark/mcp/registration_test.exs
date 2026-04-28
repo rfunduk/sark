@@ -154,16 +154,25 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "key"
   end
 
-  test "catalog returns structured doc with queries", %{tmp_dir: dir} do
+  test "catalog returns live schema + queries", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
     {:reply, %{structuredContent: doc}, _} = mod.catalog(%{}, :session)
 
     assert doc.name == "kv"
-    assert doc.title == "KV"
-    assert [%{version: 1, sql: sql}] = doc.migrations
-    assert sql =~ "CREATE TABLE"
+
+    schema_names = Enum.map(doc.schema, & &1.name)
+    assert "kv" in schema_names
+    assert "notes" in schema_names
+
+    kv_entry = Enum.find(doc.schema, &(&1.name == "kv"))
+    assert kv_entry.type == "table"
+    assert kv_entry.sql =~ "CREATE TABLE"
+
+    refute Enum.any?(doc.schema, fn e -> String.starts_with?(e.name, "_sark_") end)
+    refute Enum.any?(doc.schema, fn e -> String.starts_with?(e.name, "sqlite_") end)
+
     query_names = Enum.map(doc.queries, & &1.name) |> Enum.sort()
 
     assert query_names ==

@@ -1,3 +1,5 @@
+allow_sql: true
+
 include:
   - queries/reads.yml
   - queries/writes/*.yml

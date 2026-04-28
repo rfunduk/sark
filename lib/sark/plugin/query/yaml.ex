@@ -4,6 +4,7 @@ defmodule Sark.Plugin.Query.YAML do
 
   Format:
 
+      allow_sql: false       # optional — opt into catalog + sql_query tools
       include:               # optional — list of file paths or globs,
         - queries/*.yml      #   relative to plugin dir. Each must be a
         - queries/extra.yml  #   YAML doc with the same top-level shape.
@@ -20,18 +21,22 @@ defmodule Sark.Plugin.Query.YAML do
   All `queries:` blocks across `queries.yml` and any included files are
   merged into a single map. Duplicate names raise.
 
-  Returns `[]` if `queries.yml` is absent (queries.yml is optional).
+  Returns `{queries, opts}` — `queries` is a list of parsed `Query.t()`,
+  `opts` is a map of plugin-wide flags (`%{allow_sql: bool}`). Returns
+  `{[], %{allow_sql: false}}` if `queries.yml` is absent.
   """
 
   alias Sark.Plugin.Query
 
-  @spec load(Path.t()) :: [Query.t()]
+  @type opts :: %{allow_sql: boolean()}
+
+  @spec load(Path.t()) :: {[Query.t()], opts()}
   def load(plugin_dir) do
     path = Path.join(plugin_dir, "queries.yml")
 
     case YamlElixir.read_from_file(path) do
       {:ok, nil} ->
-        []
+        {[], default_opts()}
 
       {:ok, doc} when is_map(doc) ->
         parse_root!(doc, plugin_dir, path)
@@ -40,21 +45,34 @@ defmodule Sark.Plugin.Query.YAML do
         raise "queries.yml: top-level must be a map, got #{inspect(other)}"
 
       {:error, %YamlElixir.FileNotFoundError{}} ->
-        []
+        {[], default_opts()}
 
       {:error, reason} ->
         raise "queries.yml at #{path}: cannot parse (#{inspect(reason)})"
     end
   end
 
+  defp default_opts, do: %{allow_sql: false}
+
   defp parse_root!(doc, plugin_dir, root_path) do
     base = entries_from_doc!(doc, root_path)
     extra = load_includes!(Map.get(doc, "include", []), plugin_dir, root_path)
 
-    (base ++ extra)
-    |> merge_no_dupes!()
-    |> Enum.sort_by(fn {name, _, _} -> name end)
-    |> Enum.map(fn {name, entry, _source} -> Query.parse!(name, entry) end)
+    queries =
+      (base ++ extra)
+      |> merge_no_dupes!()
+      |> Enum.sort_by(fn {name, _, _} -> name end)
+      |> Enum.map(fn {name, entry, _source} -> Query.parse!(name, entry) end)
+
+    opts = %{allow_sql: parse_allow_sql!(Map.get(doc, "allow_sql", false), root_path)}
+
+    {queries, opts}
+  end
+
+  defp parse_allow_sql!(v, _path) when is_boolean(v), do: v
+
+  defp parse_allow_sql!(other, path) do
+    raise "queries.yml at #{path}: allow_sql must be boolean, got #{inspect(other)}"
   end
 
   defp entries_from_doc!(doc, source) do
