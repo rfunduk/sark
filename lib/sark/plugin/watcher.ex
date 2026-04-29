@@ -69,7 +69,7 @@ defmodule Sark.Plugin.Watcher do
     Logger.info("plugin #{state.plugin_name} hot-reload")
 
     try do
-      spec = Loader.load!(state.plugin_dir)
+      spec = Loader.load!(state.plugin_name, state.plugin_dir)
       Registration.register_plugin!(spec)
     rescue
       e ->

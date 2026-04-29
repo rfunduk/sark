@@ -14,7 +14,7 @@ mix sark --config config.yml              # dev
 sark --config /etc/sark/config.yml        # release binary (mix release)
 ```
 
-Sark serves plain HTTP on the configured `listen` address. The MCP endpoint is `POST /mcp`, gated by `Authorization: Bearer <token>`.
+Sark serves plain HTTP on the configured `listen` address. Each plugin gets its own MCP endpoint at `POST /<plugin>/mcp`.
 
 ## Plugin layout
 
@@ -30,8 +30,6 @@ plugin/
   skills/                  Optional. Travels with the plugin; sark ignores it.
     foo-bar/SKILL.md       Loaded by your MCP client.
 ```
-
-The plugin name is the directory's basename.
 
 The plugin's SQLite database is created at `{config.data_dir}/{plugin_name}.db` on first boot.
 
@@ -68,7 +66,7 @@ queries:                       # optional. Inline queries, merged with includes.
 
 All `queries:` blocks across `queries.yml` and any included files are merged into one map. Duplicate names are a hard error.
 
-The MCP tools sark exposes are named `<plugin>_<query>` (e.g. a query `get` in plugin `kv` becomes the tool `kv_get`). Hyphens in plugin names are normalized to underscores. The prefix prevents collisions when multiple plugins running in one sark instance both declare common names like `get` or `list`.
+Each plugin runs its own MCP router at `/<plugin>/mcp`, so tools are exposed under their bare query name (e.g. a query `get` in plugin `kv` is the tool `get` on the `kv` endpoint). Plugin names must match `[a-z0-9][a-z0-9_-]*`.
 
 Per-query shape:
 
@@ -259,13 +257,13 @@ log_level: info                   # debug | info | warning | error
 
 hot_reload: true                  # optional, default true.
 
-tokens:                           # required. Bearer auth, per-device names.
-  - { name: laptop, token: "${SARK_LAPTOP_TOKEN}" }
-  - { name: phone,  token: sk-... }
+tokens:                           # required. Bearer auth, list plugins or * for all
+  - { name: laptop, plugins: ["*"],     token: "${SARK_LAPTOP_TOKEN}" }
+  - { name: phone,  plugins: [jot, kv], token: sk-... }
 
-plugins:                          # required. Absolute, or relative to config file.
-  - /srv/sark-plugins/foo
-  - ../my-plugin
+plugins:                          # required. Map of name → directory.
+  foo: /srv/sark-plugins/foo      # Paths absolute or relative to this config file.
+  mine: ../my-plugin
 ```
 
 `${VAR}` interpolation pulls from environment variables at boot. A missing env reference raises hard.
@@ -309,9 +307,9 @@ Shortest path:
           SELECT key, value FROM kv WHERE key = :key
     ```
 
-3. Add the path to `plugins:` in `config.yml`.
+3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: ../kv`) and ensure a token is scoped to it (`plugins: ["*"]` or `plugins: [kv]`).
 4. Boot sark. The plugin's database is created and migration 1 is applied.
-5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project mysark http://localhost:8080/mcp --header "Authorization: Bearer sk-mytoken"`
+5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-mytoken"`
 6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`
 
 Usage:

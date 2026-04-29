@@ -15,7 +15,7 @@ defmodule Sark.PluginTest do
   end
 
   test "boots kv plugin and round-trips a write/read", %{tmp_dir: dir} do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
     start_plugin!(spec, dir)
 
     db_path = Path.join(dir, "kv.db")
@@ -29,7 +29,7 @@ defmodule Sark.PluginTest do
   end
 
   test "schema apply is idempotent across restarts", %{tmp_dir: dir} do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
 
     pid1 = start_plugin!(spec, dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["a", "1"])
@@ -43,7 +43,7 @@ defmodule Sark.PluginTest do
   end
 
   test "reader pool refuses writes (query_only)", %{tmp_dir: dir} do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
     start_plugin!(spec, dir)
 
     assert {:error, %Exqlite.Error{message: msg}} =
@@ -57,7 +57,7 @@ defmodule Sark.PluginTest do
   end
 
   test "WAL mode is enabled on the file", %{tmp_dir: dir} do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
     start_plugin!(spec, dir)
 
     assert {:ok, ["journal_mode"], [%{"journal_mode" => "wal"}]} =
@@ -65,7 +65,7 @@ defmodule Sark.PluginTest do
   end
 
   test "auto-decodes json_object / json_group_array columns", %{tmp_dir: dir} do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
     start_plugin!(spec, dir)
 
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["a", "1"])
@@ -84,7 +84,7 @@ defmodule Sark.PluginTest do
   end
 
   test "leaves non-JSON strings starting with [ or { untouched", %{tmp_dir: dir} do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
     start_plugin!(spec, dir)
 
     {:ok, _} =

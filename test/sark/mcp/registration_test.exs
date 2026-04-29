@@ -1,8 +1,8 @@
 defmodule Sark.MCP.RegistrationTest do
   use ExUnit.Case, async: false
 
+  alias Sark.MCP.Registration
   alias Sark.MCP.Registry, as: SarkRegistry
-  alias Sark.MCP.Router
   alias Sark.Plugin
   alias Sark.Plugin.DB
   alias Sark.Plugin.Loader
@@ -15,16 +15,15 @@ defmodule Sark.MCP.RegistrationTest do
     SarkRegistry.ensure_table()
     SarkRegistry.delete_plugin("kv")
 
-    # Clear Phantom's persistent_term so tools registered in earlier tests
-    # don't bleed in.
-    :persistent_term.put({Phantom, Router, :tools}, [])
-    :persistent_term.put({Phantom, Router, :initialized}, false)
+    router = Registration.router_module("kv")
+    :persistent_term.put({Phantom, router, :tools}, [])
+    :persistent_term.put({Phantom, router, :initialized}, false)
 
     :ok
   end
 
   defp boot_kv!(dir) do
-    spec = Loader.load!(@kv_fixture)
+    spec = Loader.load!("kv", @kv_fixture)
     start_supervised!({Plugin, spec: spec, data_dir: dir})
     spec
   end
@@ -32,18 +31,19 @@ defmodule Sark.MCP.RegistrationTest do
   test "registers per-query tools + catalog + sql_query in Phantom cache", %{tmp_dir: dir} do
     boot_kv!(dir)
 
-    tools = Phantom.Cache.list(nil, Router, :tools)
+    router = Registration.router_module("kv")
+    tools = Phantom.Cache.list(nil, router, :tools)
     names = Enum.map(tools, & &1.name) |> Enum.sort()
 
-    assert "kv_get" in names
-    assert "kv_find" in names
-    assert "kv_list" in names
-    assert "kv_list_table" in names
-    assert "kv_total" in names
-    assert "kv_put" in names
-    assert "kv_catalog" in names
-    assert "kv_sql_query" in names
-    assert "ping" in names
+    assert "get" in names
+    assert "find" in names
+    assert "list" in names
+    assert "list_table" in names
+    assert "total" in names
+    assert "put" in names
+    assert "catalog" in names
+    assert "sql_query" in names
+    refute "kv_get" in names
   end
 
   test "stores parsed queries in Sark.MCP.Registry", %{tmp_dir: dir} do
@@ -414,9 +414,11 @@ defmodule Sark.MCP.RegistrationTest do
   test "patch_text tool registered in Phantom cache", %{tmp_dir: dir} do
     boot_kv!(dir)
 
-    tools = Phantom.Cache.list(nil, Router, :tools)
+    router = Registration.router_module("kv")
+    tools = Phantom.Cache.list(nil, router, :tools)
     names = Enum.map(tools, & &1.name)
 
-    assert "kv_patch_text" in names
+    assert "patch_text" in names
+    refute "kv_patch_text" in names
   end
 end

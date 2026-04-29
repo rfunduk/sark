@@ -1,29 +1,33 @@
 defmodule Sark.MCP.Registration do
   @moduledoc """
-  Builds + registers per-plugin MCP tools.
+  Builds + registers per-plugin MCP routers and tools.
 
   For each plugin spec:
-    * stores spec + queries in `Sark.MCP.Registry`
-    * codegens a `Sark.MCP.Generated.<Plugin>` module with one 2-arity
-      function per tool (delegates to the appropriate handler)
-    * builds tool specs and calls `Phantom.Cache.add_tool/2` against
-      `Sark.MCP.Router`
 
-  Idempotent — calling for the same plugin twice clears prior entries
-  and re-registers.
+    * stores spec + queries in `Sark.MCP.Registry`
+    * codegens a handler module `Sark.MCP.Generated.<Plugin>` with one
+      2-arity function per tool (delegates to the appropriate handler)
+    * codegens a Phantom router module `Sark.MCP.PluginRouter.<Plugin>`
+      (just `use Phantom.Router` boilerplate — no compile-time tools)
+    * builds tool specs (without a `<plugin>_` prefix) and calls
+      `Phantom.Cache.add_tool/2` against the per-plugin router
+
+  Idempotent — calling for the same plugin twice purges the previous
+  modules and re-registers.
+
+  The endpoint resolves an incoming `/<plugin>/mcp` request to its
+  router via `router_module/1`.
   """
 
   require Logger
 
   alias Sark.MCP.Registry
-  alias Sark.MCP.Router
   alias Sark.Plugin.Query
   alias Sark.Plugin.Spec
 
   @spec register_plugin!(Spec.t()) :: :ok
   def register_plugin!(%Spec{} = spec) do
     Registry.ensure_table()
-    ensure_phantom_initialized()
     Registry.delete_plugin(spec.name)
     Registry.put_spec(spec)
 
@@ -31,26 +35,40 @@ defmodule Sark.MCP.Registration do
       Registry.put(spec.name, q.name, q)
     end)
 
-    module = generate_module!(spec)
-    Phantom.Cache.add_tool(Router, build_tool_specs(spec, module))
+    handler = generate_handler!(spec)
+    router = generate_router!(spec)
+
+    Phantom.Cache.register(router)
+    reset_router_tools(router)
+    Phantom.Cache.add_tool(router, build_tool_specs(spec, handler))
 
     Logger.info(
-      "mcp registration — plugin=#{spec.name} queries=#{length(spec.queries)} +catalog +sql_query"
+      "mcp registration — plugin=#{spec.name} queries=#{length(spec.queries)} +catalog +sql_query +patch_text"
     )
 
     :ok
   end
 
-  defp ensure_phantom_initialized do
-    Phantom.Cache.register(Router)
-  end
-
-  @doc false
+  @doc """
+  Module name of the handler module (functions called by Phantom).
+  """
+  @spec handler_module(String.t()) :: module
   def handler_module(plugin) when is_binary(plugin) do
-    Module.concat([Sark.MCP.Generated, Macro.camelize(plugin)])
+    Module.concat([Sark.MCP.Generated, camelize(plugin)])
   end
 
-  defp generate_module!(%Spec{name: plugin, queries: queries}) do
+  @doc """
+  Module name of the per-plugin Phantom router. Endpoint resolves
+  incoming `/<plugin>/mcp` requests to this module.
+  """
+  @spec router_module(String.t()) :: module
+  def router_module(plugin) when is_binary(plugin) do
+    Module.concat([Sark.MCP.PluginRouter, camelize(plugin)])
+  end
+
+  defp camelize(plugin), do: Macro.camelize(String.replace(plugin, "-", "_"))
+
+  defp generate_handler!(%Spec{name: plugin, queries: queries}) do
     module = handler_module(plugin)
 
     query_funcs =
@@ -101,6 +119,28 @@ defmodule Sark.MCP.Registration do
     module
   end
 
+  defp generate_router!(%Spec{name: plugin}) do
+    module = router_module(plugin)
+
+    body =
+      quote do
+        use Phantom.Router,
+          name: unquote(plugin),
+          vsn: "0.1.0",
+          instructions: "Sark plugin `#{unquote(plugin)}`."
+
+        @impl true
+        def connect(session, _info) do
+          # Auth + scope already validated upstream by `Sark.AuthPlug`.
+          {:ok, session}
+        end
+      end
+
+    purge_if_loaded(module)
+    Module.create(module, body, Macro.Env.location(__ENV__))
+    module
+  end
+
   defp purge_if_loaded(module) do
     if Code.ensure_loaded?(module) do
       :code.purge(module)
@@ -108,12 +148,20 @@ defmodule Sark.MCP.Registration do
     end
   end
 
-  defp build_tool_specs(%Spec{name: plugin, queries: queries, allow_sql: allow_sql}, module) do
+  # `Phantom.Cache.register/1` only seeds the per-router persistent_term
+  # if it's uninitialized. On hot reload we must clear the existing tool
+  # list explicitly, otherwise stale tools from a previous registration
+  # bleed through.
+  defp reset_router_tools(router) do
+    :persistent_term.put({Phantom, router, :tools}, [])
+  end
+
+  defp build_tool_specs(%Spec{name: plugin, queries: queries, allow_sql: allow_sql}, handler) do
     query_specs =
       Enum.map(queries, fn q ->
         %{
-          name: tool_name(plugin, Atom.to_string(q.name)),
-          handler: module,
+          name: Atom.to_string(q.name),
+          handler: handler,
           function: q.name,
           description: q.description,
           input_schema: Query.to_json_schema(q),
@@ -125,8 +173,8 @@ defmodule Sark.MCP.Registration do
       if allow_sql do
         [
           %{
-            name: tool_name(plugin, "catalog"),
-            handler: module,
+            name: "catalog",
+            handler: handler,
             function: :catalog,
             description:
               "Live schema (from sqlite_master) and canned queries for plugin `#{plugin}`.",
@@ -134,8 +182,8 @@ defmodule Sark.MCP.Registration do
             meta: %{file: __ENV__.file, line: __ENV__.line}
           },
           %{
-            name: tool_name(plugin, "sql_query"),
-            handler: module,
+            name: "sql_query",
+            handler: handler,
             function: :sql_query,
             description:
               "Run an arbitrary SELECT/WITH/PRAGMA query against plugin `#{plugin}`'s read pool.",
@@ -152,8 +200,8 @@ defmodule Sark.MCP.Registration do
       end
 
     patch_text_spec = %{
-      name: tool_name(plugin, "patch_text"),
-      handler: module,
+      name: "patch_text",
+      handler: handler,
       function: :patch_text,
       description:
         "Substring text patch on plugin `#{plugin}`. " <>
@@ -175,13 +223,4 @@ defmodule Sark.MCP.Registration do
 
     query_specs ++ sql_specs ++ [patch_text_spec]
   end
-
-  # Plugin-name to identifier-safe form. Tool names exposed to the MCP
-  # client are `<plugin>_<name>` so multiple plugins running in one sark
-  # instance can't collide on common names like `get` or `list`.
-  defp tool_name(plugin, name) do
-    "#{normalize_plugin(plugin)}_#{name}"
-  end
-
-  defp normalize_plugin(plugin), do: String.replace(plugin, "-", "_")
 end

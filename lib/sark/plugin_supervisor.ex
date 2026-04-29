@@ -15,7 +15,11 @@ defmodule Sark.PluginSupervisor do
   alias Sark.Plugin
   alias Sark.Plugin.Loader
 
-  @type opts :: [plugin_paths: [String.t()], data_dir: String.t(), hot_reload: boolean()]
+  @type opts :: [
+          plugins: %{String.t() => String.t()},
+          data_dir: String.t(),
+          hot_reload: boolean()
+        ]
 
   @spec start_link(opts) :: Supervisor.on_start()
   def start_link(opts) do
@@ -24,13 +28,13 @@ defmodule Sark.PluginSupervisor do
 
   @impl true
   def init(opts) do
-    plugin_paths = Keyword.fetch!(opts, :plugin_paths)
+    plugins = Keyword.fetch!(opts, :plugins)
     data_dir = Keyword.fetch!(opts, :data_dir)
     hot_reload = Keyword.get(opts, :hot_reload, false)
 
     children =
-      Enum.map(plugin_paths, fn path ->
-        spec = Loader.load!(path)
+      Enum.map(plugins, fn {name, path} ->
+        spec = Loader.load!(name, path)
 
         Supervisor.child_spec(
           {Plugin, spec: spec, data_dir: data_dir, hot_reload: hot_reload},

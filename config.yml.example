@@ -10,12 +10,19 @@ data_dir: ./dev_data
 log_level: info
 hot_reload: true
 
-# Bearer tokens. Each entry: { name: <operator label>, token: <opaque secret> }.
-# Logs reference `name`, never `token`. Generate with: `openssl rand -hex 32`
+# Bearer tokens. Each entry:
+#   { name: <operator label>, plugins: [<plugin names>] | ["*"], token: <secret> }
+#
+# `plugins` scopes the token to specific plugins by name. Use `["*"]` for
+# all plugins. Logs reference `name`, never `token`. Generate with:
+#   openssl rand -hex 32
 # Use ${VAR} to pull from env:
-#   - { name: laptop, token: "${SARK_LAPTOP_TOKEN}" }
+#   - { name: laptop, plugins: ["*"], token: "${SARK_LAPTOP_TOKEN}" }
 tokens:
-  - { name: dev, token: sk-CHANGEME }
+  - { name: dev, plugins: ["*"], token: sk-CHANGEME }
 
-# Absolute paths or paths relative to this config file.
-plugins: []
+# Plugin map: name → directory. The name is the routing key everywhere
+# (URL path `/<name>/mcp`, DB filename, token scopes), so it stays
+# stable even if you rename the on-disk directory. Paths are absolute
+# or relative to this config file.
+plugins: {}

@@ -9,9 +9,20 @@ defmodule Sark.Config do
       log_level: info                # optional
       anthropic_api_key_env: ANTHROPIC_API_KEY  # optional
       tokens:
-        - { name: laptop, token: sk-... }
+        - { name: ryan, plugins: ["*"], token: sk-ryan }
+        - { name: wife, plugins: [jot], token: sk-wife }
       plugins:
-        - /srv/sark-plugins/jean
+        jean: ~/code/sark-jean
+        jot:  ~/code/sark-jot
+        kv:   test/fixtures/plugins/kv
+
+  `tokens[*].plugins` is either `["*"]` (wildcard — all plugins) or a list
+  of plugin names. Reachability check happens in `Sark.AuthPlug` against
+  the URL path `/<plugin>/mcp`.
+
+  `plugins` is a map: name (used everywhere — tool routing, DB filename,
+  pool registry) → directory path. Decoupling the name from the on-disk
+  basename keeps tokens stable across plugin dir renames.
   """
 
   defstruct [
@@ -20,24 +31,27 @@ defmodule Sark.Config do
     :log_level,
     :anthropic_api_key_env,
     :tokens,
-    :plugin_paths,
+    :plugins,
     :hot_reload,
     :source_path
   ]
 
   @type listen :: {:inet.ip_address(), :inet.port_number()}
+  @type allowed :: :all | MapSet.t(String.t())
+  @type token_entry :: %{name: String.t(), allowed: allowed()}
   @type t :: %__MODULE__{
           listen: listen(),
           data_dir: String.t(),
           log_level: atom(),
           anthropic_api_key_env: String.t() | nil,
-          tokens: %{String.t() => String.t()},
-          plugin_paths: [String.t()],
+          tokens: %{String.t() => token_entry()},
+          plugins: %{String.t() => String.t()},
           hot_reload: boolean(),
           source_path: String.t()
         }
 
   @env_var_re ~r/\$\{([A-Z_][A-Z0-9_]*)\}/
+  @plugin_name_re ~r/\A[a-z0-9][a-z0-9_-]*\z/
 
   @spec load!(Path.t()) :: t()
   def load!(path) do
@@ -56,8 +70,8 @@ defmodule Sark.Config do
     data_dir = fetch!(raw, "data_dir")
     File.mkdir_p!(data_dir)
 
-    tokens = parse_tokens(fetch!(raw, "tokens"))
     plugins = parse_plugins(fetch!(raw, "plugins"), Path.dirname(abs))
+    tokens = parse_tokens(fetch!(raw, "tokens"), plugins)
 
     %__MODULE__{
       listen: listen,
@@ -65,7 +79,7 @@ defmodule Sark.Config do
       log_level: parse_log_level(Map.get(raw, "log_level", "info")),
       anthropic_api_key_env: Map.get(raw, "anthropic_api_key_env"),
       tokens: tokens,
-      plugin_paths: plugins,
+      plugins: plugins,
       hot_reload: parse_hot_reload(Map.get(raw, "hot_reload", true)),
       source_path: abs
     }
@@ -102,32 +116,62 @@ defmodule Sark.Config do
 
   defp parse_listen(other), do: raise("config: listen must be string, got #{inspect(other)}")
 
-  defp parse_tokens(list) when is_list(list) do
+  defp parse_tokens(list, plugins) when is_list(list) and is_map(plugins) do
     Enum.reduce(list, %{}, fn entry, acc ->
       name = fetch!(entry, "name")
       token = fetch!(entry, "token")
+      allowed = parse_allowed(name, fetch!(entry, "plugins"), plugins)
 
       if Map.has_key?(acc, token) do
-        raise "config: duplicate token (entries `#{acc[token]}` and `#{name}` share value)"
+        raise "config: duplicate token (entries `#{acc[token].name}` and `#{name}` share value)"
       end
 
-      Map.put(acc, token, name)
+      Map.put(acc, token, %{name: name, allowed: allowed})
     end)
   end
 
-  defp parse_tokens(other), do: raise("config: tokens must be list, got #{inspect(other)}")
+  defp parse_tokens(other, _), do: raise("config: tokens must be list, got #{inspect(other)}")
 
-  defp parse_plugins(list, config_dir) when is_list(list) do
-    Enum.map(list, fn
-      p when is_binary(p) ->
-        if Path.type(p) == :absolute, do: p, else: Path.expand(p, config_dir)
+  defp parse_allowed(_name, ["*"], _plugins), do: :all
 
-      other ->
-        raise "config: plugin entry must be string path, got #{inspect(other)}"
+  defp parse_allowed(token_name, list, plugins) when is_list(list) do
+    Enum.each(list, fn p ->
+      unless is_binary(p) do
+        raise "config: token `#{token_name}` plugins must be strings, got #{inspect(p)}"
+      end
+
+      unless Map.has_key?(plugins, p) do
+        raise "config: token `#{token_name}` references unknown plugin `#{p}`"
+      end
+    end)
+
+    MapSet.new(list)
+  end
+
+  defp parse_allowed(token_name, other, _) do
+    raise "config: token `#{token_name}` plugins must be `[\"*\"]` or list of plugin names, got #{inspect(other)}"
+  end
+
+  defp parse_plugins(map, config_dir) when is_map(map) do
+    Map.new(map, fn {name, path} ->
+      unless is_binary(name) and Regex.match?(@plugin_name_re, name) do
+        raise "config: plugin name `#{inspect(name)}` invalid — must match #{Regex.source(@plugin_name_re)}"
+      end
+
+      unless is_binary(path) do
+        raise "config: plugin `#{name}` path must be string, got #{inspect(path)}"
+      end
+
+      expanded =
+        path
+        |> Path.expand(config_dir)
+
+      {name, expanded}
     end)
   end
 
-  defp parse_plugins(other, _), do: raise("config: plugins must be list, got #{inspect(other)}")
+  defp parse_plugins(other, _),
+    do: raise("config: plugins must be a map of name → path, got #{inspect(other)}")
 
   defp parse_hot_reload(v) when is_boolean(v), do: v
 

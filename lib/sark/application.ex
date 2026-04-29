@@ -24,7 +24,7 @@ defmodule Sark.Application do
       {Sark.AuthRegistry, config.tokens},
       {Sark.PluginSupervisor,
        [
-         plugin_paths: config.plugin_paths,
+         plugins: config.plugins,
          data_dir: config.data_dir,
          hot_reload: config.hot_reload
        ]},
@@ -34,7 +34,7 @@ defmodule Sark.Application do
     Logger.info(
       "sark starting — listen=#{:inet.ntoa(ip)}:#{port} " <>
         "tokens=#{map_size(config.tokens)} " <>
-        "plugins=#{length(config.plugin_paths)} " <>
+        "plugins=#{map_size(config.plugins)} " <>
         "data_dir=#{config.data_dir}"
     )
 
