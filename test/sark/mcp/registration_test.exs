@@ -54,6 +54,7 @@ defmodule Sark.MCP.RegistrationTest do
 
     assert names == [
              :add_note,
+             :bulk_add_notes,
              :delete,
              :find,
              :get,
@@ -179,6 +180,7 @@ defmodule Sark.MCP.RegistrationTest do
     assert query_names ==
              [
                "add_note",
+               "bulk_add_notes",
                "delete",
                "find",
                "get",
@@ -206,6 +208,27 @@ defmodule Sark.MCP.RegistrationTest do
       mod.sql_query(%{"sql" => "DELETE FROM kv"}, :session)
 
     assert bad_text =~ "only SELECT"
+  end
+
+  test "array-of-objects param fans out via json_each", %{tmp_dir: dir} do
+    spec = boot_kv!(dir)
+
+    mod = Sark.MCP.Registration.handler_module("kv")
+
+    {:reply, %{content: [%{type: :text, text: text}]}, _} =
+      mod.bulk_add_notes(
+        %{"notes" => [%{"body" => "one"}, %{"body" => "two"}, %{"body" => "three"}]},
+        :session
+      )
+
+    assert text =~ "3"
+
+    {:ok, _, [%{"n" => 3}]} =
+      DB.read(
+        spec.name,
+        "SELECT COUNT(*) AS n FROM notes WHERE body IN ('one','two','three')",
+        []
+      )
   end
 
   test "multi-statement write runs all statements in order", %{tmp_dir: dir} do

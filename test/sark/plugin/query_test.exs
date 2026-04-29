@@ -178,6 +178,143 @@ defmodule Sark.Plugin.QueryTest do
     end
   end
 
+  describe "array + object params" do
+    test "array of objects: parses, validates, JSON-encodes for bind" do
+      q =
+        Query.parse!("log_sets", %{
+          "description" => "Bulk insert sets.",
+          "returns" => "count",
+          "write" => true,
+          "sql" => """
+          INSERT INTO sets (session_id, exercise_id, reps, feeling)
+          SELECT :session_id,
+                 json_extract(value, '$.exercise_id'),
+                 json_extract(value, '$.reps'),
+                 json_extract(value, '$.feeling')
+          FROM json_each(:sets)
+          """,
+          "params" => %{
+            "session_id" => %{"type" => "integer", "required" => true},
+            "sets" => %{
+              "type" => "array",
+              "required" => true,
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "exercise_id" => %{"type" => "integer", "required" => true},
+                  "reps" => %{"type" => "integer", "required" => true},
+                  "feeling" => %{
+                    "type" => "text",
+                    "required" => true,
+                    "enum" => ["easy", "right", "hard"]
+                  }
+                }
+              }
+            }
+          }
+        })
+
+      assert {:ok, [[1, json]]} =
+               Query.validate_and_bind(q, %{
+                 "session_id" => 1,
+                 "sets" => [
+                   %{"exercise_id" => 5, "reps" => 8, "feeling" => "right"},
+                   %{"exercise_id" => 5, "reps" => 6, "feeling" => "hard"}
+                 ]
+               })
+
+      decoded = Jason.decode!(json)
+
+      assert decoded == [
+               %{"exercise_id" => 5, "reps" => 8, "feeling" => "right"},
+               %{"exercise_id" => 5, "reps" => 6, "feeling" => "hard"}
+             ]
+    end
+
+    test "validation error path includes index + field" do
+      q =
+        Query.parse!("x", %{
+          "description" => "x",
+          "returns" => "none",
+          "write" => true,
+          "sql" => "SELECT 1",
+          "params" => %{
+            "items" => %{
+              "type" => "array",
+              "required" => true,
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "n" => %{"type" => "integer", "required" => true}
+                }
+              }
+            }
+          }
+        })
+
+      assert {:error, {:validation, [%{param: :items, reason: msg}]}} =
+               Query.validate_and_bind(q, %{
+                 "items" => [%{"n" => 1}, %{"n" => "bad"}]
+               })
+
+      assert msg =~ "[1].n must be an integer"
+    end
+
+    test "object with missing required property" do
+      q =
+        Query.parse!("x", %{
+          "description" => "x",
+          "returns" => "none",
+          "write" => true,
+          "sql" => "SELECT 1",
+          "params" => %{
+            "filter" => %{
+              "type" => "object",
+              "required" => true,
+              "properties" => %{
+                "kind" => %{"type" => "text", "required" => true},
+                "limit" => %{"type" => "integer", "required" => false, "default" => 10}
+              }
+            }
+          }
+        })
+
+      assert {:error, {:validation, [%{param: :filter, reason: msg}]}} =
+               Query.validate_and_bind(q, %{"filter" => %{"limit" => 5}})
+
+      assert msg =~ ".kind is required"
+    end
+
+    test "JSON Schema reflects nested array + object structure" do
+      q =
+        Query.parse!("log_sets", %{
+          "description" => "x",
+          "returns" => "none",
+          "write" => true,
+          "sql" => "SELECT 1",
+          "params" => %{
+            "sets" => %{
+              "type" => "array",
+              "required" => true,
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "n" => %{"type" => "integer", "required" => true}
+                }
+              }
+            }
+          }
+        })
+
+      schema = Query.to_json_schema(q)
+      sets = schema.properties["sets"]
+      assert sets.type == "array"
+      assert sets.items.type == "object"
+      assert sets.items.properties["n"] == %{type: "integer"}
+      assert sets.items.required == ["n"]
+    end
+  end
+
   describe "to_json_schema/1" do
     test "produces a valid object schema with required + types" do
       q =

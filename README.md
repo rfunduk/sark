@@ -111,13 +111,50 @@ queries:
 
 **`params` spec:**
 
-- `type` — `integer | real | text | blob | null`
+- `type` — `integer | real | text | blob | null | array | object`
 - `required` — default `true`
-- `default` — applied when omitted and `required: false`
+- `default` — applied when omitted and `required: false` (scalars only)
 - `enum` — text only, whitelist of accepted values
 - `description` — feeds the MCP tool's input schema
+- `items` — required when `type: array`. A nested value spec describing each element.
+- `properties` — required when `type: object`. A map of named param specs (recurses).
 
 Bind variables in SQL use `:name` and reference param names directly.
+
+### Array + object params
+
+`array` and `object` params let an agent pass structured data in a single tool call, atomically. Sark validates the shape recursively, then JSON-encodes the value before binding it as TEXT — your SQL fans it out with `json_each` / `json_extract` (SQLite's built-in json1).
+
+```yaml
+log_sets:
+  description: Insert many sets in one call.
+  write: true
+  returns: count
+  params:
+    session_id: { type: integer, required: true }
+    sets:
+      type: array
+      required: true
+      items:
+        type: object
+        properties:
+          exercise_id: { type: integer, required: true }
+          set_number:  { type: integer, required: true }
+          reps:        { type: integer, required: true }
+          weight_lbs:  { type: real, required: false }
+          feeling:     { type: text, required: true, enum: [easy, right, hard] }
+  sql: |
+    INSERT INTO sets (session_id, exercise_id, set_number, reps, weight_lbs, feeling)
+    SELECT :session_id,
+           json_extract(value, '$.exercise_id'),
+           json_extract(value, '$.set_number'),
+           json_extract(value, '$.reps'),
+           json_extract(value, '$.weight_lbs'),
+           json_extract(value, '$.feeling')
+    FROM json_each(:sets)
+```
+
+The agent calls one tool with the whole batch; sark validates each element against `items:` before any SQL runs and returns path-qualified errors (`sets[2].reps must be an integer`). The SQLite layer sees one prepared INSERT...SELECT inside one transaction.
 
 **`returns` spec:**
 

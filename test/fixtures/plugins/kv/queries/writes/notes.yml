@@ -17,3 +17,20 @@ queries:
     sql:
       - DELETE FROM notes WHERE body = :body
       - INSERT INTO notes (body) VALUES (:body) RETURNING id
+
+  bulk_add_notes:
+    description: Insert N notes in one call. `notes` is an array of objects.
+    returns: count
+    write: true
+    params:
+      notes:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            body: { type: text, required: true }
+    sql: |
+      INSERT INTO notes (body)
+      SELECT json_extract(value, '$.body')
+      FROM json_each(:notes)
