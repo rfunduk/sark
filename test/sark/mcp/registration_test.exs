@@ -421,4 +421,27 @@ defmodule Sark.MCP.RegistrationTest do
     assert "patch_text" in names
     refute "kv_patch_text" in names
   end
+
+  test "raises when a query name collides with a reserved built-in" do
+    spec = %Sark.Plugin.Spec{
+      name: "kv",
+      dir: @kv_fixture,
+      migrations: [],
+      queries: [
+        %Sark.Plugin.Query{
+          name: :patch_text,
+          description: "x",
+          returns: :results,
+          write: false,
+          params: [],
+          format: :list,
+          statements: []
+        }
+      ]
+    }
+
+    assert_raise RuntimeError, ~r/reserved/, fn ->
+      Registration.register_plugin!(spec)
+    end
+  end
 end

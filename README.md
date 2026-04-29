@@ -109,7 +109,7 @@ queries:
 
 **`params` spec:**
 
-- `type` — `integer | real | text | blob | null | array | object`
+- `type` — `integer | real | text | blob | boolean | array | object`
 - `required` — default `true`
 - `default` — applied when omitted and `required: false` (scalars only)
 - `enum` — text only, whitelist of accepted values
@@ -118,6 +118,10 @@ queries:
 - `properties` — required when `type: object`. A map of named param specs (recurses).
 
 Bind variables in SQL use `:name` and reference param names directly.
+
+**Booleans** `true` / `false` bound to SQLite `1` / `0` (SQLite has no native bool).
+
+**Omitted optional params bind as SQL `NULL`.** Useful for `(:project_id IS NULL OR project_id = :project_id)` style filters that toggle on parameter presence without rewriting the query.
 
 ### Array + object params
 
@@ -158,7 +162,7 @@ The agent calls one tool with the whole batch; sark validates each element again
 
 - `results` — list of row maps. The default for row-shaped reads or `RETURNING` writes.
 - `scalar` — single column of single row (e.g. `SELECT COUNT(*)`).
-- `count` — affected row count from a write.
+- `count` — affected row count from a write. **In SQLite, `count = 0` unambiguously means "WHERE matched no rows" — not "matched but values were already correct".** SQLite counts every row the UPDATE touched, regardless of whether the SET changed any value. So callers can treat `0` as "not found" without ambiguity.
 - `none`
 
 **`format` spec:**
@@ -187,6 +191,20 @@ queries:
 ```
 
 JSON-string columns (e.g. from `json_object` / `json_group_array` in SQL) are auto-decoded into nested data — templates can iterate them with `{{#nested_field}}...{{/nested_field}}`.
+
+For an empty-state fallback, use mustache's inverted section `{{^results}}...{{/results}}` — rendered when the list is empty:
+
+```yaml
+format:
+  kind: template
+  template: |
+    {{#results}}
+    - {{title}}
+    {{/results}}
+    {{^results}}
+    _no entries yet_
+    {{/results}}
+```
 
 **Errors** are returned via MCP `Tool.error` with one of three prefixes:
 
@@ -238,6 +256,23 @@ patch_text(table='notes', id=1, col='body',
 
 `patch_text` is unconditional — it operates on identifier-validated `table` / `col` arguments, never arbitrary SQL. The plugin's skill should explain which fields are intended for it (e.g. "`patch_text` the `notes.body` column when revising notes").
 
+**Non-integer primary keys.** `id` accepts any scalar that SQLite can match — integers or strings. If your table is keyed by a slug, declare it `TEXT PRIMARY KEY` and `patch_text` works directly without a slug→id round-trip:
+
+```sql
+CREATE TABLE jots (
+  slug TEXT PRIMARY KEY,
+  body TEXT NOT NULL
+);
+```
+
+```
+patch_text(table='jots', id='my-jot', col='body', old='foo', new='bar')
+```
+
+The `id` parameter just goes into the `WHERE id = ?` clause as-is.
+
+> Note: built-in tool names — `patch_text`, `catalog`, `sql_query` — are reserved. Naming a query in `queries.yml` after one of them is a hard error at registration time.
+
 ## Hot reload
 
 Each plugin runs a file watcher with a 200ms debounce. When `queries.yml`, any included file, or anything else under the plugin directory ending in `.yml` / `.yaml` changes, sark re-runs the loader and re-registers the MCP tools.
@@ -246,7 +281,7 @@ Migrations and database files (`*.db`, `*.db-shm`, `*.db-wal`) are ignored. Relo
 
 Disable per-deployment with `hot_reload: false` in config.
 
-> Note: tool changes take effect server-side immediately, but most MCP clients (Claude Code included) cache the tool list at session start and need a reconnect to see new tools. Existing tools work without reconnect if they have the same params.
+> Note: tool changes take effect server-side immediately, but most MCP clients (Claude Code included) cache the tool list at session start and need a reconnect to see new tools. **Existing tools work without reconnect as long as their `params:` block is unchanged** — SQL, description, returns, format can all change freely. Adding/removing/renaming a param, or changing its type or `required` flag, is a signature change and needs a reconnect for the client to pick up the new schema.
 
 ## Config
 
@@ -342,6 +377,8 @@ END;
 ```
 
 Any `UPDATE` to `notes` fires the trigger and lands a snapshot in `notes_history`. Reads against `notes_history` work like any other table — expose them via canned queries.
+
+> Triggers writing to a *different* table (the case above) are safe by default. Triggers that touch the *same* table they fire on (e.g. `AFTER UPDATE ON notes` that updates `notes.updated_at`) need SQLite's `recursive_triggers` PRAGMA disabled (it is, by default) or careful guards to avoid recursion. Easier: bump `updated_at` directly in your `UPDATE` statement instead of via trigger.
 
 You could do bounded retention in the trigger, or add a prune query the skill can run:
 

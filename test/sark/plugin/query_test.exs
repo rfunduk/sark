@@ -335,4 +335,49 @@ defmodule Sark.Plugin.QueryTest do
       assert schema.properties["n"] == %{type: "integer"}
     end
   end
+
+  describe "boolean param type" do
+    setup do
+      q =
+        Query.parse!("flag", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT * FROM t WHERE active = :active",
+          "params" => %{"active" => %{"type" => "boolean"}}
+        })
+
+      %{q: q}
+    end
+
+    test "binds true → 1, false → 0", %{q: q} do
+      assert {:ok, [[1]]} = Query.validate_and_bind(q, %{"active" => true})
+      assert {:ok, [[0]]} = Query.validate_and_bind(q, %{"active" => false})
+    end
+
+    test "rejects 1 / 0 / strings", %{q: q} do
+      for bad <- [1, 0, "true", "false", "yes"] do
+        assert {:error, {:validation, [%{param: :active, reason: reason}]}} =
+                 Query.validate_and_bind(q, %{"active" => bad})
+
+        assert reason =~ "must be true or false"
+      end
+    end
+
+    test "JSON Schema emits boolean", %{q: q} do
+      assert Query.to_json_schema(q).properties["active"] == %{type: "boolean"}
+    end
+  end
+
+  describe "null type removed" do
+    test "rejects type: null in params" do
+      assert_raise ArgumentError, ~r/type must be one of/, fn ->
+        Query.parse!("bad", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1",
+          "params" => %{"x" => %{"type" => "null"}}
+        })
+      end
+    end
+  end
 end

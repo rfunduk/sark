@@ -30,7 +30,7 @@ defmodule Sark.Plugin.Query do
     :statements
   ]
 
-  @type param_type :: :integer | :real | :text | :blob | :null
+  @type param_type :: :integer | :real | :text | :blob | :boolean
   @type returns :: :results | :scalar | :count | :none
   @type format :: :json | :table | :list | {:template, String.t()}
 
@@ -60,7 +60,7 @@ defmodule Sark.Plugin.Query do
         }
 
   @valid_returns ~w(results scalar count none)a
-  @valid_types ~w(integer real text blob null array object)a
+  @valid_types ~w(integer real text blob boolean array object)a
 
   @doc """
   Parse a single entry from `queries.yml` into a `%Query{}`.
@@ -366,8 +366,11 @@ defmodule Sark.Plugin.Query do
   defp coerce_one(%{type: :blob}, v) when is_binary(v), do: {:ok, v}
   defp coerce_one(%{type: :blob}, _), do: {:error, "must be a binary"}
 
-  defp coerce_one(%{type: :null}, nil), do: {:ok, nil}
-  defp coerce_one(%{type: :null}, _), do: {:error, "must be null"}
+  # SQLite has no native bool — bind 1 / 0. Accept JSON true/false only;
+  # don't quietly coerce 1/0/"true"/"yes" to keep agent contracts crisp.
+  defp coerce_one(%{type: :boolean}, true), do: {:ok, 1}
+  defp coerce_one(%{type: :boolean}, false), do: {:ok, 0}
+  defp coerce_one(%{type: :boolean}, _), do: {:error, "must be true or false"}
 
   # Composite types validate + normalize to native Elixir terms, then
   # encode to JSON TEXT for the SQLite bind. Plugin SQL uses
@@ -394,7 +397,7 @@ defmodule Sark.Plugin.Query do
   # Used recursively to build the structure that the outer coerce_one
   # then JSON-encodes once.
   defp normalize_value(%{type: t}, v)
-       when t in [:integer, :real, :text, :blob, :null] do
+       when t in [:integer, :real, :text, :blob, :boolean] do
     coerce_scalar(t, v)
   end
 
@@ -438,8 +441,9 @@ defmodule Sark.Plugin.Query do
   defp coerce_scalar(:blob, v) when is_binary(v), do: {:ok, v}
   defp coerce_scalar(:blob, _), do: {:error, "must be a binary"}
 
-  defp coerce_scalar(:null, nil), do: {:ok, nil}
-  defp coerce_scalar(:null, _), do: {:error, "must be null"}
+  defp coerce_scalar(:boolean, true), do: {:ok, 1}
+  defp coerce_scalar(:boolean, false), do: {:ok, 0}
+  defp coerce_scalar(:boolean, _), do: {:error, "must be true or false"}
 
   defp normalize_array([], _items_spec, _idx, acc), do: {:ok, Enum.reverse(acc)}
 
@@ -564,7 +568,7 @@ defmodule Sark.Plugin.Query do
   defp json_type(:real), do: "number"
   defp json_type(:text), do: "string"
   defp json_type(:blob), do: "string"
-  defp json_type(:null), do: "null"
+  defp json_type(:boolean), do: "boolean"
 
   defp fetch_string!(map, key, where) do
     case Map.get(map, key) do

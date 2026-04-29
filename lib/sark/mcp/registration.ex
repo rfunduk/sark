@@ -25,8 +25,11 @@ defmodule Sark.MCP.Registration do
   alias Sark.Plugin.Query
   alias Sark.Plugin.Spec
 
+  @reserved_names ~w(catalog sql_query patch_text)a
+
   @spec register_plugin!(Spec.t()) :: :ok
   def register_plugin!(%Spec{} = spec) do
+    check_reserved_names!(spec)
     Registry.ensure_table()
     Registry.delete_plugin(spec.name)
     Registry.put_spec(spec)
@@ -67,6 +70,18 @@ defmodule Sark.MCP.Registration do
   end
 
   defp camelize(plugin), do: Macro.camelize(String.replace(plugin, "-", "_"))
+
+  # Built-in tools (`patch_text`, `catalog`, `sql_query`) live alongside
+  # plugin-declared queries in the same per-plugin namespace. Collisions
+  # would silently shadow one or the other depending on registration
+  # order; raise so the plugin author catches it.
+  defp check_reserved_names!(%Spec{name: plugin, queries: queries}) do
+    Enum.each(queries, fn q ->
+      if q.name in @reserved_names do
+        raise "plugin #{plugin}: query name `#{q.name}` is reserved (built-in tools: #{Enum.map_join(@reserved_names, ", ", &Atom.to_string/1)})"
+      end
+    end)
+  end
 
   defp generate_handler!(%Spec{name: plugin, queries: queries}) do
     module = handler_module(plugin)
