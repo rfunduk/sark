@@ -18,6 +18,7 @@ defmodule Sark.Plugin.QueryTest do
       assert q.name == :recent
       assert q.returns == :results
       assert q.write == false
+      assert q.internal == false
       assert [%{compiled_sql: "SELECT * FROM t LIMIT ?", param_order: [:n]}] = q.statements
       # default format for reads is :list
       assert q.format == :list
@@ -26,6 +27,29 @@ defmodule Sark.Plugin.QueryTest do
       assert p.type == :integer
       assert p.required == false
       assert p.default == 10
+    end
+
+    test "parses internal: true" do
+      q =
+        Query.parse!("hidden", %{
+          "description" => "Hidden.",
+          "returns" => "results",
+          "internal" => true,
+          "sql" => "SELECT 1"
+        })
+
+      assert q.internal == true
+    end
+
+    test "raises on non-boolean internal" do
+      assert_raise ArgumentError, ~r/internal must be boolean/, fn ->
+        Query.parse!("hidden", %{
+          "description" => "x",
+          "returns" => "results",
+          "internal" => "yes",
+          "sql" => "SELECT 1"
+        })
+      end
     end
 
     test "parses write: true and applies json default format" do

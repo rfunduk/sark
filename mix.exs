@@ -28,7 +28,8 @@ defmodule Sark.MixProject do
       {:jason, "~> 1.4"},
       {:bbmustache, "~> 1.12"},
       {:phoenix_pubsub, "~> 2.1"},
-      {:file_system, "~> 1.0"}
+      {:file_system, "~> 1.0"},
+      {:anthropix, "~> 0.6"}
     ]
   end
 

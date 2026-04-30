@@ -83,6 +83,7 @@ defmodule Sark.Plugin.Migrations do
       :ok = Sqlite3.execute(db, "PRAGMA journal_mode = WAL")
       :ok = Sqlite3.execute(db, "PRAGMA foreign_keys = ON")
       :ok = ensure_table(db)
+      :ok = ensure_system_tables(db)
 
       applied = applied_versions(db)
       file_versions = Enum.map(migrations, & &1.version)
@@ -106,6 +107,44 @@ defmodule Sark.Plugin.Migrations do
       applied_at TEXT NOT NULL
     );
     """)
+  end
+
+  # Sark-owned tables (prefixed with `_`) created idempotently before
+  # plugin migrations run. Forward-compatible additions only: each new
+  # column would need a real migration ladder; we don't have one yet.
+  defp ensure_system_tables(db) do
+    with :ok <-
+           Sqlite3.execute(db, """
+           CREATE TABLE IF NOT EXISTS _worker_log (
+             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+             worker_name           TEXT    NOT NULL,
+             provider              TEXT,
+             model                 TEXT,
+             started_at            TEXT    NOT NULL,
+             ended_at              TEXT    NOT NULL,
+             turns                 INTEGER,
+             stop_reason           TEXT    NOT NULL,
+             input_tokens          INTEGER,
+             output_tokens         INTEGER,
+             cache_read_tokens     INTEGER,
+             cache_creation_tokens INTEGER,
+             service_tier          TEXT,
+             error                 TEXT,
+             final_output          TEXT
+           );
+           """),
+         :ok <-
+           Sqlite3.execute(
+             db,
+             "CREATE INDEX IF NOT EXISTS _worker_log_started_at ON _worker_log(started_at)"
+           ),
+         :ok <-
+           Sqlite3.execute(
+             db,
+             "CREATE INDEX IF NOT EXISTS _worker_log_worker_name ON _worker_log(worker_name)"
+           ) do
+      :ok
+    end
   end
 
   defp applied_versions(db) do

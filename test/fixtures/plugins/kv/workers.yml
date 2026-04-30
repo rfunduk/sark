@@ -1,0 +1,40 @@
+workers:
+  smoke:
+    description: Smoke worker — lists keys and reports.
+    model: claude-haiku-4-5
+    tools: [list, get]
+    max_turns: 4
+    system: |
+      You are a smoke-test worker for the kv plugin. Be terse.
+    prompt: |
+      List the keys in the kv store and pick one to summarize.
+
+  gated:
+    description: Worker gated on the kv table being non-empty.
+    model: claude-haiku-4-5
+    tools: [list, get]
+    max_turns: 2
+    when: |
+      SELECT 1 FROM kv LIMIT 1
+    system: |
+      Gate test worker.
+    prompt: |
+      kv has rows.
+
+  briefed:
+    description: Worker that loads context into its prompt.
+    model: claude-haiku-4-5
+    tools: [list, get]
+    max_turns: 2
+    load: |
+      SELECT
+        COUNT(*) AS total,
+        json_group_array(json_object('key', key, 'value', value)) AS items
+      FROM kv
+    system: |
+      Brief test worker.
+    prompt: |
+      total: {{total}}
+      {{#items}}
+      - {{key}} = {{value}}
+      {{/items}}

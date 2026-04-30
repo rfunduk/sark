@@ -44,6 +44,22 @@ defmodule Sark.MCP.RegistrationTest do
     assert "catalog" in names
     assert "sql_query" in names
     refute "kv_get" in names
+    refute "secret_note" in names
+  end
+
+  test "internal queries land in registry but not in Phantom cache or codegen handler",
+       %{tmp_dir: dir} do
+    boot_kv!(dir)
+
+    {:ok, q} = SarkRegistry.get("kv", :secret_note)
+    assert q.internal == true
+
+    router = Registration.router_module("kv")
+    tools = Phantom.Cache.list(nil, router, :tools)
+    refute "secret_note" in Enum.map(tools, & &1.name)
+
+    handler = Registration.handler_module("kv")
+    refute :secret_note in (handler.__info__(:functions) |> Keyword.keys())
   end
 
   test "stores parsed queries in Sark.MCP.Registry", %{tmp_dir: dir} do
@@ -63,6 +79,7 @@ defmodule Sark.MCP.RegistrationTest do
              :put,
              :put_strict,
              :reset_note,
+             :secret_note,
              :total
            ]
   end

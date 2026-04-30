@@ -1,4 +1,4 @@
-# Sark config. Copy to `config.yml` and edit. `config.yml` is gitignored.
+# Sark config. Copy to `config.yml` and edit.
 #
 # Run with:
 #   mix sark --config config.yml
@@ -10,8 +10,13 @@ data_dir: ./dev_data
 log_level: info
 hot_reload: true
 
+# Anthropic API key — used by plugin workers. Either a literal value
+# (handy for dev) or `${VAR}` to pull from env (handy for prod).
+# Optional; only required if any plugin defines workers.
+anthropic_api_key: "${ANTHROPIC_API_KEY}"
+
 # Bearer tokens. Each entry:
-#   { name: <operator label>, plugins: [<plugin names>] | ["*"], token: <secret> }
+#   { name: <label>, plugins: [<plugin1>, <plugin2>, ...] | ["*"], token: <secret> }
 #
 # `plugins` scopes the token to specific plugins by name. Use `["*"]` for
 # all plugins. Logs reference `name`, never `token`. Generate with:
@@ -19,10 +24,10 @@ hot_reload: true
 # Use ${VAR} to pull from env:
 #   - { name: laptop, plugins: ["*"], token: "${SARK_LAPTOP_TOKEN}" }
 tokens:
-  - { name: dev, plugins: ["*"], token: sk-CHANGEME }
+  - { name: dev, plugins: ["*"], token: sk-dev }
 
 # Plugin map: name → directory. The name is the routing key everywhere
-# (URL path `/<name>/mcp`, DB filename, token scopes), so it stays
-# stable even if you rename the on-disk directory. Paths are absolute
+# (URL path `/<name>/mcp`, DB filename, token scopes). Paths are absolute
 # or relative to this config file.
-plugins: {}
+plugins:
+  myplugin: path/to/myplugin

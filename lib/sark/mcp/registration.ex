@@ -87,7 +87,9 @@ defmodule Sark.MCP.Registration do
     module = handler_module(plugin)
 
     query_funcs =
-      Enum.map(queries, fn q ->
+      queries
+      |> Enum.reject(& &1.internal)
+      |> Enum.map(fn q ->
         fname = q.name
         query_name = q.name
 
@@ -173,7 +175,9 @@ defmodule Sark.MCP.Registration do
 
   defp build_tool_specs(%Spec{name: plugin, queries: queries, allow_sql: allow_sql}, handler) do
     query_specs =
-      Enum.map(queries, fn q ->
+      queries
+      |> Enum.reject(& &1.internal)
+      |> Enum.map(fn q ->
         %{
           name: Atom.to_string(q.name),
           handler: handler,

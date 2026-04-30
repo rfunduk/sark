@@ -31,7 +31,10 @@ defmodule Sark.MCP.Handlers.Catalog do
         {:reply, Tool.error("no such plugin: #{plugin}"), session}
 
       spec ->
-        queries = Registry.list_for_plugin(plugin)
+        queries =
+          plugin
+          |> Registry.list_for_plugin()
+          |> Enum.reject(& &1.internal)
 
         doc = %{
           name: spec.name,

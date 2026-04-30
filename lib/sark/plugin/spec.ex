@@ -12,7 +12,7 @@ defmodule Sark.Plugin.Spec do
   """
 
   @enforce_keys [:name, :dir, :migrations]
-  defstruct [:name, :dir, :migrations, allow_sql: false, queries: []]
+  defstruct [:name, :dir, :migrations, allow_sql: false, queries: [], workers: []]
 
   @type migration :: %{version: pos_integer, path: String.t(), sql: String.t()}
 
@@ -21,6 +21,7 @@ defmodule Sark.Plugin.Spec do
           dir: String.t(),
           migrations: [migration],
           allow_sql: boolean(),
-          queries: [Sark.Plugin.Query.t()]
+          queries: [Sark.Plugin.Query.t()],
+          workers: [Sark.Plugin.Worker.t()]
         }
 end

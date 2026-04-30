@@ -18,6 +18,7 @@ defmodule Sark.Plugin.Loader do
   alias Sark.Plugin.Migrations
   alias Sark.Plugin.Query.YAML, as: QueriesYAML
   alias Sark.Plugin.Spec
+  alias Sark.Plugin.Worker.YAML, as: WorkersYAML
 
   @name_re ~r/\A[a-z0-9][a-z0-9_-]*\z/
 
@@ -35,12 +36,14 @@ defmodule Sark.Plugin.Loader do
 
     migrations = Migrations.discover!(abs)
     {queries, opts} = QueriesYAML.load(abs)
+    workers = WorkersYAML.load(abs)
 
     %Spec{
       name: name,
       dir: abs,
       migrations: migrations,
       queries: queries,
+      workers: workers,
       allow_sql: Map.get(opts, :allow_sql, false)
     }
   end

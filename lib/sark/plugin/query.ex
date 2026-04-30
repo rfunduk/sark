@@ -27,7 +27,8 @@ defmodule Sark.Plugin.Query do
     :write,
     :params,
     :format,
-    :statements
+    :statements,
+    internal: false
   ]
 
   @type param_type :: :integer | :real | :text | :blob | :boolean
@@ -56,7 +57,8 @@ defmodule Sark.Plugin.Query do
           write: boolean,
           params: [param],
           format: format,
-          statements: [statement]
+          statements: [statement],
+          internal: boolean
         }
 
   @valid_returns ~w(results scalar count none)a
@@ -75,6 +77,11 @@ defmodule Sark.Plugin.Query do
 
     write = Map.get(entry, "write", false)
     unless is_boolean(write), do: bad!(where, "write must be boolean, got #{inspect(write)}")
+
+    internal = Map.get(entry, "internal", false)
+
+    unless is_boolean(internal),
+      do: bad!(where, "internal must be boolean, got #{inspect(internal)}")
 
     returns = parse_returns!(entry, where)
     params = parse_params!(Map.get(entry, "params", %{}), where)
@@ -100,6 +107,7 @@ defmodule Sark.Plugin.Query do
       description: description,
       returns: returns,
       write: write,
+      internal: internal,
       params: params,
       format: format,
       statements: statements

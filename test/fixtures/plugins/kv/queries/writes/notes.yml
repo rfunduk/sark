@@ -34,3 +34,13 @@ queries:
       INSERT INTO notes (body)
       SELECT json_extract(value, '$.body')
       FROM json_each(:notes)
+
+  secret_note:
+    description: "Worker-only note insert (used to test internal flag)."
+    internal: true
+    returns: results
+    write: true
+    params:
+      body: { type: text }
+    sql: |
+      INSERT INTO notes (body) VALUES (:body) RETURNING id

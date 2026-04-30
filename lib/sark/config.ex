@@ -7,7 +7,7 @@ defmodule Sark.Config do
       listen: 127.0.0.1:8080
       data_dir: /var/sark/data
       log_level: info                # optional
-      anthropic_api_key_env: ANTHROPIC_API_KEY  # optional
+      anthropic_api_key: "${ANTHROPIC_API_KEY}"  # optional, ${VAR} interpolated
       tokens:
         - { name: ryan, plugins: ["*"], token: sk-ryan }
         - { name: wife, plugins: [jot], token: sk-wife }
@@ -29,7 +29,7 @@ defmodule Sark.Config do
     :listen,
     :data_dir,
     :log_level,
-    :anthropic_api_key_env,
+    :anthropic_api_key,
     :tokens,
     :plugins,
     :hot_reload,
@@ -43,7 +43,7 @@ defmodule Sark.Config do
           listen: listen(),
           data_dir: String.t(),
           log_level: atom(),
-          anthropic_api_key_env: String.t() | nil,
+          anthropic_api_key: String.t() | nil,
           tokens: %{String.t() => token_entry()},
           plugins: %{String.t() => String.t()},
           hot_reload: boolean(),
@@ -77,7 +77,7 @@ defmodule Sark.Config do
       listen: listen,
       data_dir: data_dir,
       log_level: parse_log_level(Map.get(raw, "log_level", "info")),
-      anthropic_api_key_env: Map.get(raw, "anthropic_api_key_env"),
+      anthropic_api_key: Map.get(raw, "anthropic_api_key"),
       tokens: tokens,
       plugins: plugins,
       hot_reload: parse_hot_reload(Map.get(raw, "hot_reload", true)),
