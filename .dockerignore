@@ -1,0 +1,17 @@
+_build
+deps
+.elixir_ls
+.git
+.github
+dev_data
+tmp
+test
+test.db
+erl_crash.dump
+config.yml
+*.log
+.DS_Store
+Dockerfile
+.dockerignore
+README.md
+LICENSE
