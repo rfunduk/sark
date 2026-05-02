@@ -35,7 +35,7 @@ FROM ${RUNNER_IMAGE}
 
 RUN apt-get update -y \
   && apt-get install -y --no-install-recommends \
-       libstdc++6 openssl libncurses6 locales ca-certificates tini \
+       libstdc++6 openssl libncurses6 locales ca-certificates \
   && apt-get clean && rm -rf /var/lib/apt/lists/* \
   && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
 
@@ -59,5 +59,4 @@ VOLUME ["/storage"]
 
 ENV SARK_CONFIG=/storage/config.yml
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/bin/sark", "start"]
