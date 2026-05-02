@@ -1,33 +1,21 @@
-# Sark config. Copy to `config.yml` and edit.
-#
-# Run with:
-#   mix sark --config config.yml
-# or, in a release:
-#   sark --config /etc/sark/config.yml
+# Sark Config
+# "${VAR}" will be interpolated from env vars.
+# Paths are absolute or relative to this config file.
 
-listen: 127.0.0.1:8080
-data_dir: ./dev_data
+listen: 0.0.0.0:8080
+data_dir: /storage/data
 log_level: info
 hot_reload: true
 
-# Anthropic API key — used by plugin workers. Either a literal value
-# (handy for dev) or `${VAR}` to pull from env (handy for prod).
 # Optional; only required if any plugin defines workers.
 anthropic_api_key: "${ANTHROPIC_API_KEY}"
 
 # Bearer tokens. Each entry:
 #   { name: <label>, plugins: [<plugin1>, <plugin2>, ...] | ["*"], token: <secret> }
-#
-# `plugins` scopes the token to specific plugins by name. Use `["*"]` for
-# all plugins. Logs reference `name`, never `token`. Generate with:
-#   openssl rand -hex 32
-# Use ${VAR} to pull from env:
-#   - { name: laptop, plugins: ["*"], token: "${SARK_LAPTOP_TOKEN}" }
 tokens:
-  - { name: dev, plugins: ["*"], token: sk-dev }
+  - { name: default, plugins: ["*"], token: "${SARK_TOKEN}" }
 
 # Plugin map: name → directory. The name is the routing key everywhere
-# (URL path `/<name>/mcp`, DB filename, token scopes). Paths are absolute
-# or relative to this config file.
+# (URL path `/<name>/mcp`, DB filename, token scopes).
 plugins:
-  myplugin: path/to/myplugin
+  myplugin: /storage/plugins/myplugin

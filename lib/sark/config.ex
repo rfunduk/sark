@@ -66,11 +66,13 @@ defmodule Sark.Config do
 
     raw = interpolate(raw)
 
+    config_dir = Path.dirname(abs)
+
     listen = parse_listen(fetch!(raw, "listen"))
-    data_dir = fetch!(raw, "data_dir")
+    data_dir = Path.expand(fetch!(raw, "data_dir"), config_dir)
     File.mkdir_p!(data_dir)
 
-    plugins = parse_plugins(fetch!(raw, "plugins"), Path.dirname(abs))
+    plugins = parse_plugins(fetch!(raw, "plugins"), config_dir)
     tokens = parse_tokens(fetch!(raw, "tokens"), plugins)
 
     %__MODULE__{

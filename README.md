@@ -4,33 +4,57 @@ A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations
 
 Sark itself is MCP-only and ships no skill format. Skills (Claude Code, Cursor rules, etc.) live alongside the plugin in the same repo and are loaded by whichever MCP client is connected.
 
+## FAQ
+
+*Why?* I want my agents to use skills to do things but with some storage backend. Often it's fine to just have the agent write markdown files somewhere and the skills can refer to them, but this breaks down quickly -- just like my 'dotfiles', I want my todo list or whatever from any machine I use, and my phone too.
+
+*But doesn't MCP suck?* There are very many sucky MCP servers, but as a protocol I think it's great. Sark provides tools you can use to craft an agent friendly response from your database (so you arent just pooping out a huge JSON blob), for example.
+
+*What agents are supported?* Personally I'm primarily using Claude Code. But since MCP is a standard, and Sark has no opinions on skills structure, you can pretty much do anything you want. Maybe you want to use hooks to inject usage of your MCP into every session, or maybe you want to invoke the tools manually `/with-slash-commands`, or anything else you can think of.
+
 ## Run
 
 ```bash
-cp config.yml.example config.yml          # edit tokens, plugins
-sark --config /etc/sark/config.yml        # release binary
+docker build -t sark .
+docker run -d --name sark \
+  -p 8080:8080 \
+  -v /path/to/storage:/storage \
+  sark
 ```
 
-Building from source requires Elixir 1.19+; `mix sark --config config.yml` is the dev equivalent.
+Container mounts `/storage` for everything stateful:
 
-Sark serves plain HTTP on the configured `listen` address. Each plugin gets its own MCP endpoint at `POST /<plugin>/mcp`.
+```
+/storage/
+  config.yml          # listen, tokens, plugins map
+  data/               # SQLite DBs
+  plugins/<name>/     # plugin dirs
+```
+
+Each plugin gets its own MCP endpoint at `POST /<plugin>/mcp`.
+
+Building from source for dev, you need Elixir 1.19+ and an appropriate `config.yml`:
+
+```
+mix deps.get
+mix sark --config config.dev.yml
+```
+
+## Config
+
+See [`config.yml.example`](./config.yml.example)
 
 ## Plugin layout
 
 ```
-plugin/
+myplugin/
   migrations/
     0001_initial.sql       Required. Forward-only SQL, applied once per file.
     0002_add_foo.sql
   queries.yml              Optional. MCP tool definitions.
-  queries/                 Optional. Files referenced via `include:` in queries.yml.
-    reads.yml
-    writes/*.yml
   workers.yml              Optional. Background-agent definitions.
-  workers/                 Optional. Files referenced via `include:` in workers.yml.
-    *.yml
   skills/                  Optional. Travels with the plugin; sark ignores it.
-    foo-bar/SKILL.md       Loaded by your MCP client.
+    foo-bar/SKILL.md       Load with your MCP client.
 ```
 
 The plugin's SQLite database is created at `{config.data_dir}/{plugin_name}.db` on first boot.
@@ -285,21 +309,14 @@ queries:
 
 Rules:
 
-- `shared:` is a top-level map (sibling to `queries:` and `include:`),
-  one per file. All `shared:` blocks across `queries.yml` and any
-  included files are merged. Duplicate fragment names across files raise
-  at load.
-- A string starting with `@` is a fragment reference. `@name` looks up
-  `shared.name`.
-- **Whole-value substitution.** `field: @name` → fragment value sits
-  literally in place.
-- **List-element splice.** `[..., @name, ...]` — if the fragment is a
-  list, it's flattened in; if it's a single value, it's inserted as one
+- `shared:` is a top-level map (sibling to `queries:` and `include:`), one per file. All `shared:` blocks across `queries.yml` and any
+  included files are merged. Duplicate fragment names across files raise at load.
+- A string starting with `@` is a fragment reference. `@name` looks up `shared.name`.
+- **Whole-value substitution.** `field: @name` → fragment value sits literally in place.
+- **List-element splice.** `[..., @name, ...]` — if the fragment is a list, it's flattened in; if it's a single value, it's inserted as one
   element.
-- Resolution is universal — any field can reference fragments, not just
-  `reject:`. Fragments may reference other fragments (cycles raise).
-- Unknown `@name` raises at parse time with the list of defined
-  fragments. Typos fail loud.
+- Resolution is universal — any field can reference fragments, not just `reject:`. Fragments may reference other fragments (cycles raise).
+- Unknown `@name` raises at parse time with the list of defined fragments. Typos fail loud.
 
 ### Worker-only queries (`internal: true`)
 
@@ -390,26 +407,6 @@ Migrations and database files (`*.db`, `*.db-shm`, `*.db-wal`) are ignored. Relo
 Disable per-deployment with `hot_reload: false` in config.
 
 > Note: tool changes take effect server-side immediately, but most MCP clients (Claude Code included) cache the tool list at session start and need a reconnect to see new tools. **Existing tools work without reconnect as long as their `params:` block is unchanged** — SQL, description, returns, format can all change freely. Adding/removing/renaming a param, or changing its type or `required` flag, is a signature change and needs a reconnect for the client to pick up the new schema.
-
-## Config
-
-```yaml
-listen: 127.0.0.1:8080            # required. IP:PORT, IPs only (no DNS).
-data_dir: ./dev_data              # required. Per-plugin DB files live here.
-log_level: info                   # debug | info | warning | error
-
-hot_reload: true                  # optional, default true.
-
-tokens:                           # required. Bearer auth, list plugins or * for all
-  - { name: laptop, plugins: ["*"],     token: "${SARK_LAPTOP_TOKEN}" }
-  - { name: phone,  plugins: [tasks, kv], token: sk-... }
-
-plugins:                          # required. Map of name → directory.
-  kv: /srv/sark-plugins/kv        # Paths absolute or relative to this config file.
-  tasks: ../my-task-plugin
-```
-
-`${VAR}` interpolation pulls from environment variables at boot. A missing env reference raises hard.
 
 ## Implementing a plugin
 

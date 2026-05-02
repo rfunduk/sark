@@ -37,6 +37,22 @@ defmodule Sark.ConfigTest do
     assert File.dir?(data_dir)
   end
 
+  test "resolves relative data_dir against config file dir", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: ./data
+      tokens:
+        - { name: laptop, plugins: ["*"], token: sk-aaaa }
+      plugins: {}
+      """)
+
+    cfg = Sark.Config.load!(path)
+
+    assert cfg.data_dir == Path.join(dir, "data")
+    assert File.dir?(cfg.data_dir)
+  end
+
   test "interpolates ${ENV} in string values", %{tmp_dir: dir} do
     System.put_env("SARK_TEST_TOKEN", "sk-from-env")
     on_exit(fn -> System.delete_env("SARK_TEST_TOKEN") end)
