@@ -28,7 +28,8 @@ defmodule Sark.Plugin.Query do
     :params,
     :format,
     :statements,
-    internal: false
+    internal: false,
+    reject: []
   ]
 
   @type param_type :: :integer | :real | :text | :blob | :boolean
@@ -50,6 +51,13 @@ defmodule Sark.Plugin.Query do
           param_order: [atom]
         }
 
+  @type reject :: %{
+          raw_sql: String.t(),
+          compiled_sql: String.t(),
+          param_order: [atom],
+          message: String.t()
+        }
+
   @type t :: %__MODULE__{
           name: atom,
           description: String.t(),
@@ -58,7 +66,8 @@ defmodule Sark.Plugin.Query do
           params: [param],
           format: format,
           statements: [statement],
-          internal: boolean
+          internal: boolean,
+          reject: [reject]
         }
 
   @valid_returns ~w(results scalar count none)a
@@ -102,6 +111,8 @@ defmodule Sark.Plugin.Query do
         %{raw_sql: raw, compiled_sql: compiled, param_order: order}
       end)
 
+    reject = parse_rejects!(Map.get(entry, "reject"), declared, where)
+
     %__MODULE__{
       name: name,
       description: description,
@@ -110,8 +121,55 @@ defmodule Sark.Plugin.Query do
       internal: internal,
       params: params,
       format: format,
-      statements: statements
+      statements: statements,
+      reject: reject
     }
+  end
+
+  # `reject:` is an optional list of pre-flight checks. Each entry is a
+  # SELECT (run on the read pool before the main statement) plus a message
+  # template. If the SELECT returns one or more rows the call is rejected
+  # with `rejected: <interpolated message>`. Empty result = ok, proceed.
+  defp parse_rejects!(nil, _declared, _where), do: []
+
+  defp parse_rejects!(map, declared, where) when is_map(map) do
+    parse_rejects!([map], declared, where)
+  end
+
+  defp parse_rejects!(list, declared, where) when is_list(list) do
+    list
+    |> Enum.with_index()
+    |> Enum.map(fn {entry, idx} -> parse_reject!(entry, declared, "#{where}.reject[#{idx}]") end)
+  end
+
+  defp parse_rejects!(other, _declared, where) do
+    bad!(where, "reject must be a map or list of maps, got #{inspect(other)}")
+  end
+
+  defp parse_reject!(entry, declared, where) when is_map(entry) do
+    sql = fetch_string!(entry, "sql", where)
+    message = fetch_string!(entry, "message", where)
+
+    if Regex.match?(
+         ~r/^\s*(insert|update|delete|replace|drop|create|alter|attach|detach|pragma|vacuum|reindex|with)\b/i,
+         sql
+       ) do
+      bad!(where, "reject sql must be a plain SELECT, got: #{String.slice(sql, 0, 60)}")
+    end
+
+    {compiled, order} = SQL.compile(sql)
+
+    Enum.each(order, fn p ->
+      unless MapSet.member?(declared, p) do
+        bad!(where, "SQL references :#{p} but it is not declared in params")
+      end
+    end)
+
+    %{raw_sql: sql, compiled_sql: compiled, param_order: order, message: message}
+  end
+
+  defp parse_reject!(other, _declared, where) do
+    bad!(where, "reject entry must be a map with sql + message, got #{inspect(other)}")
   end
 
   defp parse_sql!(nil, where), do: bad!(where, "sql is required")
@@ -286,22 +344,21 @@ defmodule Sark.Plugin.Query do
   def default_format(:results, false), do: :list
 
   @doc """
-  Validate raw params (string-keyed map from MCP) and bind them in the
-  positional order required by each statement. Returns a list of bind
-  lists (one per statement) or a structured validation error.
+  Coerce raw params (string-keyed map from MCP) into a name → value map
+  using the declared `params` specs. Returns the coerced map or a
+  structured validation error.
+
+  Callers project the coerced map into positional binds per statement
+  by walking each statement's `param_order`.
   """
-  @spec validate_and_bind(t, map) ::
-          {:ok, [[term]]} | {:error, {:validation, [%{param: atom, reason: String.t()}]}}
-  def validate_and_bind(%__MODULE__{} = q, raw_params) when is_map(raw_params) do
+  @spec coerce_params(t, map) ::
+          {:ok, %{atom => term}}
+          | {:error, {:validation, [%{param: atom, reason: String.t()}]}}
+  def coerce_params(%__MODULE__{} = q, raw_params) when is_map(raw_params) do
     {coerced, errs} = coerce_each(q.params, raw_params)
 
     if errs == [] do
-      binds =
-        Enum.map(q.statements, fn s ->
-          Enum.map(s.param_order, fn name -> Map.fetch!(coerced, name) end)
-        end)
-
-      {:ok, binds}
+      {:ok, coerced}
     else
       {:error, {:validation, Enum.reverse(errs)}}
     end

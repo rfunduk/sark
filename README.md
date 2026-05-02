@@ -4,15 +4,14 @@ A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations
 
 Sark itself is MCP-only and ships no skill format. Skills (Claude Code, Cursor rules, etc.) live alongside the plugin in the same repo and are loaded by whichever MCP client is connected.
 
-Requires Elixir 1.19+.
-
 ## Run
 
 ```bash
 cp config.yml.example config.yml          # edit tokens, plugins
-mix sark --config config.yml              # dev
-sark --config /etc/sark/config.yml        # release binary (mix release)
+sark --config /etc/sark/config.yml        # release binary
 ```
+
+Building from source requires Elixir 1.19+; `mix sark --config config.yml` is the dev equivalent.
 
 Sark serves plain HTTP on the configured `listen` address. Each plugin gets its own MCP endpoint at `POST /<plugin>/mcp`.
 
@@ -209,11 +208,98 @@ format:
     {{/results}}
 ```
 
-**Errors** are returned via MCP `Tool.error` with one of three prefixes:
+**Errors** are returned via MCP `Tool.error` with one of four prefixes:
 
 - `validation: ...` — bad params, caught before SQL runs (LLM-actionable, retry with fix)
+- `rejected: ...` — pre-flight `reject:` check tripped; message is the entry's template (LLM-actionable)
 - `constraint: ...` — SQLite integrity violation (FK, CHECK, UNIQUE)
 - `internal: ...` — unexpected; full detail logged server-side, generic message to client
+
+### `reject:` pre-flight checks
+
+State preconditions — "row already closed", "prefix matches multiple rows" — that param validation can't catch. Each entry is a `SELECT` plus a message; rows returned → reject (main `sql:` skipped, message returned). Empty → pass, next reject runs. First non-empty short-circuits.
+
+```yaml
+queries:
+  close_task:
+    write: true
+    returns: count
+    params:
+      id: { type: integer }
+    reject:
+      - sql: SELECT 1 FROM tasks WHERE id = :id AND status = 'closed'
+        message: "task {id} already closed"
+    sql: UPDATE tasks SET status = 'closed' WHERE id = :id
+```
+
+`{name}` in `message:` interpolates the param value. Multiple checks run in declaration order:
+
+```yaml
+reject:
+  - sql: |
+      SELECT 1 FROM tasks WHERE id LIKE :id || '%'
+      GROUP BY 1 HAVING COUNT(*) > 1
+    message: "ambiguous prefix '{id}'"
+  - sql: SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id LIKE :id || '%')
+    message: "no task matches '{id}'"
+```
+
+For `write: true` queries, rejects run inside the same transaction as the main statement — preconditions can't race against another writer.
+
+Reject SQL must be plain `SELECT` (no `INSERT`/`UPDATE`/`DELETE`/`WITH`/`PRAGMA`); enforced at load. Same `:bind` params as `sql:`.
+
+### `shared:` fragments (`@name` references)
+
+Repeated reject blocks (or any other repeated structure) can live in a
+top-level `shared:` map and be referenced from anywhere in the document
+with `@name`:
+
+```yaml
+shared:
+  prefix_rejects:
+    - sql: |
+        SELECT 1 FROM tasks WHERE id LIKE :id || '%' AND status='open'
+        GROUP BY 1 HAVING COUNT(*) > 1
+      message: "ambiguous prefix '{id}' — call resolve first"
+    - sql: SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id LIKE :id || '%')
+      message: "no task matches prefix '{id}'"
+
+queries:
+  update:
+    write: true
+    returns: count
+    params: { id: { type: text }, ... }
+    reject: @prefix_rejects     # whole-value substitution
+    sql: UPDATE tasks SET ... WHERE id = ...
+
+  set_status:
+    write: true
+    returns: count
+    params: { id: { type: text }, ... }
+    reject:
+      - @prefix_rejects          # spliced (since fragment is a list)
+      - sql: SELECT 1 FROM tasks WHERE id = :id AND status = :status
+        message: "task already in status '{status}'"
+    sql: UPDATE tasks SET status = :status WHERE id = ...
+```
+
+Rules:
+
+- `shared:` is a top-level map (sibling to `queries:` and `include:`),
+  one per file. All `shared:` blocks across `queries.yml` and any
+  included files are merged. Duplicate fragment names across files raise
+  at load.
+- A string starting with `@` is a fragment reference. `@name` looks up
+  `shared.name`.
+- **Whole-value substitution.** `field: @name` → fragment value sits
+  literally in place.
+- **List-element splice.** `[..., @name, ...]` — if the fragment is a
+  list, it's flattened in; if it's a single value, it's inserted as one
+  element.
+- Resolution is universal — any field can reference fragments, not just
+  `reject:`. Fragments may reference other fragments (cycles raise).
+- Unknown `@name` raises at parse time with the list of defined
+  fragments. Typos fail loud.
 
 ### Worker-only queries (`internal: true`)
 
@@ -281,14 +367,14 @@ patch_text(table='notes', id=1, col='body',
 **Non-integer primary keys.** `id` accepts any scalar that SQLite can match — integers or strings. If your table is keyed by a slug, declare it `TEXT PRIMARY KEY` and `patch_text` works directly without a slug→id round-trip:
 
 ```sql
-CREATE TABLE jots (
+CREATE TABLE tasks (
   slug TEXT PRIMARY KEY,
   body TEXT NOT NULL
 );
 ```
 
 ```
-patch_text(table='jots', id='my-jot', col='body', old='foo', new='bar')
+patch_text(table='tasks', id='my-task', col='body', old='foo', new='bar')
 ```
 
 The `id` parameter just goes into the `WHERE id = ?` clause as-is.
@@ -316,11 +402,11 @@ hot_reload: true                  # optional, default true.
 
 tokens:                           # required. Bearer auth, list plugins or * for all
   - { name: laptop, plugins: ["*"],     token: "${SARK_LAPTOP_TOKEN}" }
-  - { name: phone,  plugins: [jot, kv], token: sk-... }
+  - { name: phone,  plugins: [tasks, kv], token: sk-... }
 
 plugins:                          # required. Map of name → directory.
-  foo: /srv/sark-plugins/foo      # Paths absolute or relative to this config file.
-  mine: ../my-plugin
+  kv: /srv/sark-plugins/kv        # Paths absolute or relative to this config file.
+  tasks: ../my-task-plugin
 ```
 
 `${VAR}` interpolation pulls from environment variables at boot. A missing env reference raises hard.
@@ -373,9 +459,7 @@ Usage:
 
 - **Skills should carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark queries are the verbs the skill orchestrates.
 - **Composite reads.** Bundle nested data using `json_object` / `json_group_array` in SQL. Sark auto-decodes the JSON-string columns; templates iterate them directly.
-- **Atomic per tool call.** Each `write: true` query wraps in a writer-pool transaction; failures roll back automatically.
-
-The `kv` test fixture under `test/fixtures/plugins/kv/` is the canonical example — it covers every return shape × format and demonstrates the `include:` split (literal + glob + inline coexistence).
+- **Atomic per tool call.** Each `write: true` query runs in a transaction; failures roll back automatically.
 
 ### Versioning a column
 
@@ -425,9 +509,11 @@ prune_notes_history:
 
 ## Workers
 
+**Still in development.**
+
 A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `queries.yml` surface, same handlers — except the loop runs inside sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
 
-**Status:** v1 spike. Workers are loadable, definable, and triggerable manually via mix task. **No scheduler yet** — workers don't fire on cron or events. They run when you run them.
+**No scheduler** — workers fire on manual invocation only. They don't run on cron or events.
 
 ### workers.yml
 
@@ -448,14 +534,14 @@ Per-worker shape:
 ```yaml
 workers:
   reconciler:
-    description: Reconcile drift on stale active jots.  # required
+    description: Reconcile drift on stale active tasks. # required
     model: claude-sonnet-4-6                            # required. Any Anthropic model id.
     tools: [show, mark_reconciled]                      # required. Allowlist; tools live in this plugin.
     max_turns: 8                                        # optional, default 8.
 
     when: |                                             # optional. Empty result → skip (no LLM call, no log row).
       SELECT 1 WHERE EXISTS (
-        SELECT 1 FROM jots
+        SELECT 1 FROM tasks
         WHERE status = 'active'
           AND (reconciled_at IS NULL OR reconciled_at < updated_at)
       )
@@ -465,15 +551,15 @@ workers:
         COUNT(*) AS pending,
         MIN(updated_at) AS oldest_stale,
         json_group_array(json_object('slug', slug, 'title', title)) AS queue
-      FROM jots
+      FROM tasks
       WHERE status = 'active'
         AND (reconciled_at IS NULL OR reconciled_at < updated_at)
 
     system: |                                           # required. NO mustache — sent verbatim and cached.
-      You are the jot reconciler. ...
+      You are the task reconciler. ...
 
     prompt: |                                           # required. Mustache-rendered against `load:` rows.
-      {{pending}} jots pending reconcile. Oldest stale since {{oldest_stale}}.
+      {{pending}} tasks pending reconcile. Oldest stale since {{oldest_stale}}.
 
       Queue:
       {{#queue}}
@@ -483,26 +569,25 @@ workers:
 
 **Field notes:**
 
-- `tools` is an allowlist of bare tool names from this plugin's `queries.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`patch_text`, plus `catalog` and `sql_query` when `allow_sql: true`). The runner only advertises these to the LLM; tools outside the list are invisible. Unknown names raise at startup, not at LLM-call time. Cross-plugin (`<plugin>.<tool>`) is reserved for a later iteration.
-- `when:` is parameterless SQL run on the read pool. **Empty result set → worker is skipped entirely** (no LLM call, no `_worker_log` row). One or more rows → run. Use it to short-circuit when there's nothing to do.
-- `load:` is parameterless SQL run on the read pool. The result rows render `prompt:` via [bbmustache](https://hex.pm/packages/bbmustache):
+- `tools` is an allowlist of bare tool names from this plugin's `queries.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`patch_text`, plus `catalog` and `sql_query` when `allow_sql: true`). Tools outside the list are invisible to the LLM. Unknown names raise at startup. Cross-plugin (`<plugin>.<tool>`) is not supported.
+- `when:` is parameterless SQL. **Empty result set → worker is skipped entirely** (no LLM call, no `_worker_log` row). One or more rows → run. Use it to short-circuit when there's nothing to do.
+- `load:` is parameterless SQL. Result rows render `prompt:` via mustache:
   - 0 rows → empty context (vars expand to `""`).
-  - 1 row → columns bind as scalars (`{{pending}}`). JSON aggregate columns (`json_group_array(...)`) are auto-decoded by `Sark.Plugin.DB`, so `{{#queue}}…{{/queue}}` iterates over them.
+  - 1 row → columns bind as scalars (`{{pending}}`). JSON aggregate columns (`json_group_array(...)`) are auto-decoded, so `{{#queue}}…{{/queue}}` iterates over them.
   - >1 rows → bound under `{{#results}}…{{/results}}`.
-- `system:` is **forbidden** from containing mustache (`{{...}}`) — it's sent verbatim with `cache_control: ephemeral` so subsequent turns within a run hit the prompt cache. Any `{{` in `system:` raises at startup.
+- `system:` must not contain mustache (`{{...}}`) — it's sent verbatim and cached. Any `{{` in `system:` raises at startup.
 - `prompt:` is mustache-rendered **before** the LLM sees it. `load:` populates the context; without `load:` the prompt is sent as-is.
-- `max_turns` caps the tool-use loop. The runner aborts (`:max_turns_exceeded`) if the model is still calling tools after this many turns.
+- `max_turns` caps the tool-use loop. The runner aborts if the model is still calling tools after this many turns.
 
 ### Caching + cost telemetry
 
-The worker runner attaches `cache_control: ephemeral` to the `system:` block and the last tool definition. Tool list and system prompt are stable across turns within a single worker run, so subsequent turns hit the cache. The 5-minute TTL means workers running on long cadences (daily / weekly) will not carry cache hits across runs — that's expected.
+Sark caches the `system:` block and tool definitions across turns within a single run, so subsequent turns hit the prompt cache. The 5-minute TTL means workers running on long cadences (daily / weekly) won't carry cache hits across runs — that's expected.
 
-Every terminal worker state writes one row to a sark-managed `_worker_log` table in the plugin's own database. The schema is created idempotently on plugin startup (alongside `_sark_migrations`) — plugins do not own this table. Columns:
+Every terminal worker state writes one row to a sark-managed `_worker_log` table in the plugin's own database. Columns:
 
 | column                  | meaning                                                              |
 | ----------------------- | -------------------------------------------------------------------- |
 | `worker_name`           | `"<name>"` from `workers.yml`                                        |
-| `provider`              | `"anthropix"` in production, `"stub"` in tests                       |
 | `model`                 | model id sent to the provider                                        |
 | `started_at`/`ended_at` | ISO8601 UTC                                                          |
 | `turns`                 | tool-use loop iterations                                             |
@@ -510,9 +595,9 @@ Every terminal worker state writes one row to a sark-managed `_worker_log` table
 | `input_tokens`          | summed across turns                                                  |
 | `output_tokens`         | summed across turns                                                  |
 | `cache_read_tokens`     | summed across turns                                                  |
-| `cache_creation_tokens` | summed across turns (5m + 1h tiers collapsed; tier split unused for sark cadences) |
+| `cache_creation_tokens` | summed across turns                                                  |
 | `service_tier`          | latest non-nil value reported by the provider                        |
-| `error`                 | `inspect(reason)` on `error`, NULL otherwise                         |
+| `error`                 | error string on `error`, NULL otherwise                              |
 | `final_output`          | text from the last assistant turn                                    |
 
 Runs that the `when:` gate skipped do not log — there's no run to record.
@@ -520,31 +605,23 @@ Runs that the `when:` gate skipped do not log — there's no run to record.
 ### Manual trigger
 
 ```bash
-mix sark.worker --config config.yml jot.dreamer
+mix sark.worker --config config.yml tasks.dreamer
 ```
 
-The argument is `<plugin>.<worker>`. The task boots the OTP application (same path as `mix sark`), looks up the named worker, runs it once, and streams a turn-by-turn transcript to stdout. Exits when the loop terminates.
+The argument is `<plugin>.<worker>`. Looks up the named worker, runs it once, and streams a turn-by-turn transcript to stdout. Currently source-only — no release-binary equivalent yet.
 
 The Anthropic API key comes from `anthropic_api_key` in `config.yml`. Use a literal value for dev or `${VAR}` for env interpolation in prod:
 
 ```yaml
-# dev — straight in the (gitignored) config
-anthropic_api_key: sk-ant-dev-...
-
-# prod — pull from env
 anthropic_api_key: "${ANTHROPIC_API_KEY}"
 ```
 
-```bash
-mix sark.worker --config config.yml jot.dreamer
-```
-
-Use it to dev-loop on prompt + tools without standing up a full client. Each invocation is a fresh conversation — no resume, no memory between runs.
+Each invocation is a fresh conversation — no resume, no memory between runs.
 
 ### What a worker run looks like
 
 ```
-running worker jot.dreamer (model=claude-sonnet-4-6, max_turns=8)
+running worker tasks.dreamer (model=claude-sonnet-4-6, max_turns=8)
 
 --- turn 1 ---
 [assistant] Scanning recent activity.
@@ -552,7 +629,7 @@ running worker jot.dreamer (model=claude-sonnet-4-6, max_turns=8)
 [tool_result #toolu_01a ok] - L2 workers — agentic substrate (`l2-workers`) ...
 
 --- turn 2 ---
-[assistant] Found a cross-jot pattern between l2-workers and plugin-test-harness.
+[assistant] Found a cross-task pattern between l2-workers and plugin-test-harness.
 [tool_call #toolu_02a] append({"slug":"l2-workers","section":"findings","text":"..."})
 [tool_result #toolu_02a ok] 1
 
@@ -566,34 +643,11 @@ running worker jot.dreamer (model=claude-sonnet-4-6, max_turns=8)
 
 Each `[tool_call ...]` was dispatched in-process through the same handler an external MCP client would hit. Errors come back to the LLM as tool_result blocks with `is_error: true`, so the model can recover.
 
-### Limits and what's deferred
+### Limits
 
-- **No scheduling.** Cron triggers (`schedule: "0 3 * * *"`) and event triggers (`on_event: ...`) aren't wired. Workers fire on manual invocation only.
-- **No hot reload of `workers.yml`.** Edit + restart the process. (Plugin file watchers re-run query loaders, not workers.)
-- **No token/cost budget enforcement.** Worker runs to completion or `max_turns`. Per-run cost telemetry is captured in `_worker_log` (input/output/cache tokens, model, stop_reason); enforcement on top of that is deferred.
-- **No retry on Anthropic 5xx.** Failure aborts the loop. The mix task exits non-zero; the runner's `{:error, reason}` is the contract.
+- **No scheduling.** Cron and event triggers aren't wired. Workers fire on manual invocation only.
+- **No hot reload of `workers.yml`.** Edit + restart the process.
+- **No token/cost budget enforcement.** Worker runs to completion or `max_turns`. Cost telemetry is captured in `_worker_log`; enforcement on top of that is not.
+- **No retry on Anthropic 5xx.** Failure aborts the loop.
 - **No streaming.** Each LLM turn blocks for the full response before tool dispatch.
-- **Plugin-local tools only.** A worker can't (yet) call another plugin's tools.
-
-### Testing without spending tokens
-
-`Sark.Worker.LLM` is a behaviour. The production impl is `Sark.Worker.LLM.Anthropix`; test impl is `Sark.Worker.LLM.Stub`, which replays a canned script of turns:
-
-```elixir
-{:ok, _} =
-  Sark.Worker.LLM.Stub.start_link([
-    %{text: "thinking", tool_uses: [%{id: "u1", name: "list", input: %{}}]},
-    %{text: "done"}
-  ])
-
-{:ok, %{turns: 2, stop_reason: :end_turn}} =
-  Sark.Worker.Runner.run(
-    plugin: "kv",
-    worker: my_worker,
-    spec: my_spec,
-    llm: Sark.Worker.LLM.Stub
-  )
-```
-
-The stub also records every `chat/1` call (`Stub.recorded_calls/0`) so tests can assert on the messages, system prompt, and tool schemas the runner sent. Real SQLite + real handlers run end-to-end; only the LLM is faked.
-
+- **Plugin-local tools only.** A worker can't call another plugin's tools.

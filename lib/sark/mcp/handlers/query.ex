@@ -32,8 +32,8 @@ defmodule Sark.MCP.Handlers.Query do
     raw_params = raw_params || %{}
 
     with {:ok, %Query{} = q} <- Registry.get(plugin, query_name),
-         {:ok, binds} <- Query.validate_and_bind(q, raw_params),
-         {:ok, cols, value} <- execute(plugin, q, binds, raw_params) do
+         {:ok, coerced} <- Query.coerce_params(q, raw_params),
+         {:ok, cols, value} <- execute(plugin, q, coerced, raw_params) do
       reply_text(Render.render(value, q.format, q.returns, cols), session)
     else
       :error ->
@@ -41,6 +41,9 @@ defmodule Sark.MCP.Handlers.Query do
 
       {:error, {:validation, errs}} ->
         reply_error("validation: " <> format_errs(errs), session)
+
+      {:error, {:rejected, msg}} ->
+        reply_error("rejected: #{msg}", session)
 
       {:error, {:constraint, msg}} ->
         reply_error("constraint: #{msg}", session)
@@ -53,27 +56,117 @@ defmodule Sark.MCP.Handlers.Query do
     end
   end
 
-  defp execute(plugin, %Query{write: false} = q, binds, _raw_params) do
-    case run_reads(plugin, q.statements, binds) do
-      {:ok, cols, rows} ->
-        case coerce(rows, q.returns) do
-          {:ok, value} -> {:ok, cols, value}
-          err -> err
-        end
+  # Reject pre-flight: each entry is a SELECT that returns ≥1 row when
+  # its precondition fails. First non-empty short-circuits with
+  # `{:rejected, msg}`. For reads we run on the read pool (query_only
+  # backstop blocks accidental writes). For writes we run inside the
+  # write txn (BEGIN IMMEDIATE) so the reject SELECT and main statement
+  # share one exclusive write lock — no TOCTOU window for uniqueness /
+  # state preconditions against other writers.
+  defp check_rejects(%Query{reject: []}, _coerced, _runner), do: :ok
+
+  defp check_rejects(%Query{reject: rejects, params: params}, coerced, runner) do
+    Enum.reduce_while(rejects, :ok, fn r, _acc ->
+      binds = Enum.map(r.param_order, fn name -> Map.fetch!(coerced, name) end)
+
+      case runner.(r.compiled_sql, binds) do
+        {:ok, []} ->
+          {:cont, :ok}
+
+        {:ok, [_ | _]} ->
+          {:halt, {:error, {:rejected, render_message(r.message, coerced, params)}}}
+
+        {:error, e} ->
+          {:halt, classify(e)}
+      end
+    end)
+  end
+
+  # Interpolate `{name}` tokens in the reject message template. Booleans
+  # are coerced to 1/0 for SQLite binding by the time they reach here, so
+  # we look up the param's declared type to render true/false rather than
+  # the raw int. Unknown placeholders (no such param) render literally as
+  # `{name}` — `to_existing_atom` keeps stray template tokens from leaking
+  # atoms into the VM.
+  defp render_message(template, coerced, params) do
+    type_by_name = Map.new(params, &{&1.name, &1.type})
+
+    Regex.replace(~r/\{(\w+)\}/, template, fn whole, name ->
+      try do
+        key = String.to_existing_atom(name)
+        render_val(Map.get(coerced, key, :__missing__), Map.get(type_by_name, key))
+      rescue
+        ArgumentError -> whole
+      end
+    end)
+  end
+
+  defp render_val(:__missing__, _), do: nil |> to_string()
+  defp render_val(1, :boolean), do: "true"
+  defp render_val(0, :boolean), do: "false"
+  defp render_val(nil, _), do: ""
+  defp render_val(v, _) when is_binary(v), do: v
+  defp render_val(v, _), do: inspect(v)
+
+  defp bind(stmts, coerced) do
+    Enum.map(stmts, fn s ->
+      Enum.map(s.param_order, fn name -> Map.fetch!(coerced, name) end)
+    end)
+  end
+
+  defp execute(plugin, %Query{write: false} = q, coerced, _raw_params) do
+    runner = fn sql, binds ->
+      case DB.read(plugin, sql, binds) do
+        {:ok, _cols, rows} -> {:ok, rows}
+        {:error, _} = e -> e
+      end
+    end
+
+    with :ok <- check_rejects(q, coerced, runner),
+         binds = bind(q.statements, coerced),
+         {:ok, cols, rows} <- run_reads(plugin, q.statements, binds),
+         {:ok, value} <- coerce(rows, q.returns) do
+      {:ok, cols, value}
+    else
+      {:error, {:rejected, _}} = rej ->
+        rej
+
+      {:error, :scalar_no_rows} = e ->
+        e
 
       {:error, e} ->
         classify(e)
     end
   end
 
-  defp execute(plugin, %Query{write: true} = q, binds, raw_params) do
+  defp execute(plugin, %Query{write: true} = q, coerced, raw_params) do
     txn_result =
-      DB.txn(plugin, fn conn ->
-        case run_writes(conn, q, binds) do
-          {:ok, %Result{} = r} -> {:ok, r}
-          {:error, e} -> DBConnection.rollback(conn, e)
-        end
-      end)
+      DB.txn(
+        plugin,
+        fn conn ->
+          runner = fn sql, binds ->
+            case Exqlite.query(conn, sql, binds) do
+              {:ok, %Result{rows: nil}} -> {:ok, []}
+              {:ok, %Result{rows: rows}} -> {:ok, rows}
+              {:error, _} = e -> e
+            end
+          end
+
+          case check_rejects(q, coerced, runner) do
+            :ok ->
+              binds = bind(q.statements, coerced)
+
+              case run_writes(conn, q, binds) do
+                {:ok, %Result{} = r} -> {:ok, r}
+                {:error, e} -> DBConnection.rollback(conn, e)
+              end
+
+            {:error, reason} ->
+              DBConnection.rollback(conn, reason)
+          end
+        end,
+        mode: :immediate
+      )
 
     case txn_result do
       {:ok, {:ok, %Result{} = r}} ->
@@ -85,6 +178,12 @@ defmodule Sark.MCP.Handlers.Query do
           err ->
             err
         end
+
+      {:error, {:rejected, _}} = rej ->
+        rej
+
+      {:error, {:validation, _}} = v ->
+        v
 
       {:error, e} ->
         classify(e)

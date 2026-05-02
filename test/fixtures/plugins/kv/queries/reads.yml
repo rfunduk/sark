@@ -39,3 +39,17 @@ queries:
       limit: { type: integer, required: false, default: 10 }
     sql: |
       SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
+
+  bool_reject_demo:
+    description: |
+      Synthetic read that fires a reject when `flag` is true, used to
+      verify boolean params render as `true`/`false` (not 1/0) in
+      reject `message:` templates.
+    returns: count
+    params:
+      flag: { type: boolean }
+    reject:
+      - sql: SELECT 1 WHERE :flag = 1
+        message: "got flag={flag}"
+    sql: |
+      SELECT 1

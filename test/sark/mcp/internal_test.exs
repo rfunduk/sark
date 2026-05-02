@@ -28,6 +28,42 @@ defmodule Sark.MCP.InternalTest do
     assert msg =~ "validation"
   end
 
+  test "call_tool runs `reject:` pre-flight and short-circuits on first hit" do
+    # Reserved-prefix reject fires before the duplicate-key reject.
+    assert {:error, msg} =
+             Internal.call_tool("kv", "put_unique", %{"key" => "_admin", "value" => "v"})
+
+    assert msg =~ "rejected:"
+    assert msg =~ "reserved prefix"
+    assert msg =~ "_admin"
+
+    # Successful insert (no reject hit).
+    assert {:ok, _} = Internal.call_tool("kv", "put_unique", %{"key" => "fresh", "value" => "v"})
+
+    # Second insert with same key trips the duplicate-key reject.
+    assert {:error, msg2} =
+             Internal.call_tool("kv", "put_unique", %{"key" => "fresh", "value" => "v2"})
+
+    assert msg2 =~ "rejected:"
+    assert msg2 =~ "already exists"
+    assert msg2 =~ "fresh"
+
+    # Confirm the rejected insert did not run — value still 'v'.
+    assert {:ok, text} = Internal.call_tool("kv", "get", %{"key" => "fresh"})
+    assert text =~ "v"
+    refute text =~ "v2"
+  end
+
+  test "reject message renders booleans as true/false, not 1/0" do
+    assert {:error, msg} = Internal.call_tool("kv", "bool_reject_demo", %{"flag" => true})
+    assert msg =~ "rejected:"
+    assert msg =~ "got flag=true"
+    refute msg =~ "got flag=1"
+
+    # false → no reject; query proceeds.
+    assert {:ok, _} = Internal.call_tool("kv", "bool_reject_demo", %{"flag" => false})
+  end
+
   test "call_tool routes to patch_text built-in" do
     {:ok, _} =
       Internal.call_tool("kv", "add_note", %{"body" => "hello world, hello again"})

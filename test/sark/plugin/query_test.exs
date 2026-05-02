@@ -130,7 +130,135 @@ defmodule Sark.Plugin.QueryTest do
     end
   end
 
-  describe "validate_and_bind/2" do
+  describe "reject:" do
+    test "parses a list of reject entries with sql + message" do
+      q =
+        Query.parse!("upd", %{
+          "description" => "x",
+          "returns" => "count",
+          "write" => true,
+          "sql" => "UPDATE t SET v = :v WHERE id = :id",
+          "params" => %{
+            "id" => %{"type" => "text"},
+            "v" => %{"type" => "text"}
+          },
+          "reject" => [
+            %{
+              "sql" => "SELECT 1 FROM t WHERE id LIKE :id || '%' GROUP BY 1 HAVING COUNT(*) > 1",
+              "message" => "ambiguous prefix '{id}'"
+            },
+            %{
+              "sql" => "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM t WHERE id LIKE :id || '%')",
+              "message" => "no row matches '{id}'"
+            }
+          ]
+        })
+
+      assert [r1, r2] = q.reject
+      assert r1.compiled_sql =~ "GROUP BY 1"
+      assert r1.param_order == [:id]
+      assert r1.message == "ambiguous prefix '{id}'"
+      assert r2.message == "no row matches '{id}'"
+    end
+
+    test "defaults to empty list when reject not given" do
+      q =
+        Query.parse!("plain", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1"
+        })
+
+      assert q.reject == []
+    end
+
+    test "raises when reject entry references undeclared param" do
+      assert_raise ArgumentError, ~r/SQL references :missing/, fn ->
+        Query.parse!("bad", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1",
+          "reject" => [
+            %{"sql" => "SELECT :missing", "message" => "x"}
+          ]
+        })
+      end
+    end
+
+    test "raises when reject entry is missing sql or message" do
+      assert_raise ArgumentError, ~r/sql is required/, fn ->
+        Query.parse!("bad", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1",
+          "reject" => [%{"message" => "no sql"}]
+        })
+      end
+
+      assert_raise ArgumentError, ~r/message is required/, fn ->
+        Query.parse!("bad", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1",
+          "reject" => [%{"sql" => "SELECT 1"}]
+        })
+      end
+    end
+
+    test "raises when reject is neither map nor list" do
+      assert_raise ArgumentError, ~r/reject must be a map or list of maps/, fn ->
+        Query.parse!("bad", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1",
+          "reject" => "nope"
+        })
+      end
+    end
+
+    test "single map reject is normalized to list of one" do
+      q =
+        Query.parse!("upd", %{
+          "description" => "x",
+          "returns" => "count",
+          "write" => true,
+          "sql" => "UPDATE t SET v = :v WHERE id = :id",
+          "params" => %{
+            "id" => %{"type" => "text"},
+            "v" => %{"type" => "text"}
+          },
+          "reject" => %{
+            "sql" => "SELECT 1 WHERE :id = ''",
+            "message" => "id required"
+          }
+        })
+
+      assert [%{message: "id required"}] = q.reject
+    end
+
+    test "raises when reject sql is not a SELECT" do
+      bad_sqls = [
+        "INSERT INTO t VALUES (1)",
+        "  update t set v = 1",
+        "DELETE FROM t",
+        "WITH x AS (SELECT 1) SELECT * FROM x",
+        "PRAGMA foreign_keys = ON"
+      ]
+
+      for sql <- bad_sqls do
+        assert_raise ArgumentError, ~r/reject sql must be a plain SELECT/, fn ->
+          Query.parse!("bad", %{
+            "description" => "x",
+            "returns" => "results",
+            "sql" => "SELECT 1",
+            "reject" => [%{"sql" => sql, "message" => "x"}]
+          })
+        end
+      end
+    end
+  end
+
+  describe "coerce_params/2" do
     setup do
       q =
         Query.parse!("get", %{
@@ -146,42 +274,23 @@ defmodule Sark.Plugin.QueryTest do
       %{q: q}
     end
 
-    test "binds in compiled order, applying defaults", %{q: q} do
-      assert {:ok, [["foo", 0]]} = Query.validate_and_bind(q, %{"k" => "foo"})
-      assert {:ok, [["foo", 5]]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => 5})
+    test "coerces and applies defaults", %{q: q} do
+      assert {:ok, %{k: "foo", n: 0}} = Query.coerce_params(q, %{"k" => "foo"})
+      assert {:ok, %{k: "foo", n: 5}} = Query.coerce_params(q, %{"k" => "foo", "n" => 5})
     end
 
     test "coerces stringified integer", %{q: q} do
-      assert {:ok, [["foo", 7]]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => "7"})
-    end
-
-    test "multi-statement query produces one bind list per statement" do
-      q =
-        Query.parse!("multi", %{
-          "description" => "Two-step write.",
-          "returns" => "results",
-          "write" => true,
-          "sql" => [
-            "DELETE FROM t WHERE k = :k",
-            "INSERT INTO t (k, n) VALUES (:k, :n) RETURNING id"
-          ],
-          "params" => %{
-            "k" => %{"type" => "text"},
-            "n" => %{"type" => "integer"}
-          }
-        })
-
-      assert {:ok, [["foo"], ["foo", 5]]} = Query.validate_and_bind(q, %{"k" => "foo", "n" => 5})
+      assert {:ok, %{k: "foo", n: 7}} = Query.coerce_params(q, %{"k" => "foo", "n" => "7"})
     end
 
     test "missing required → validation error", %{q: q} do
-      assert {:error, {:validation, errs}} = Query.validate_and_bind(q, %{"n" => 1})
+      assert {:error, {:validation, errs}} = Query.coerce_params(q, %{"n" => 1})
       assert [%{param: :k, reason: "is required"}] = errs
     end
 
     test "wrong type → validation error", %{q: q} do
       assert {:error, {:validation, [%{param: :n, reason: "must be an integer"}]}} =
-               Query.validate_and_bind(q, %{"k" => "x", "n" => "abc"})
+               Query.coerce_params(q, %{"k" => "x", "n" => "abc"})
     end
 
     test "enum violation" do
@@ -196,7 +305,7 @@ defmodule Sark.Plugin.QueryTest do
         })
 
       assert {:error, {:validation, [%{param: :feel, reason: msg}]}} =
-               Query.validate_and_bind(q, %{"feel" => "meh"})
+               Query.coerce_params(q, %{"feel" => "meh"})
 
       assert msg =~ "must be one of"
     end
@@ -238,8 +347,8 @@ defmodule Sark.Plugin.QueryTest do
           }
         })
 
-      assert {:ok, [[1, json]]} =
-               Query.validate_and_bind(q, %{
+      assert {:ok, %{session_id: 1, sets: json}} =
+               Query.coerce_params(q, %{
                  "session_id" => 1,
                  "sets" => [
                    %{"exercise_id" => 5, "reps" => 8, "feeling" => "right"},
@@ -277,7 +386,7 @@ defmodule Sark.Plugin.QueryTest do
         })
 
       assert {:error, {:validation, [%{param: :items, reason: msg}]}} =
-               Query.validate_and_bind(q, %{
+               Query.coerce_params(q, %{
                  "items" => [%{"n" => 1}, %{"n" => "bad"}]
                })
 
@@ -304,7 +413,7 @@ defmodule Sark.Plugin.QueryTest do
         })
 
       assert {:error, {:validation, [%{param: :filter, reason: msg}]}} =
-               Query.validate_and_bind(q, %{"filter" => %{"limit" => 5}})
+               Query.coerce_params(q, %{"filter" => %{"limit" => 5}})
 
       assert msg =~ ".kind is required"
     end
@@ -373,15 +482,15 @@ defmodule Sark.Plugin.QueryTest do
       %{q: q}
     end
 
-    test "binds true → 1, false → 0", %{q: q} do
-      assert {:ok, [[1]]} = Query.validate_and_bind(q, %{"active" => true})
-      assert {:ok, [[0]]} = Query.validate_and_bind(q, %{"active" => false})
+    test "coerces true → 1, false → 0", %{q: q} do
+      assert {:ok, %{active: 1}} = Query.coerce_params(q, %{"active" => true})
+      assert {:ok, %{active: 0}} = Query.coerce_params(q, %{"active" => false})
     end
 
     test "rejects 1 / 0 / strings", %{q: q} do
       for bad <- [1, 0, "true", "false", "yes"] do
         assert {:error, {:validation, [%{param: :active, reason: reason}]}} =
-                 Query.validate_and_bind(q, %{"active" => bad})
+                 Query.coerce_params(q, %{"active" => bad})
 
         assert reason =~ "must be true or false"
       end
@@ -389,19 +498,6 @@ defmodule Sark.Plugin.QueryTest do
 
     test "JSON Schema emits boolean", %{q: q} do
       assert Query.to_json_schema(q).properties["active"] == %{type: "boolean"}
-    end
-  end
-
-  describe "null type removed" do
-    test "rejects type: null in params" do
-      assert_raise ArgumentError, ~r/type must be one of/, fn ->
-        Query.parse!("bad", %{
-          "description" => "x",
-          "returns" => "results",
-          "sql" => "SELECT 1",
-          "params" => %{"x" => %{"type" => "null"}}
-        })
-      end
     end
   end
 end

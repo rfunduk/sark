@@ -27,6 +27,7 @@ defmodule Sark.Plugin.Query.YAML do
   """
 
   alias Sark.Plugin.Query
+  alias Sark.Plugin.Query.Fragments
 
   @type opts :: %{allow_sql: boolean()}
 
@@ -55,14 +56,28 @@ defmodule Sark.Plugin.Query.YAML do
   defp default_opts, do: %{allow_sql: false}
 
   defp parse_root!(doc, plugin_dir, root_path) do
-    base = entries_from_doc!(doc, root_path)
-    extra = load_includes!(Map.get(doc, "include", []), plugin_dir, root_path)
+    {base, base_shared} = file_contents!(doc, root_path)
+    {extra, extra_shared} = load_includes!(Map.get(doc, "include", []), plugin_dir, root_path)
+
+    shared = merge_shared_no_dupes!([{base_shared, root_path} | extra_shared])
 
     queries =
       (base ++ extra)
       |> merge_no_dupes!()
       |> Enum.sort_by(fn {name, _, _} -> name end)
-      |> Enum.map(fn {name, entry, _source} -> Query.parse!(name, entry) end)
+      |> Enum.map(fn {name, entry, source} ->
+        resolved =
+          try do
+            Fragments.resolve(entry, shared)
+          rescue
+            e in ArgumentError ->
+              reraise ArgumentError,
+                      "queries.yml: #{name} (in #{source}): #{Exception.message(e)}",
+                      __STACKTRACE__
+          end
+
+        Query.parse!(name, resolved)
+      end)
 
     opts = %{allow_sql: parse_allow_sql!(Map.get(doc, "allow_sql", false), root_path)}
 
@@ -75,6 +90,10 @@ defmodule Sark.Plugin.Query.YAML do
     raise "queries.yml at #{path}: allow_sql must be boolean, got #{inspect(other)}"
   end
 
+  defp file_contents!(doc, source) do
+    {entries_from_doc!(doc, source), shared_from_doc!(doc, source)}
+  end
+
   defp entries_from_doc!(doc, source) do
     queries = Map.get(doc, "queries", %{})
 
@@ -85,20 +104,52 @@ defmodule Sark.Plugin.Query.YAML do
     Enum.map(queries, fn {name, entry} -> {name, entry, source} end)
   end
 
+  defp shared_from_doc!(doc, source) do
+    case Map.get(doc, "shared") do
+      nil ->
+        %{}
+
+      map when is_map(map) ->
+        map
+
+      other ->
+        raise "queries.yml at #{source}: shared must be a map, got #{inspect(other)}"
+    end
+  end
+
+  defp merge_shared_no_dupes!(per_file) do
+    Enum.reduce(per_file, %{}, fn {map, source}, acc ->
+      Enum.reduce(map, acc, fn {name, value}, acc2 ->
+        case Map.fetch(acc2, name) do
+          :error ->
+            Map.put(acc2, name, value)
+
+          {:ok, _} ->
+            raise "queries.yml: duplicate shared fragment `@#{name}` " <>
+                    "(redefined in #{source})"
+        end
+      end)
+    end)
+  end
+
   defp load_includes!(patterns, _plugin_dir, root_path) when not is_list(patterns) do
     raise "queries.yml at #{root_path}: include must be a list, got #{inspect(patterns)}"
   end
 
-  defp load_includes!([], _plugin_dir, _root_path), do: []
+  defp load_includes!([], _plugin_dir, _root_path), do: {[], []}
 
   defp load_includes!(patterns, plugin_dir, root_path) do
-    Enum.flat_map(patterns, fn pattern ->
+    Enum.reduce(patterns, {[], []}, fn pattern, {entries_acc, shared_acc} ->
       unless is_binary(pattern) do
         raise "queries.yml at #{root_path}: include entries must be strings, got #{inspect(pattern)}"
       end
 
       paths = expand_pattern!(pattern, plugin_dir, root_path)
-      Enum.flat_map(paths, &load_include_file!/1)
+
+      Enum.reduce(paths, {entries_acc, shared_acc}, fn path, {ea, sa} ->
+        {entries, shared} = load_include_file!(path)
+        {ea ++ entries, sa ++ [{shared, path}]}
+      end)
     end)
   end
 
@@ -121,10 +172,10 @@ defmodule Sark.Plugin.Query.YAML do
   defp load_include_file!(path) do
     case YamlElixir.read_from_file(path) do
       {:ok, nil} ->
-        []
+        {[], %{}}
 
       {:ok, doc} when is_map(doc) ->
-        entries_from_doc!(doc, path)
+        {entries_from_doc!(doc, path), shared_from_doc!(doc, path)}
 
       {:ok, other} ->
         raise "include #{path}: top-level must be a map, got #{inspect(other)}"

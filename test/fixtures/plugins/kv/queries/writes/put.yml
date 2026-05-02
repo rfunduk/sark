@@ -20,3 +20,20 @@ queries:
       value: { type: text }
     sql: |
       INSERT INTO kv (key, value) VALUES (:key, :value) RETURNING key
+
+  put_unique:
+    description: |
+      Upsert a key but reject duplicates and reserved-prefix keys (`_…`).
+      Used to exercise `reject:` pre-flight checks.
+    returns: results
+    write: true
+    params:
+      key:   { type: text }
+      value: { type: text }
+    reject:
+      - sql: SELECT 1 WHERE :key LIKE '\_%' ESCAPE '\'
+        message: "key '{key}' uses reserved prefix"
+      - sql: SELECT 1 FROM kv WHERE key = :key
+        message: "key '{key}' already exists"
+    sql: |
+      INSERT INTO kv (key, value) VALUES (:key, :value) RETURNING key

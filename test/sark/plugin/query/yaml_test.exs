@@ -164,4 +164,177 @@ defmodule Sark.Plugin.Query.YAMLTest do
 
     assert_raise RuntimeError, ~r/include must be a list/, fn -> YAML.load(plugin) end
   end
+
+  describe "shared: fragments" do
+    test "@name resolves whole-value reject from same file", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          shared:
+            no_match:
+              sql: SELECT 1 WHERE :id = ''
+              message: "no match for '{id}'"
+
+          queries:
+            a:
+              description: q
+              write: true
+              returns: count
+              params:
+                id: { type: text }
+              reject: @no_match
+              sql: UPDATE t SET v = 1 WHERE id = :id
+          """
+        })
+
+      {[%{reject: [r]}], _} = YAML.load(plugin)
+      assert r.message == "no match for '{id}'"
+    end
+
+    test "@name list-element splices a list-valued fragment", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          shared:
+            prefix_rejects:
+              - sql: SELECT 1 WHERE :id = 'amb'
+                message: "ambiguous '{id}'"
+              - sql: SELECT 1 WHERE :id = ''
+                message: "no match for '{id}'"
+
+          queries:
+            a:
+              description: q
+              write: true
+              returns: count
+              params:
+                id: { type: text }
+              reject:
+                - @prefix_rejects
+                - sql: SELECT 1 WHERE :id = 'extra'
+                  message: "extra check on '{id}'"
+              sql: UPDATE t SET v = 1 WHERE id = :id
+          """
+        })
+
+      {[%{reject: rs}], _} = YAML.load(plugin)
+      assert length(rs) == 3
+
+      assert Enum.map(rs, & &1.message) == [
+               "ambiguous '{id}'",
+               "no match for '{id}'",
+               "extra check on '{id}'"
+             ]
+    end
+
+    test "shared merges across include files", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          include:
+            - shared.yml
+            - queries/*.yml
+          """,
+          "shared.yml" => """
+          shared:
+            no_match:
+              sql: SELECT 1 WHERE :id = ''
+              message: "no match for '{id}'"
+          """,
+          "queries/upd.yml" => """
+          queries:
+            upd:
+              description: q
+              write: true
+              returns: count
+              params:
+                id: { type: text }
+              reject: @no_match
+              sql: UPDATE t SET v = 1 WHERE id = :id
+          """
+        })
+
+      {[%{reject: [r]}], _} = YAML.load(plugin)
+      assert r.message == "no match for '{id}'"
+    end
+
+    test "duplicate shared fragment across files raises", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          include:
+            - extra.yml
+          shared:
+            dup:
+              sql: SELECT 1
+              message: a
+          """,
+          "extra.yml" => """
+          shared:
+            dup:
+              sql: SELECT 1
+              message: b
+          """
+        })
+
+      assert_raise RuntimeError, ~r/duplicate shared fragment `@dup`/, fn ->
+        YAML.load(plugin)
+      end
+    end
+
+    test "shared must be a map", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          shared:
+            - oops
+          """
+        })
+
+      assert_raise RuntimeError, ~r/shared must be a map/, fn -> YAML.load(plugin) end
+    end
+
+    test "unknown @name raises with helpful message", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          shared:
+            ok_fragment:
+              sql: SELECT 1
+              message: x
+
+          queries:
+            a:
+              description: q
+              returns: scalar
+              sql: SELECT 1
+              reject: @typo
+          """
+        })
+
+      assert_raise ArgumentError, ~r/unknown fragment `@typo`.+@ok_fragment/s, fn ->
+        YAML.load(plugin)
+      end
+    end
+
+    test "fragment cycle raises", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "queries.yml" => """
+          shared:
+            a: "@b"
+            b: "@a"
+
+          queries:
+            q1:
+              description: q
+              returns: scalar
+              sql: SELECT 1
+              reject: @a
+          """
+        })
+
+      assert_raise ArgumentError, ~r/fragment cycle/, fn -> YAML.load(plugin) end
+    end
+  end
 end

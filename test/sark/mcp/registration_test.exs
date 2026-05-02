@@ -70,6 +70,7 @@ defmodule Sark.MCP.RegistrationTest do
 
     assert names == [
              :add_note,
+             :bool_reject_demo,
              :bulk_add_notes,
              :delete,
              :find,
@@ -78,6 +79,7 @@ defmodule Sark.MCP.RegistrationTest do
              :list_table,
              :put,
              :put_strict,
+             :put_unique,
              :reset_note,
              :secret_note,
              :total
@@ -197,6 +199,7 @@ defmodule Sark.MCP.RegistrationTest do
     assert query_names ==
              [
                "add_note",
+               "bool_reject_demo",
                "bulk_add_notes",
                "delete",
                "find",
@@ -205,6 +208,7 @@ defmodule Sark.MCP.RegistrationTest do
                "list_table",
                "put",
                "put_strict",
+               "put_unique",
                "reset_note",
                "total"
              ]
