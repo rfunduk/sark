@@ -1,5 +1,8 @@
 allow_sql: true
 
+patchable:
+  notes: [body]
+
 include:
   - queries/reads.yml
   - queries/writes/*.yml

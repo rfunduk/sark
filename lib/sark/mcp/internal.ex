@@ -9,7 +9,7 @@ defmodule Sark.MCP.Internal do
   blocks.
 
   `tools_for/1` enumerates the tools a plugin exposes, including the
-  built-ins gated by `allow_sql` and the always-on `patch_text`. A
+  built-ins gated by `allow_sql` and the always-on `sark_patch`. A
   worker's `tools:` allowlist is enforced *outside* this module — the
   dispatcher trusts callers; the runner is the gate.
 
@@ -22,8 +22,8 @@ defmodule Sark.MCP.Internal do
   alias Sark.MCP.Registry
   alias Sark.Plugin.Spec
 
-  @builtin_always ~w(patch_text)
-  @builtin_allow_sql ~w(catalog sql_query)
+  @builtin_always ~w(sark_patch)
+  @builtin_allow_sql ~w(sark_catalog sark_sql)
 
   @spec call_tool(String.t(), String.t(), map) :: {:ok, String.t()} | {:error, String.t()}
   def call_tool(plugin, tool_name, params)
@@ -33,13 +33,13 @@ defmodule Sark.MCP.Internal do
     |> unwrap()
   end
 
-  defp dispatch(plugin, "catalog", params),
+  defp dispatch(plugin, "sark_catalog", params),
     do: Handlers.Catalog.call(plugin, params, nil)
 
-  defp dispatch(plugin, "sql_query", params),
+  defp dispatch(plugin, "sark_sql", params),
     do: Handlers.SqlQuery.call(plugin, params, nil)
 
-  defp dispatch(plugin, "patch_text", params),
+  defp dispatch(plugin, "sark_patch", params),
     do: Handlers.PatchText.call(plugin, params, nil)
 
   defp dispatch(plugin, tool_name, params) do
@@ -101,13 +101,13 @@ defmodule Sark.MCP.Internal do
     Map.merge(query_tools, builtins)
   end
 
-  defp builtin_specs(%Spec{name: plugin, allow_sql: allow_sql}) do
+  defp builtin_specs(%Spec{allow_sql: allow_sql} = spec) do
     always =
-      Enum.map(@builtin_always, fn name -> builtin_spec(name, plugin) end)
+      Enum.map(@builtin_always, fn name -> builtin_spec(name, spec) end)
 
     sql =
       if allow_sql do
-        Enum.map(@builtin_allow_sql, fn name -> builtin_spec(name, plugin) end)
+        Enum.map(@builtin_allow_sql, fn name -> builtin_spec(name, spec) end)
       else
         []
       end
@@ -115,11 +115,10 @@ defmodule Sark.MCP.Internal do
     always ++ sql
   end
 
-  defp builtin_spec("patch_text", plugin) do
+  defp builtin_spec("sark_patch", %Spec{name: plugin, patchable: patchable}) do
     %{
-      name: "patch_text",
-      description:
-        "Substring text patch on plugin `#{plugin}`. Replaces every occurrence of `old` with `new` in `col` of the row matching `id`.",
+      name: "sark_patch",
+      description: Sark.MCP.Registration.patch_text_description(plugin, patchable),
       input_schema: %{
         type: "object",
         required: ["table", "id", "col", "old", "new"],
@@ -134,17 +133,17 @@ defmodule Sark.MCP.Internal do
     }
   end
 
-  defp builtin_spec("catalog", plugin) do
+  defp builtin_spec("sark_catalog", %Spec{name: plugin}) do
     %{
-      name: "catalog",
+      name: "sark_catalog",
       description: "Live schema and canned queries for plugin `#{plugin}`.",
       input_schema: %{type: "object", properties: %{}, required: []}
     }
   end
 
-  defp builtin_spec("sql_query", plugin) do
+  defp builtin_spec("sark_sql", %Spec{name: plugin}) do
     %{
-      name: "sql_query",
+      name: "sark_sql",
       description: "Run an arbitrary SELECT/WITH/PRAGMA against plugin `#{plugin}`.",
       input_schema: %{
         type: "object",

@@ -44,7 +44,8 @@ defmodule Sark.Plugin.Loader do
       migrations: migrations,
       queries: queries,
       workers: workers,
-      allow_sql: Map.get(opts, :allow_sql, false)
+      allow_sql: Map.get(opts, :allow_sql, false),
+      patchable: Map.get(opts, :patchable, %{})
     }
   end
 end

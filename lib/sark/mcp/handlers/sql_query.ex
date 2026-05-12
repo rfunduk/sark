@@ -15,7 +15,7 @@ defmodule Sark.MCP.Handlers.SqlQuery do
 
   @spec call(String.t(), map, term) :: {:reply, map, term}
   def call(plugin, params, session) do
-    Telemetry.with_logging("#{plugin}.sql_query", params, fn ->
+    Telemetry.with_logging("#{plugin}.sark_sql", params, fn ->
       do_call(plugin, params, session)
     end)
   end

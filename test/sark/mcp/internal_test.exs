@@ -64,12 +64,12 @@ defmodule Sark.MCP.InternalTest do
     assert {:ok, _} = Internal.call_tool("kv", "bool_reject_demo", %{"flag" => false})
   end
 
-  test "call_tool routes to patch_text built-in" do
+  test "call_tool routes to sark_patch built-in" do
     {:ok, _} =
       Internal.call_tool("kv", "add_note", %{"body" => "hello world, hello again"})
 
     {:ok, _} =
-      Internal.call_tool("kv", "patch_text", %{
+      Internal.call_tool("kv", "sark_patch", %{
         "table" => "notes",
         "id" => 1,
         "col" => "body",
@@ -78,7 +78,7 @@ defmodule Sark.MCP.InternalTest do
       })
 
     assert {:ok, _} =
-             Internal.call_tool("kv", "sql_query", %{
+             Internal.call_tool("kv", "sark_sql", %{
                "sql" => "SELECT body FROM notes WHERE id = 1"
              })
   end
@@ -95,9 +95,9 @@ defmodule Sark.MCP.InternalTest do
     end)
   end
 
-  test "tools_for includes built-in patch_text", %{spec: spec} do
-    [tool] = Internal.tools_for(spec, ["patch_text"])
-    assert tool.name == "patch_text"
+  test "tools_for includes built-in sark_patch", %{spec: spec} do
+    [tool] = Internal.tools_for(spec, ["sark_patch"])
+    assert tool.name == "sark_patch"
     assert "old" in tool.input_schema.required
   end
 
@@ -107,19 +107,19 @@ defmodule Sark.MCP.InternalTest do
     end
   end
 
-  test "tools_for refuses sql_query/catalog when allow_sql is false", %{spec: spec} do
+  test "tools_for refuses sark_sql/sark_catalog when allow_sql is false", %{spec: spec} do
     spec = %Spec{spec | allow_sql: false}
 
-    assert_raise ArgumentError, ~r/unknown tool `sql_query`/, fn ->
-      Internal.tools_for(spec, ["sql_query"])
+    assert_raise ArgumentError, ~r/unknown tool `sark_sql`/, fn ->
+      Internal.tools_for(spec, ["sark_sql"])
     end
   end
 
-  test "tools_for surfaces sql_query/catalog when allow_sql is true", %{spec: spec} do
+  test "tools_for surfaces sark_sql/sark_catalog when allow_sql is true", %{spec: spec} do
     spec = %Spec{spec | allow_sql: true}
-    tools = Internal.tools_for(spec, ["catalog", "sql_query"])
+    tools = Internal.tools_for(spec, ["sark_catalog", "sark_sql"])
     names = Enum.map(tools, & &1.name) |> Enum.sort()
-    assert names == ["catalog", "sql_query"]
+    assert names == ["sark_catalog", "sark_sql"]
   end
 
   test "internal queries are addressable from Internal even though Phantom doesn't expose them",
@@ -132,7 +132,7 @@ defmodule Sark.MCP.InternalTest do
 
   test "catalog filters internal queries out of public response", %{spec: spec} do
     spec = %Spec{spec | allow_sql: true}
-    {:ok, text} = Internal.call_tool("kv", "catalog", %{})
+    {:ok, text} = Internal.call_tool("kv", "sark_catalog", %{})
     decoded = Jason.decode!(text)
 
     query_names = Enum.map(decoded["queries"], & &1["name"])

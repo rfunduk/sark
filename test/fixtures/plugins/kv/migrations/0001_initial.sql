@@ -1,5 +1,5 @@
 -- kv: smoke-test plugin. Single key-value table + a notes table
--- with an integer id (used to exercise patch_text).
+-- with an integer id (used to exercise sark_patch).
 -- Schema is idempotent so reapplying it on every boot is safe.
 
 CREATE TABLE IF NOT EXISTS kv (

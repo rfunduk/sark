@@ -1,8 +1,8 @@
 <img src="./assets/sark.png" alt="SARK" />
 
-A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations) and a set of canned queries (YAML); sark exposes each query as a typed MCP tool. Agents call the tools, sark validates parameters, runs the SQL, and renders results.
+A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations) and a set of canned queries (YAML); Sark exposes each query as a typed MCP tool. Agents call the tools, Sark validates parameters, runs the SQL, and renders results.
 
-Sark itself is MCP-only and ships no skill format. Skills (Claude Code, Cursor rules, etc.) live alongside the plugin in the same repo and are loaded by whichever MCP client is connected.
+Sark is MCP-only and ships no skill format. Skills (Claude Code, Cursor rules, etc.) are a separate concern and you can handle them as you prefer -- you might have them co-located with the plugin, or in a separate 'AI marketplace', or just locally on your machine.
 
 ## FAQ
 
@@ -53,7 +53,7 @@ myplugin/
     0002_add_foo.sql
   queries.yml              Optional. MCP tool definitions.
   workers.yml              Optional. Background-agent definitions.
-  skills/                  Optional. Travels with the plugin; sark ignores it.
+  skills/                  Optional. Travels with the plugin; Sark ignores it.
     foo-bar/SKILL.md       Load with your MCP client.
 ```
 
@@ -61,7 +61,7 @@ The plugin's SQLite database is created at `{config.data_dir}/{plugin_name}.db` 
 
 ### Migrations
 
-Filenames must match `NNNN_<name>.sql` (zero-padded, contiguous from 1). Applied in order on cold boot. Each file's SQL runs in a transaction; sark tracks which versions have applied. Forward-only — no rollback. **Hot reload does not re-run migrations**; schema changes still require a process restart.
+Filenames must match `NNNN_<name>.sql` (zero-padded, contiguous from 1). Applied in order on cold boot. Each file's SQL runs in a transaction; Sark tracks which versions have applied. Forward-only — no rollback. **Hot reload does not re-run migrations**; schema changes still require a process restart.
 
 Column documentation lives as SQL comments inside the `CREATE TABLE` statements:
 
@@ -73,7 +73,7 @@ CREATE TABLE sessions (
 );
 ```
 
-Useful if you enable `allow_sql` as then the `catalog` tool will get the schema + comments in response.
+Useful if you enable `allow_sql` as then the `sark_catalog` tool will get the schema + comments in response.
 
 ### queries.yml
 
@@ -81,6 +81,9 @@ Top-level shape:
 
 ```yaml
 allow_sql: false               # optional, default false. See "Arbitrary SQL access" below.
+
+patchable:                     # optional, default {}. Allow-list for the built-in
+  notes: [body]                # sark_patch tool. See "sark_patch" below.
 
 include:                       # optional. List of paths or globs (plugin-dir-relative).
   - queries/reads.yml          # literal file (must exist)
@@ -182,7 +185,7 @@ log_sets:
     FROM json_each(:sets)
 ```
 
-The agent calls one tool with the whole batch; sark validates each element against `items:` before any SQL runs and returns path-qualified errors (`sets[2].reps must be an integer`). The SQLite layer sees one prepared INSERT...SELECT inside one transaction.
+The agent calls one tool with the whole batch; Sark validates each element against `items:` before any SQL runs and returns path-qualified errors (`sets[2].reps must be an integer`). The SQLite layer sees one prepared INSERT...SELECT inside one transaction.
 
 **`returns` spec:**
 
@@ -320,7 +323,7 @@ Rules:
 
 ### Worker-only queries (`internal: true`)
 
-A query marked `internal: true` is **not** registered as an MCP tool. External clients (Claude Code, Cursor, curl) can't see it or call it, and it's omitted from the `catalog` response. The query is still loaded into the plugin's registry and is reachable from inside the same plugin's workers (see [Workers](#workers) below). Same parameter validation, same transactions, same renderers — just hidden from the public surface.
+A query marked `internal: true` is **not** registered as an MCP tool. External clients (Claude Code, Cursor, curl) can't see it or call it, and it's omitted from the `sark_catalog` response. The query is still loaded into the plugin's registry and is reachable from inside the same plugin's workers (see [Workers](#workers) below). Same parameter validation, same transactions, same renderers — just hidden from the public surface.
 
 ```yaml
 queries:
@@ -339,7 +342,7 @@ Use it for things like writing system-only event kinds, flipping server-managed 
 
 ## Arbitrary SQL access
 
-Two extra tools — `catalog` and `sql_query` — let an MCP client introspect the schema and run ad-hoc read-only SQL. Both are off by default. Opt in per plugin:
+Two extra tools — `sark_catalog` and `sark_sql` — let an MCP client introspect the schema and run ad-hoc read-only SQL. Both are off by default. Opt in per plugin:
 
 ```yaml
 # queries.yml
@@ -348,7 +351,7 @@ allow_sql: true
 
 When enabled:
 
-- **`catalog`** returns the live schema and the list of canned queries with their parameter schemas:
+- **`sark_catalog`** returns the live schema and the list of canned queries with their parameter schemas:
 
   ```json
   {
@@ -363,50 +366,51 @@ When enabled:
   }
   ```
 
-- **`sql_query(sql)`** runs an arbitrary `SELECT` / `WITH` / `PRAGMA`.
+- **`sark_sql(sql)`** runs an arbitrary `SELECT` / `WITH` / `PRAGMA`.
 
 Most plugins should leave `allow_sql: false` and expose only their curated canned queries — those have validated parameter types, structured response formats, and stable contracts the skill is written against. Leaving it enabled with unsupervised agents will probably eventually result in something like `DELETE FROM tasks;`.
 
-## `patch_text`
+## `sark_patch`
 
-Every plugin gets a `patch_text(table, id, col, old, new)` tool. It reads `col` from the row matching `id`, replaces every occurrence of the `old` substring with `new`, and writes the result back — all in one writer transaction. Returns the number of replacements made. Errors if `old` doesn't appear in the column (so a typo doesn't silently no-op).
+Every plugin gets a `sark_patch(table, id, col, old, new)` tool. It reads `col` from the row matching `id`, replaces every occurrence of the `old` substring with `new`, and writes the result back — all in one writer transaction. Returns the number of replacements made. Errors if `old` doesn't appear in the column (so a typo doesn't silently no-op).
 
 The point is surgical edits without round-tripping the whole field. A plugin can store a long markdown body in a column and patch a single paragraph or sentence:
 
 ```
-patch_text(table='notes', id=1, col='body',
+sark_patch(table='notes', id=1, col='body',
            old='There are 50 servers in the pool.',
            new='There are 100 servers in the pool.')
 ```
 
-`patch_text` is unconditional — it operates on identifier-validated `table` / `col` arguments, never arbitrary SQL. The plugin's skill should explain which fields are intended for it (e.g. "`patch_text` the `notes.body` column when revising notes").
+`sark_patch` is identifier-validated (never arbitrary SQL) and locked down by default — it does nothing until the plugin author explicitly configures specifically allowed tables/columns.
 
-**Non-integer primary keys.** `id` accepts any scalar that SQLite can match — integers or strings. If your table is keyed by a slug, declare it `TEXT PRIMARY KEY` and `patch_text` works directly without a slug→id round-trip:
+### `patchable:` allow-list
 
-```sql
-CREATE TABLE tasks (
-  slug TEXT PRIMARY KEY,
-  body TEXT NOT NULL
-);
+`queries.yml` declares the allow-list at the top level:
+
+```yaml
+patchable:
+  notes: [body]
+  tasks: [body, title]
 ```
 
-```
-patch_text(table='tasks', id='my-task', col='body', old='foo', new='bar')
-```
+Map of `table → [column, ...]`. Both sides are validated as SQL identifiers at load time. **The default is empty — `sark_patch` rejects every call until the plugin author opts specific fields in.** Locked-down by default; the plugin author decides what's editable.
 
-The `id` parameter just goes into the `WHERE id = ?` clause as-is.
+The tool is always registered (so the agent gets a useful error instead of "tool not found"). Its description lists the allowed paths up front, e.g. `Patchable: notes.body, tasks.body, tasks.title.`
 
-> Note: built-in tool names — `patch_text`, `catalog`, `sql_query` — are reserved. Naming a query in `queries.yml` after one of them is a hard error at registration time.
+The plugin's skill should explain which fields are intended for it (e.g. "`sark_patch` the `notes.body` column when revising notes").
+
+```
+sark_patch(table='tasks', id='my-task', col='body', old='foo', new='bar')
+```
 
 ## Hot reload
 
-Each plugin runs a file watcher with a 200ms debounce. When `queries.yml`, any included file, or anything else under the plugin directory ending in `.yml` / `.yaml` changes, sark re-runs the loader and re-registers the MCP tools.
-
-Migrations and database files (`*.db`, `*.db-shm`, `*.db-wal`) are ignored. Reload errors are caught and logged; the previous registration stays in place.
+By default Sark will reload queries, workers, and tool descriptions. Not migrations -- restart to apply schema changes.
 
 Disable per-deployment with `hot_reload: false` in config.
 
-> Note: tool changes take effect server-side immediately, but most MCP clients (Claude Code included) cache the tool list at session start and need a reconnect to see new tools. **Existing tools work without reconnect as long as their `params:` block is unchanged** — SQL, description, returns, format can all change freely. Adding/removing/renaming a param, or changing its type or `required` flag, is a signature change and needs a reconnect for the client to pick up the new schema.
+> Note: tool changes take effect server-side immediately, but most MCP clients cache the tool list at session start and need a reconnect to see new tools or signature changes. Existing tools work without reconnect as long as their `params:` block is unchanged** — SQL, description, returns, format can all change freely, even if your agent might be a bit confused.
 
 ## Implementing a plugin
 
@@ -448,7 +452,7 @@ Shortest path:
     ```
 
 3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: ../kv`) and ensure a token is scoped to it (`plugins: ["*"]` or `plugins: [kv]`).
-4. Boot sark. The plugin's database is created and migration 1 is applied.
+4. Boot Sark. The plugin's database is created and migration 1 is applied.
 5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-mytoken"`
 6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`
 
@@ -506,7 +510,7 @@ prune_notes_history:
 
 ## Workers
 
-A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `queries.yml` surface, same handlers — except the loop runs inside sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
+A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `queries.yml` surface, same handlers — except the loop runs inside Sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
 
 ### workers.yml
 
@@ -557,7 +561,7 @@ workers:
       compose an updated body that integrates the comment content
       (preserve facts, drop redundancy, keep markdown structure).
       Later comments override previous comments or the body on conflict.
-      Use `patch_text` to update the body, then `archive_comments` with
+      Use `sark_patch` to update the body, then `archive_comments` with
       the comment ids you folded. Never invent facts. Stop when every
       task in the queue is handled.
 
@@ -574,7 +578,7 @@ workers:
 
 **Field notes:**
 
-- `tools` is an allowlist of bare tool names from this plugin's `queries.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`patch_text`, plus `catalog` and `sql_query` when `allow_sql: true`). Tools outside the list are invisible to the LLM. Unknown names raise at startup. Cross-plugin (`<plugin>.<tool>`) is not supported.
+- `tools` is an allowlist of bare tool names from this plugin's `queries.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`sark_patch`, plus `sark_catalog` and `sark_sql` when `allow_sql: true`). Tools outside the list are invisible to the LLM. Unknown names raise at startup. Cross-plugin (`<plugin>.<tool>`) is not supported.
 - `when:` is parameterless SQL. **Empty result set → worker is skipped entirely** (no LLM call, no `_worker_log` row). One or more rows → run. Use it to short-circuit when there's nothing to do.
 - `load:` is parameterless SQL. Result rows render `prompt:` via mustache:
   - 0 rows → empty context (vars expand to `""`).
@@ -588,7 +592,7 @@ workers:
 
 Sark does cache the `system:` block and tool definitions across turns within a single run, however since most workers are over long cadences (daily / weekly) we won't generally get much in the way of cache benefits.
 
-Every terminal worker state writes one row to a sark-managed `_worker_log` table in the plugin's own database. Columns:
+Every terminal worker state writes one row to a Sark-managed `_worker_log` table in the plugin's own database. Columns:
 
 | column                  | meaning                                                              |
 | ----------------------- | -------------------------------------------------------------------- |

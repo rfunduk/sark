@@ -3,7 +3,7 @@ data_dir: ./dev_data
 log_level: debug
 
 tokens:
-  - { name: dev, token: sk-dev }
+  - { name: dev, plugins: [kv], token: sk-dev }
 
 plugins:
-  - plugins/kv
+  kv: plugins/kv

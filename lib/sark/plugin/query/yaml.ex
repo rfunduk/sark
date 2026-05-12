@@ -4,7 +4,11 @@ defmodule Sark.Plugin.Query.YAML do
 
   Format:
 
-      allow_sql: false       # optional — opt into catalog + sql_query tools
+      allow_sql: false       # optional — opt into sark_catalog + sark_sql tools
+      patchable:             # optional — allow-list for the built-in
+        notes: [body]        #   `sark_patch` tool. Default {} (locked
+        tasks: [body, title] #   down). Map of table → list of columns,
+                             #   both validated as identifiers.
       include:               # optional — list of file paths or globs,
         - queries/*.yml      #   relative to plugin dir. Each must be a
         - queries/extra.yml  #   YAML doc with the same top-level shape.
@@ -22,14 +26,16 @@ defmodule Sark.Plugin.Query.YAML do
   merged into a single map. Duplicate names raise.
 
   Returns `{queries, opts}` — `queries` is a list of parsed `Query.t()`,
-  `opts` is a map of plugin-wide flags (`%{allow_sql: bool}`). Returns
-  `{[], %{allow_sql: false}}` if `queries.yml` is absent.
+  `opts` is a map of plugin-wide flags (`%{allow_sql: bool, patchable:
+  map}`). Returns `{[], default_opts()}` if `queries.yml` is absent.
   """
 
   alias Sark.Plugin.Query
   alias Sark.Plugin.Query.Fragments
 
-  @type opts :: %{allow_sql: boolean()}
+  @type opts :: %{allow_sql: boolean(), patchable: %{optional(String.t()) => [String.t()]}}
+
+  @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
 
   @spec load(Path.t()) :: {[Query.t()], opts()}
   def load(plugin_dir) do
@@ -53,7 +59,7 @@ defmodule Sark.Plugin.Query.YAML do
     end
   end
 
-  defp default_opts, do: %{allow_sql: false}
+  defp default_opts, do: %{allow_sql: false, patchable: %{}}
 
   defp parse_root!(doc, plugin_dir, root_path) do
     {base, base_shared} = file_contents!(doc, root_path)
@@ -79,7 +85,10 @@ defmodule Sark.Plugin.Query.YAML do
         Query.parse!(name, resolved)
       end)
 
-    opts = %{allow_sql: parse_allow_sql!(Map.get(doc, "allow_sql", false), root_path)}
+    opts = %{
+      allow_sql: parse_allow_sql!(Map.get(doc, "allow_sql", false), root_path),
+      patchable: parse_patchable!(Map.get(doc, "patchable", %{}), root_path)
+    }
 
     {queries, opts}
   end
@@ -88,6 +97,32 @@ defmodule Sark.Plugin.Query.YAML do
 
   defp parse_allow_sql!(other, path) do
     raise "queries.yml at #{path}: allow_sql must be boolean, got #{inspect(other)}"
+  end
+
+  defp parse_patchable!(nil, _path), do: %{}
+
+  defp parse_patchable!(map, path) when is_map(map) do
+    Enum.into(map, %{}, fn {table, cols} ->
+      unless is_binary(table) and Regex.match?(@ident_re, table) do
+        raise "queries.yml at #{path}: patchable table name must match identifier pattern, got #{inspect(table)}"
+      end
+
+      unless is_list(cols) do
+        raise "queries.yml at #{path}: patchable.#{table} must be a list of column names, got #{inspect(cols)}"
+      end
+
+      Enum.each(cols, fn col ->
+        unless is_binary(col) and Regex.match?(@ident_re, col) do
+          raise "queries.yml at #{path}: patchable.#{table} entry must match identifier pattern, got #{inspect(col)}"
+        end
+      end)
+
+      {table, cols}
+    end)
+  end
+
+  defp parse_patchable!(other, path) do
+    raise "queries.yml at #{path}: patchable must be a map of table → list of columns, got #{inspect(other)}"
   end
 
   defp file_contents!(doc, source) do

@@ -29,14 +29,14 @@ defmodule Sark.Plugin.Query.YAMLTest do
 
   test "absent queries.yml → empty queries + default opts", %{tmp_dir: dir} do
     plugin = write(Path.join(dir, "p"), %{})
-    assert YAML.load(plugin) == {[], %{allow_sql: false}}
+    assert YAML.load(plugin) == {[], %{allow_sql: false, patchable: %{}}}
   end
 
   test "loads inline queries", %{tmp_dir: dir} do
     plugin = write(Path.join(dir, "p"), %{"queries.yml" => q_yaml("a")})
     {queries, opts} = YAML.load(plugin)
     assert [%{name: :a}] = queries
-    assert opts == %{allow_sql: false}
+    assert opts == %{allow_sql: false, patchable: %{}}
   end
 
   test "allow_sql: true picked up", %{tmp_dir: dir} do
@@ -53,7 +53,83 @@ defmodule Sark.Plugin.Query.YAMLTest do
       })
 
     {_, opts} = YAML.load(plugin)
-    assert opts == %{allow_sql: true}
+    assert opts == %{allow_sql: true, patchable: %{}}
+  end
+
+  test "patchable: maps table → list of cols", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        patchable:
+          notes: [body, title]
+          tasks: [body]
+        queries:
+          a:
+            description: q
+            returns: scalar
+            sql: SELECT 1
+        """
+      })
+
+    {_, opts} = YAML.load(plugin)
+    assert opts.patchable == %{"notes" => ["body", "title"], "tasks" => ["body"]}
+  end
+
+  test "patchable defaults to empty map when absent", %{tmp_dir: dir} do
+    plugin = write(Path.join(dir, "p"), %{"queries.yml" => q_yaml("a")})
+    {_, opts} = YAML.load(plugin)
+    assert opts.patchable == %{}
+  end
+
+  test "patchable rejects non-map", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        patchable: [notes]
+        queries: {}
+        """
+      })
+
+    assert_raise RuntimeError, ~r/patchable must be a map/, fn -> YAML.load(plugin) end
+  end
+
+  test "patchable rejects bad identifier in table name", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        patchable:
+          "bad-table": [body]
+        queries: {}
+        """
+      })
+
+    assert_raise RuntimeError, ~r/patchable table name/, fn -> YAML.load(plugin) end
+  end
+
+  test "patchable rejects bad identifier in column name", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        patchable:
+          notes: ["bad col"]
+        queries: {}
+        """
+      })
+
+    assert_raise RuntimeError, ~r/patchable.notes entry/, fn -> YAML.load(plugin) end
+  end
+
+  test "patchable rejects non-list cols", %{tmp_dir: dir} do
+    plugin =
+      write(Path.join(dir, "p"), %{
+        "queries.yml" => """
+        patchable:
+          notes: body
+        queries: {}
+        """
+      })
+
+    assert_raise RuntimeError, ~r/must be a list of column names/, fn -> YAML.load(plugin) end
   end
 
   test "allow_sql non-boolean raises", %{tmp_dir: dir} do

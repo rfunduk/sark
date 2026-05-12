@@ -2,7 +2,7 @@ defmodule Sark.MCP.Handlers.PatchText do
   @moduledoc """
   Generic substring-replace tool for text columns.
 
-  Tool: `patch_text(table, id, col, old, new)`.
+  Tool: `sark_patch(table, id, col, old, new)`.
 
   Reads `col` from the row with `id = :id` in `table`, replaces every
   occurrence of `old` with `new`, writes the result back. Whole thing
@@ -24,6 +24,7 @@ defmodule Sark.MCP.Handlers.PatchText do
 
   alias Exqlite.Result
   alias Sark.MCP.EventBus
+  alias Sark.MCP.Registry
   alias Sark.MCP.Telemetry
   alias Sark.Plugin.DB
 
@@ -31,7 +32,7 @@ defmodule Sark.MCP.Handlers.PatchText do
 
   @spec call(String.t(), map, term) :: {:reply, map, term}
   def call(plugin, params, session) do
-    Telemetry.with_logging("#{plugin}.patch_text", params, fn ->
+    Telemetry.with_logging("#{plugin}.sark_patch", params, fn ->
       do_call(plugin, params, session)
     end)
   end
@@ -45,8 +46,9 @@ defmodule Sark.MCP.Handlers.PatchText do
          {:ok, old} <- fetch_text(params, "old"),
          {:ok, new} <- fetch_text(params, "new"),
          :ok <- non_empty(old, "old"),
+         :ok <- allowed?(plugin, table, col),
          {:ok, result} <- patch(plugin, table, col, id, old, new) do
-      EventBus.broadcast_write(plugin, :patch_text, params, result)
+      EventBus.broadcast_write(plugin, :sark_patch, params, result)
       {:reply, Tool.text(result), session}
     else
       {:error, msg} when is_binary(msg) -> reply_error(msg, session)
@@ -140,6 +142,42 @@ defmodule Sark.MCP.Handlers.PatchText do
 
   defp non_empty("", key), do: {:error, "validation: #{key} must not be empty"}
   defp non_empty(_, _), do: :ok
+
+  # `patchable` is an opt-in allow-list declared by the plugin in
+  # `queries.yml`. Empty / missing → every call is rejected. Plugin
+  # author lists exactly which `table.column` paths the built-in
+  # `sark_patch` tool may touch — keeps it from doubling as a
+  # back-door around the curated query surface (timestamps, ids,
+  # history rows etc.).
+  defp allowed?(plugin, table, col) do
+    patchable =
+      case Registry.get_spec(plugin) do
+        {:ok, spec} -> spec.patchable
+        :error -> %{}
+      end
+
+    cols = Map.get(patchable, table, [])
+
+    cond do
+      patchable == %{} ->
+        {:error,
+         "validation: no patchable fields configured for plugin `#{plugin}` — add a `patchable:` block to queries.yml to opt fields in"}
+
+      col in cols ->
+        :ok
+
+      true ->
+        {:error,
+         "validation: `#{table}.#{col}` is not patchable. Allowed: #{format_allowed(patchable)}"}
+    end
+  end
+
+  defp format_allowed(patchable) do
+    patchable
+    |> Enum.flat_map(fn {t, cols} -> Enum.map(cols, &"#{t}.#{&1}") end)
+    |> Enum.sort()
+    |> Enum.join(", ")
+  end
 
   defp reply_error(msg, session), do: {:reply, Tool.error(msg), session}
 end

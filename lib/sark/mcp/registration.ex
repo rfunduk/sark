@@ -25,7 +25,7 @@ defmodule Sark.MCP.Registration do
   alias Sark.Plugin.Query
   alias Sark.Plugin.Spec
 
-  @reserved_names ~w(catalog sql_query patch_text)a
+  @reserved_names ~w(sark_catalog sark_sql sark_patch)a
 
   @spec register_plugin!(Spec.t()) :: :ok
   def register_plugin!(%Spec{} = spec) do
@@ -46,7 +46,7 @@ defmodule Sark.MCP.Registration do
     Phantom.Cache.add_tool(router, build_tool_specs(spec, handler))
 
     Logger.info(
-      "mcp registration — plugin=#{spec.name} queries=#{length(spec.queries)} +catalog +sql_query +patch_text"
+      "mcp registration — plugin=#{spec.name} queries=#{length(spec.queries)} +sark_catalog +sark_sql +sark_patch"
     )
 
     :ok
@@ -71,10 +71,10 @@ defmodule Sark.MCP.Registration do
 
   defp camelize(plugin), do: Macro.camelize(String.replace(plugin, "-", "_"))
 
-  # Built-in tools (`patch_text`, `catalog`, `sql_query`) live alongside
-  # plugin-declared queries in the same per-plugin namespace. Collisions
-  # would silently shadow one or the other depending on registration
-  # order; raise so the plugin author catches it.
+  # Built-in tools (`sark_patch`, `sark_catalog`, `sark_sql`) live alongside
+  # plugin-declared queries in the same per-plugin namespace. The `sark_`
+  # prefix is reserved — raising on collision keeps a query from silently
+  # shadowing a built-in (or vice versa) depending on registration order.
   defp check_reserved_names!(%Spec{name: plugin, queries: queries}) do
     Enum.each(queries, fn q ->
       if q.name in @reserved_names do
@@ -107,21 +107,21 @@ defmodule Sark.MCP.Registration do
 
     catalog_func =
       quote do
-        def catalog(params, session) do
+        def sark_catalog(params, session) do
           Sark.MCP.Handlers.Catalog.call(unquote(plugin), params, session)
         end
       end
 
     sql_query_func =
       quote do
-        def sql_query(params, session) do
+        def sark_sql(params, session) do
           Sark.MCP.Handlers.SqlQuery.call(unquote(plugin), params, session)
         end
       end
 
     patch_text_func =
       quote do
-        def patch_text(params, session) do
+        def sark_patch(params, session) do
           Sark.MCP.Handlers.PatchText.call(unquote(plugin), params, session)
         end
       end
@@ -173,7 +173,10 @@ defmodule Sark.MCP.Registration do
     :persistent_term.put({Phantom, router, :tools}, [])
   end
 
-  defp build_tool_specs(%Spec{name: plugin, queries: queries, allow_sql: allow_sql}, handler) do
+  defp build_tool_specs(
+         %Spec{name: plugin, queries: queries, allow_sql: allow_sql, patchable: patchable},
+         handler
+       ) do
     query_specs =
       queries
       |> Enum.reject(& &1.internal)
@@ -192,18 +195,18 @@ defmodule Sark.MCP.Registration do
       if allow_sql do
         [
           %{
-            name: "catalog",
+            name: "sark_catalog",
             handler: handler,
-            function: :catalog,
+            function: :sark_catalog,
             description:
               "Live schema (from sqlite_master) and canned queries for plugin `#{plugin}`.",
             input_schema: %{type: "object", properties: %{}, required: []},
             meta: %{file: __ENV__.file, line: __ENV__.line}
           },
           %{
-            name: "sql_query",
+            name: "sark_sql",
             handler: handler,
-            function: :sql_query,
+            function: :sark_sql,
             description:
               "Run an arbitrary SELECT/WITH/PRAGMA query against plugin `#{plugin}`'s read pool.",
             input_schema: %{
@@ -219,13 +222,10 @@ defmodule Sark.MCP.Registration do
       end
 
     patch_text_spec = %{
-      name: "patch_text",
+      name: "sark_patch",
       handler: handler,
-      function: :patch_text,
-      description:
-        "Substring text patch on plugin `#{plugin}`. " <>
-          "Reads `col` from `table` where id matches; replaces every occurrence " <>
-          "of `old` with `new`. Token-saver vs. re-emitting full bodies.",
+      function: :sark_patch,
+      description: patch_text_description(plugin, patchable),
       input_schema: %{
         type: "object",
         required: ["table", "id", "col", "old", "new"],
@@ -241,5 +241,30 @@ defmodule Sark.MCP.Registration do
     }
 
     query_specs ++ sql_specs ++ [patch_text_spec]
+  end
+
+  @doc false
+  # Tool description is built dynamically so the agent sees the
+  # plugin's `patchable:` allow-list up front and won't waste calls
+  # probing for paths that will be rejected.
+  def patch_text_description(plugin, patchable) when is_map(patchable) do
+    base =
+      "Substring text patch on plugin `#{plugin}`. " <>
+        "Reads `col` from `table` where id matches; replaces every occurrence " <>
+        "of `old` with `new`. Token-saver vs. re-emitting full bodies. "
+
+    if patchable == %{} do
+      base <>
+        "No patchable fields configured for plugin `#{plugin}` — every call will be rejected. " <>
+        "Plugin author must add a `patchable:` block to queries.yml to opt fields in."
+    else
+      paths =
+        patchable
+        |> Enum.flat_map(fn {t, cols} -> Enum.map(cols, &"#{t}.#{&1}") end)
+        |> Enum.sort()
+        |> Enum.join(", ")
+
+      base <> "Patchable: #{paths}."
+    end
   end
 end

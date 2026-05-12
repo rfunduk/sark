@@ -28,7 +28,7 @@ defmodule Sark.MCP.RegistrationTest do
     spec
   end
 
-  test "registers per-query tools + catalog + sql_query in Phantom cache", %{tmp_dir: dir} do
+  test "registers per-query tools + sark_catalog + sark_sql in Phantom cache", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     router = Registration.router_module("kv")
@@ -41,8 +41,8 @@ defmodule Sark.MCP.RegistrationTest do
     assert "list_table" in names
     assert "total" in names
     assert "put" in names
-    assert "catalog" in names
-    assert "sql_query" in names
+    assert "sark_catalog" in names
+    assert "sark_sql" in names
     refute "kv_get" in names
     refute "secret_note" in names
   end
@@ -179,7 +179,7 @@ defmodule Sark.MCP.RegistrationTest do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
-    {:reply, %{structuredContent: doc}, _} = mod.catalog(%{}, :session)
+    {:reply, %{structuredContent: doc}, _} = mod.sark_catalog(%{}, :session)
 
     assert doc.name == "kv"
 
@@ -214,19 +214,19 @@ defmodule Sark.MCP.RegistrationTest do
              ]
   end
 
-  test "sql_query allows SELECT, rejects DELETE", %{tmp_dir: dir} do
+  test "sark_sql allows SELECT, rejects DELETE", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["q", "r"])
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: ok_text}]}, _} =
-      mod.sql_query(%{"sql" => "SELECT key FROM kv"}, :session)
+      mod.sark_sql(%{"sql" => "SELECT key FROM kv"}, :session)
 
     assert ok_text =~ "q"
 
     {:reply, %{content: [%{type: :text, text: bad_text}], isError: true}, _} =
-      mod.sql_query(%{"sql" => "DELETE FROM kv"}, :session)
+      mod.sark_sql(%{"sql" => "DELETE FROM kv"}, :session)
 
     assert bad_text =~ "only SELECT"
   end
@@ -293,7 +293,7 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "1"
   end
 
-  test "patch_text happy path swaps the value", %{tmp_dir: dir} do
+  test "sark_patch happy path swaps the value", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -302,7 +302,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "alpha", "new" => "beta"},
         :session
       )
@@ -313,7 +313,7 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "patch_text substring not found leaves row untouched", %{tmp_dir: dir} do
+  test "sark_patch substring not found leaves row untouched", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -322,7 +322,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "WRONG", "new" => "beta"},
         :session
       )
@@ -333,7 +333,7 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "patch_text replaces a substring inside larger text", %{tmp_dir: dir} do
+  test "sark_patch replaces a substring inside larger text", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -346,7 +346,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "50", "new" => "100"},
         :session
       )
@@ -357,7 +357,7 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "patch_text replaces every occurrence", %{tmp_dir: dir} do
+  test "sark_patch replaces every occurrence", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
@@ -368,7 +368,7 @@ defmodule Sark.MCP.RegistrationTest do
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}]}, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "foo", "new" => "qux"},
         :session
       )
@@ -379,13 +379,13 @@ defmodule Sark.MCP.RegistrationTest do
       DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [id])
   end
 
-  test "patch_text rejects bad identifier", %{tmp_dir: dir} do
+  test "sark_patch rejects bad identifier", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{
           "table" => "notes; DROP TABLE notes;--",
           "id" => 1,
@@ -399,13 +399,13 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "identifier pattern"
   end
 
-  test "patch_text not found", %{tmp_dir: dir} do
+  test "sark_patch not found", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{"table" => "notes", "id" => 9999, "col" => "body", "old" => "x", "new" => "y"},
         :session
       )
@@ -413,34 +413,108 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "not found"
   end
 
-  test "patch_text broadcasts a write event", %{tmp_dir: dir} do
+  test "sark_patch broadcasts a write event", %{tmp_dir: dir} do
     spec = boot_kv!(dir)
 
     {:ok, %{rows: [[id]]}} =
       DB.write(spec.name, "INSERT INTO notes (body) VALUES (?) RETURNING id", ["a"])
 
-    :ok = Sark.MCP.EventBus.subscribe("kv.patch_text")
+    :ok = Sark.MCP.EventBus.subscribe("kv.sark_patch")
 
     mod = Sark.MCP.Registration.handler_module("kv")
 
     {:reply, _, _} =
-      mod.patch_text(
+      mod.sark_patch(
         %{"table" => "notes", "id" => id, "col" => "body", "old" => "a", "new" => "b"},
         :session
       )
 
-    assert_receive {:sark_write, "kv", :patch_text, %{params: %{"table" => "notes"}}}, 200
+    assert_receive {:sark_write, "kv", :sark_patch, %{params: %{"table" => "notes"}}}, 200
   end
 
-  test "patch_text tool registered in Phantom cache", %{tmp_dir: dir} do
+  test "sark_patch tool registered in Phantom cache", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     router = Registration.router_module("kv")
     tools = Phantom.Cache.list(nil, router, :tools)
     names = Enum.map(tools, & &1.name)
 
-    assert "patch_text" in names
-    refute "kv_patch_text" in names
+    assert "sark_patch" in names
+    refute "kv.sark_patch" in names
+  end
+
+  test "sark_patch description lists patchable fields from spec", %{tmp_dir: dir} do
+    boot_kv!(dir)
+
+    router = Registration.router_module("kv")
+    tools = Phantom.Cache.list(nil, router, :tools)
+    patch_tool = Enum.find(tools, &(&1.name == "sark_patch"))
+
+    # kv fixture declares `patchable: { notes: [body] }`.
+    assert patch_tool.description =~ "Patchable: notes.body"
+  end
+
+  test "sark_patch description says no patchable fields when none configured" do
+    spec = %Sark.Plugin.Spec{
+      name: "empty",
+      dir: "/tmp/nope",
+      migrations: [],
+      queries: [],
+      patchable: %{}
+    }
+
+    Registration.register_plugin!(spec)
+
+    router = Registration.router_module("empty")
+    tools = Phantom.Cache.list(nil, router, :tools)
+    patch_tool = Enum.find(tools, &(&1.name == "sark_patch"))
+
+    assert patch_tool.description =~ "No patchable fields configured"
+    assert patch_tool.description =~ "add a `patchable:` block"
+  end
+
+  test "sark_patch rejects when field is not in patchable allow-list", %{tmp_dir: dir} do
+    spec = boot_kv!(dir)
+
+    # Insert a kv row to attempt patching `kv.value` (not in allow-list —
+    # only `notes.body` is).
+    {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["k", "old"])
+
+    mod = Sark.MCP.Registration.handler_module("kv")
+
+    {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
+      mod.sark_patch(
+        %{"table" => "kv", "id" => "k", "col" => "value", "old" => "old", "new" => "new"},
+        :session
+      )
+
+    assert text =~ "not patchable"
+    assert text =~ "notes.body"
+
+    {:ok, _, [%{"value" => "old"}]} =
+      DB.read(spec.name, "SELECT value FROM kv WHERE key = ?", ["k"])
+  end
+
+  test "sark_patch rejects every call when patchable is empty" do
+    spec = %Sark.Plugin.Spec{
+      name: "locked",
+      dir: "/tmp/nope",
+      migrations: [],
+      queries: [],
+      patchable: %{}
+    }
+
+    Registration.register_plugin!(spec)
+
+    mod = Registration.handler_module("locked")
+
+    {:reply, %{content: [%{type: :text, text: text}], isError: true}, _} =
+      mod.sark_patch(
+        %{"table" => "x", "id" => 1, "col" => "y", "old" => "a", "new" => "b"},
+        :session
+      )
+
+    assert text =~ "no patchable fields configured"
   end
 
   test "raises when a query name collides with a reserved built-in" do
@@ -450,7 +524,7 @@ defmodule Sark.MCP.RegistrationTest do
       migrations: [],
       queries: [
         %Sark.Plugin.Query{
-          name: :patch_text,
+          name: :sark_patch,
           description: "x",
           returns: :results,
           write: false,
