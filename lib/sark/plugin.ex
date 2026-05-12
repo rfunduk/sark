@@ -50,6 +50,8 @@ defmodule Sark.Plugin do
 
     pool_children = DB.pool_children(spec.name, db_path)
 
+    scheduler_child = [{Sark.Worker.Scheduler, spec: spec}]
+
     watcher_child =
       if hot_reload do
         [{Watcher, plugin_name: spec.name, plugin_dir: spec.dir}]
@@ -57,6 +59,9 @@ defmodule Sark.Plugin do
         []
       end
 
-    Supervisor.init(pool_children ++ watcher_child, strategy: :rest_for_one)
+    Supervisor.init(
+      pool_children ++ scheduler_child ++ watcher_child,
+      strategy: :rest_for_one
+    )
   end
 end

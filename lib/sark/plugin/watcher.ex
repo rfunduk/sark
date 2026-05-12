@@ -18,6 +18,7 @@ defmodule Sark.Plugin.Watcher do
 
   alias Sark.MCP.Registration
   alias Sark.Plugin.Loader
+  alias Sark.Worker.Scheduler
 
   @debounce_ms 200
 
@@ -71,6 +72,7 @@ defmodule Sark.Plugin.Watcher do
     try do
       spec = Loader.load!(state.plugin_name, state.plugin_dir)
       Registration.register_plugin!(spec)
+      Scheduler.update_spec(state.plugin_name, spec)
     rescue
       e ->
         Logger.error(

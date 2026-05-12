@@ -26,6 +26,7 @@ defmodule Sark.Plugin.Worker.YAMLTest do
         tools: [a]
         system: s
         prompt: p
+        schedule: "0 3 * * *"
     """)
 
     [%Worker{name: :smoke, model: "m", tools: ["a"]}] = YAML.load(dir)
@@ -45,6 +46,7 @@ defmodule Sark.Plugin.Worker.YAMLTest do
         tools: [a]
         system: s
         prompt: p
+        schedule: "0 3 * * *"
     """)
 
     File.write!(Path.join(dir, "workers/extra.yml"), """
@@ -55,6 +57,7 @@ defmodule Sark.Plugin.Worker.YAMLTest do
         tools: [b]
         system: s
         prompt: p
+        schedule: "0 3 * * *"
     """)
 
     workers = YAML.load(dir)
@@ -75,6 +78,7 @@ defmodule Sark.Plugin.Worker.YAMLTest do
         tools: [a]
         system: s
         prompt: p
+        schedule: "0 3 * * *"
     """)
 
     File.write!(Path.join(dir, "workers/dup.yml"), """
@@ -85,6 +89,7 @@ defmodule Sark.Plugin.Worker.YAMLTest do
         tools: [a]
         system: s
         prompt: p
+        schedule: "0 3 * * *"
     """)
 
     assert_raise RuntimeError, ~r/duplicate worker `same`/, fn ->
@@ -116,6 +121,7 @@ defmodule Sark.Plugin.Worker.YAMLTest do
           SELECT count(*) AS n FROM x
         system: s
         prompt: p {{n}}
+        schedule: "0 3 * * *"
     """)
 
     [%Worker{name: :gated, when_sql: when_sql, load_sql: load_sql}] = YAML.load(dir)

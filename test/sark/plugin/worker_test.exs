@@ -11,7 +11,8 @@ defmodule Sark.Plugin.WorkerTest do
         "tools" => ["list", "get"],
         "max_turns" => 4,
         "system" => "You are.",
-        "prompt" => "Do the thing."
+        "prompt" => "Do the thing.",
+        "schedule" => "0 3 * * *"
       }
 
       w = Worker.parse!("smoke", entry)
@@ -52,6 +53,10 @@ defmodule Sark.Plugin.WorkerTest do
       assert_raise ArgumentError, ~r/missing required field `tools`/, fn ->
         Worker.parse!("x", base_entry() |> Map.delete("tools"))
       end
+
+      assert_raise ArgumentError, ~r/missing required field `schedule`/, fn ->
+        Worker.parse!("x", base_entry() |> Map.delete("schedule"))
+      end
     end
 
     test "raises on empty tools list" do
@@ -75,6 +80,22 @@ defmodule Sark.Plugin.WorkerTest do
         Worker.parse!("x", Map.put(base_entry(), "max_turns", "many"))
       end
     end
+
+    test "parses schedule cron expression" do
+      assert %Worker{schedule: %Crontab.CronExpression{}} = Worker.parse!("x", base_entry())
+    end
+
+    test "raises on invalid cron expression" do
+      assert_raise ArgumentError, ~r/invalid cron expression/, fn ->
+        Worker.parse!("x", Map.put(base_entry(), "schedule", "not a cron"))
+      end
+    end
+
+    test "raises on empty schedule string" do
+      assert_raise ArgumentError, ~r/missing required field `schedule`/, fn ->
+        Worker.parse!("x", Map.put(base_entry(), "schedule", ""))
+      end
+    end
   end
 
   defp base_entry do
@@ -83,7 +104,8 @@ defmodule Sark.Plugin.WorkerTest do
       "model" => "m",
       "tools" => ["t"],
       "system" => "s",
-      "prompt" => "p"
+      "prompt" => "p",
+      "schedule" => "0 3 * * *"
     }
   end
 end

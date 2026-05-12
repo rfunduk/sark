@@ -21,6 +21,7 @@ defmodule Sark.Application do
     children = [
       {Phoenix.PubSub, name: Sark.PubSub},
       {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Sark.PubSub]},
+      {Task.Supervisor, name: Sark.Worker.TaskSup},
       {Sark.AuthRegistry, config.tokens},
       {Sark.PluginSupervisor,
        [

@@ -3,9 +3,10 @@ defmodule Sark.Plugin.Worker do
   Parsed worker spec loaded from `workers.yml`.
 
   A worker is an internal MCP client driven by a configured Anthropic
-  model. v1 has no scheduler — workers are addressable but only fire
-  when triggered manually (e.g. `mix sark.worker <plugin>.<name>`). Cron
-  + `on_event` triggers are deferred.
+  model. `schedule:` (5-field cron) is required — every worker has an
+  auto-fire cadence. `mix sark.worker <plugin>.<name>` exists for
+  dev/debug only, to iterate on a worker without waiting for the next
+  scheduled tick.
 
   Tool entries in `tools:` are bare names (plugin-local) for v1.
   Cross-plugin `<plugin>.<tool>` is reserved for a later iteration —
@@ -26,7 +27,7 @@ defmodule Sark.Plugin.Worker do
   defeats the prompt cache and is rejected at parse.
   """
 
-  @enforce_keys [:name, :description, :model, :system, :prompt, :tools, :max_turns]
+  @enforce_keys [:name, :description, :model, :system, :prompt, :tools, :max_turns, :schedule]
   defstruct [
     :name,
     :description,
@@ -35,6 +36,7 @@ defmodule Sark.Plugin.Worker do
     :prompt,
     :tools,
     :max_turns,
+    :schedule,
     when_sql: nil,
     load_sql: nil
   ]
@@ -48,7 +50,8 @@ defmodule Sark.Plugin.Worker do
           tools: [String.t()],
           max_turns: pos_integer(),
           when_sql: String.t() | nil,
-          load_sql: String.t() | nil
+          load_sql: String.t() | nil,
+          schedule: Crontab.CronExpression.t()
         }
 
   @default_max_turns 8
@@ -68,6 +71,7 @@ defmodule Sark.Plugin.Worker do
     max_turns = parse_max_turns!(Map.get(entry, "max_turns", @default_max_turns), where)
     when_sql = parse_optional_sql!(Map.get(entry, "when"), "when", where)
     load_sql = parse_optional_sql!(Map.get(entry, "load"), "load", where)
+    schedule = parse_schedule!(Map.get(entry, "schedule"), where)
 
     %__MODULE__{
       name: String.to_atom(name_str),
@@ -78,9 +82,29 @@ defmodule Sark.Plugin.Worker do
       tools: tools,
       max_turns: max_turns,
       when_sql: when_sql,
-      load_sql: load_sql
+      load_sql: load_sql,
+      schedule: schedule
     }
   end
+
+  defp parse_schedule!(nil, where),
+    do: bad!(where, "missing required field `schedule` (5-field cron)")
+
+  defp parse_schedule!("", where),
+    do: bad!(where, "missing required field `schedule` (5-field cron)")
+
+  defp parse_schedule!(s, where) when is_binary(s) do
+    case Crontab.CronExpression.Parser.parse(String.trim(s)) do
+      {:ok, expr} ->
+        expr
+
+      {:error, reason} ->
+        bad!(where, "`schedule` invalid cron expression #{inspect(s)}: #{reason}")
+    end
+  end
+
+  defp parse_schedule!(other, where),
+    do: bad!(where, "`schedule` must be a cron string, got #{inspect(other)}")
 
   defp fetch_string!(entry, key, where) do
     case Map.get(entry, key) do

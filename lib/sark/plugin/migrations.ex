@@ -102,10 +102,10 @@ defmodule Sark.Plugin.Migrations do
 
   defp ensure_table(db) do
     Sqlite3.execute(db, """
-    CREATE TABLE IF NOT EXISTS _sark_migrations (
-      version    INTEGER PRIMARY KEY,
-      applied_at TEXT NOT NULL
-    );
+      CREATE TABLE IF NOT EXISTS _sark_migrations (
+        version    INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
     """)
   end
 
@@ -115,23 +115,23 @@ defmodule Sark.Plugin.Migrations do
   defp ensure_system_tables(db) do
     with :ok <-
            Sqlite3.execute(db, """
-           CREATE TABLE IF NOT EXISTS _worker_log (
-             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-             worker_name           TEXT    NOT NULL,
-             provider              TEXT,
-             model                 TEXT,
-             started_at            TEXT    NOT NULL,
-             ended_at              TEXT    NOT NULL,
-             turns                 INTEGER,
-             stop_reason           TEXT    NOT NULL,
-             input_tokens          INTEGER,
-             output_tokens         INTEGER,
-             cache_read_tokens     INTEGER,
-             cache_creation_tokens INTEGER,
-             service_tier          TEXT,
-             error                 TEXT,
-             final_output          TEXT
-           );
+             CREATE TABLE IF NOT EXISTS _worker_log (
+               id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+               worker_name           TEXT    NOT NULL,
+               provider              TEXT,
+               model                 TEXT,
+               started_at            TEXT    NOT NULL,
+               ended_at              TEXT    NOT NULL,
+               turns                 INTEGER,
+               stop_reason           TEXT    NOT NULL,
+               input_tokens          INTEGER,
+               output_tokens         INTEGER,
+               cache_read_tokens     INTEGER,
+               cache_creation_tokens INTEGER,
+               service_tier          TEXT,
+               error                 TEXT,
+               final_output          TEXT
+             );
            """),
          :ok <-
            Sqlite3.execute(

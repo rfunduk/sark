@@ -2,6 +2,7 @@ workers:
   smoke:
     description: Smoke worker — lists keys and reports.
     model: claude-haiku-4-5
+    schedule: "0 0 1 1 0"
     tools: [list, get]
     max_turns: 4
     system: |
@@ -12,6 +13,7 @@ workers:
   gated:
     description: Worker gated on the kv table being non-empty.
     model: claude-haiku-4-5
+    schedule: "0 0 1 1 0"
     tools: [list, get]
     max_turns: 2
     when: |
@@ -24,6 +26,7 @@ workers:
   briefed:
     description: Worker that loads context into its prompt.
     model: claude-haiku-4-5
+    schedule: "0 0 1 1 0"
     tools: [list, get]
     max_turns: 2
     load: |

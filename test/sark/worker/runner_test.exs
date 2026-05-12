@@ -21,6 +21,8 @@ defmodule Sark.Worker.RunnerTest do
   end
 
   defp test_worker(overrides \\ %{}) do
+    {:ok, cron} = Crontab.CronExpression.Parser.parse("0 0 1 1 0")
+
     %Worker{
       name: :smoke,
       description: "smoke",
@@ -28,7 +30,8 @@ defmodule Sark.Worker.RunnerTest do
       system: "be terse",
       prompt: "hi",
       tools: ["list", "get", "put"],
-      max_turns: 4
+      max_turns: 4,
+      schedule: cron
     }
     |> Map.merge(overrides)
   end

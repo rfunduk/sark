@@ -506,11 +506,7 @@ prune_notes_history:
 
 ## Workers
 
-**Still in development.**
-
 A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `queries.yml` surface, same handlers — except the loop runs inside sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
-
-**No scheduler** — workers fire on manual invocation only. They don't run on cron or events.
 
 ### workers.yml
 
@@ -530,39 +526,51 @@ Per-worker shape:
 
 ```yaml
 workers:
-  reconciler:
-    description: Reconcile drift on stale active tasks. # required
+  rollup:
+    description: Nightly — fold each task's accumulated comments into its summary body.
     model: claude-sonnet-4-6                            # required. Any Anthropic model id.
-    tools: [show, mark_reconciled]                      # required. Allowlist; tools live in this plugin.
-    max_turns: 8                                        # optional, default 8.
+    schedule: "0 3 * * *"                               # required. Cron schedule.
+    tools: [task_with_comments, archive_comments]       # required. Allowlist; tools live in this plugin.
+    max_turns: 16                                       # optional, default 8.
 
     when: |                                             # optional. Empty result → skip (no LLM call, no log row).
       SELECT 1 WHERE EXISTS (
-        SELECT 1 FROM tasks
-        WHERE status = 'active'
-          AND (reconciled_at IS NULL OR reconciled_at < updated_at)
+        SELECT 1 FROM task_comments
+        WHERE archived_at IS NULL
+          AND created_at < datetime('now', '-1 day')
       )
 
     load: |                                             # optional. Rows feed mustache rendering of `prompt:`.
       SELECT
-        COUNT(*) AS pending,
-        MIN(updated_at) AS oldest_stale,
-        json_group_array(json_object('slug', slug, 'title', title)) AS queue
-      FROM tasks
-      WHERE status = 'active'
-        AND (reconciled_at IS NULL OR reconciled_at < updated_at)
+        id, title, body,
+        json_group_array(json_object('id', c.id, 'body', c.body, 'at', c.created_at)) AS comments
+      FROM tasks t
+      JOIN task_comments c ON c.task_id = t.id
+      WHERE c.archived_at IS NULL
+      GROUP BY t.id
 
     system: |                                           # required. NO mustache — sent verbatim and cached.
-      You are the task reconciler. ...
+      # Role + output rules + invariants. Stable across every run.
+      # Anything identical between two invocations belongs here.
+      You roll up task comments into the task summary body.
+      For each task: call `task_with_comments` to read current state,
+      compose an updated body that integrates the comment content
+      (preserve facts, drop redundancy, keep markdown structure).
+      Later comments override previous comments or the body on conflict.
+      Use `patch_text` to update the body, then `archive_comments` with
+      the comment ids you folded. Never invent facts. Stop when every
+      task in the queue is handled.
 
     prompt: |                                           # required. Mustache-rendered against `load:` rows.
-      {{pending}} tasks pending reconcile. Oldest stale since {{oldest_stale}}.
-
-      Queue:
-      {{#queue}}
-      - `{{slug}}` — {{title}}
-      {{/queue}}
+      # Per-run data. Mustache vars from `load:`. Anything that
+      # varies between invocations belongs here.
+      Tasks with unfolded comments:
+      {{#results}}
+      - `{{id}}` — {{title}}
+      {{/results}}
 ```
+
+**Rule of thumb:** if two consecutive runs of the worker would produce the same string → `system:`. If it changes per run → `prompt:`. The split exists because `system:` is the cached prefix; mixing per-run data into it breaks the cache and burns tokens.
 
 **Field notes:**
 
@@ -578,7 +586,7 @@ workers:
 
 ### Caching + cost telemetry
 
-Sark caches the `system:` block and tool definitions across turns within a single run, so subsequent turns hit the prompt cache. The 5-minute TTL means workers running on long cadences (daily / weekly) won't carry cache hits across runs — that's expected.
+Sark does cache the `system:` block and tool definitions across turns within a single run, however since most workers are over long cadences (daily / weekly) we won't generally get much in the way of cache benefits.
 
 Every terminal worker state writes one row to a sark-managed `_worker_log` table in the plugin's own database. Columns:
 
@@ -598,22 +606,6 @@ Every terminal worker state writes one row to a sark-managed `_worker_log` table
 | `final_output`          | text from the last assistant turn                                    |
 
 Runs that the `when:` gate skipped do not log — there's no run to record.
-
-### Manual trigger
-
-```bash
-mix sark.worker --config config.yml tasks.dreamer
-```
-
-The argument is `<plugin>.<worker>`. Looks up the named worker, runs it once, and streams a turn-by-turn transcript to stdout. Currently source-only — no release-binary equivalent yet.
-
-The Anthropic API key comes from `anthropic_api_key` in `config.yml`. Use a literal value for dev or `${VAR}` for env interpolation in prod:
-
-```yaml
-anthropic_api_key: "${ANTHROPIC_API_KEY}"
-```
-
-Each invocation is a fresh conversation — no resume, no memory between runs.
 
 ### What a worker run looks like
 
@@ -640,11 +632,11 @@ running worker tasks.dreamer (model=claude-sonnet-4-6, max_turns=8)
 
 Each `[tool_call ...]` was dispatched in-process through the same handler an external MCP client would hit. Errors come back to the LLM as tool_result blocks with `is_error: true`, so the model can recover.
 
+### Scheduling
+
+`schedule:` (5-field cron) is required on every worker. The per-plugin scheduler ticks every minute and spawns a `Task` for each due worker. At most one in-flight run per worker — overlapping ticks are skipped (workers are idempotent via the `when:` gate, so a missed tick just means "nothing to do this minute").
+
 ### Limits
 
-- **No scheduling.** Cron and event triggers aren't wired. Workers fire on manual invocation only.
-- **No hot reload of `workers.yml`.** Edit + restart the process.
 - **No token/cost budget enforcement.** Worker runs to completion or `max_turns`. Cost telemetry is captured in `_worker_log`; enforcement on top of that is not.
-- **No retry on Anthropic 5xx.** Failure aborts the loop.
-- **No streaming.** Each LLM turn blocks for the full response before tool dispatch.
 - **Plugin-local tools only.** A worker can't call another plugin's tools.
