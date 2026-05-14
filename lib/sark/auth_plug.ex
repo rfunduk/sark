@@ -15,6 +15,12 @@ defmodule Sark.AuthPlug do
   Routing shape: `/<plugin>/mcp[/...]`. `/health` is exempt for
   unauthenticated liveness; everything else requires a bearer.
 
+  Token sources (checked in order):
+
+    1. `Authorization: Bearer <token>` header
+    2. `?token=<token>` query string param (fallback for clients
+       that can't set custom headers, e.g. Claude for Web)
+
   Response codes:
 
     * bad/missing token → 401
@@ -47,12 +53,30 @@ defmodule Sark.AuthPlug do
   end
 
   defp authenticate(conn) do
-    with [auth] <- get_req_header(conn, "authorization"),
-         "Bearer " <> token <- auth,
-         {:ok, %{name: name} = entry} <- AuthRegistry.lookup(token) do
-      authorize(conn, entry, name)
-    else
-      _ -> unauthorized(conn)
+    case extract_token(conn) do
+      {:ok, token} ->
+        case AuthRegistry.lookup(token) do
+          {:ok, %{name: name} = entry} -> authorize(conn, entry, name)
+          _ -> unauthorized(conn)
+        end
+
+      :error ->
+        unauthorized(conn)
+    end
+  end
+
+  defp extract_token(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] ->
+        {:ok, token}
+
+      _ ->
+        conn = fetch_query_params(conn)
+
+        case conn.query_params do
+          %{"token" => token} when is_binary(token) and token != "" -> {:ok, token}
+          _ -> :error
+        end
     end
   end
 
