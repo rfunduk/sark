@@ -18,9 +18,6 @@ defmodule Mix.Tasks.Sark.Worker do
 
   use Mix.Task
 
-  alias Sark.MCP.Internal
-  alias Sark.Plugin.Spec
-  alias Sark.Plugin.Worker
   alias Sark.Worker.Runner
 
   @requirements ["app.config"]
@@ -45,24 +42,22 @@ defmodule Mix.Tasks.Sark.Worker do
         _ -> Mix.raise("sark.worker: pass exactly one <plugin>.<worker>, got #{inspect(rest)}")
       end
 
-    {plugin_name, worker_name} = parse_target!(target)
-
     Sark.CLI.boot!(config_path)
 
-    %Spec{} = spec = Internal.spec!(plugin_name)
-
-    %Worker{} =
-      worker =
-      Enum.find(spec.workers, fn w -> w.name == String.to_atom(worker_name) end) ||
-        Mix.raise("worker `#{worker_name}` not found in plugin `#{plugin_name}`")
+    {spec, worker} =
+      try do
+        Sark.CLI.resolve_worker!(target)
+      rescue
+        e in ArgumentError -> Mix.raise("sark.worker: #{Exception.message(e)}")
+      end
 
     Mix.shell().info(
-      "running worker #{plugin_name}.#{worker_name} (model=#{worker.model}, max_turns=#{worker.max_turns})"
+      "running worker #{spec.name}.#{worker.name} (model=#{worker.model}, max_turns=#{worker.max_turns})"
     )
 
     result =
       Runner.run(
-        plugin: plugin_name,
+        plugin: spec.name,
         worker: worker,
         spec: spec,
         llm: Sark.Worker.LLM.Anthropix,
@@ -79,16 +74,6 @@ defmodule Mix.Tasks.Sark.Worker do
       {:error, reason} ->
         Mix.shell().error("\n[abort] #{inspect(reason)}")
         exit({:shutdown, 1})
-    end
-  end
-
-  defp parse_target!(target) do
-    case String.split(target, ".", parts: 2) do
-      [plugin, worker] when plugin != "" and worker != "" ->
-        {plugin, worker}
-
-      _ ->
-        Mix.raise("invalid target `#{target}` — expected `<plugin>.<worker>`")
     end
   end
 

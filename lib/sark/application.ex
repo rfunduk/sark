@@ -26,8 +26,7 @@ defmodule Sark.Application do
       {Sark.PluginSupervisor,
        [
          plugins: config.plugins,
-         data_dir: config.data_dir,
-         hot_reload: config.hot_reload
+         data_dir: config.data_dir
        ]},
       {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}
     ]

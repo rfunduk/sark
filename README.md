@@ -61,7 +61,7 @@ The plugin's SQLite database is created at `{config.data_dir}/{plugin_name}.db` 
 
 ### Migrations
 
-Filenames must match `NNNN_<name>.sql` (zero-padded, contiguous from 1). Applied in order on cold boot. Each file's SQL runs in a transaction; Sark tracks which versions have applied. Forward-only — no rollback. **Hot reload does not re-run migrations**; schema changes still require a process restart.
+Filenames must match `NNNN_<name>.sql` (zero-padded, contiguous from 1). Applied in order on cold boot. Each file's SQL runs in a transaction; Sark tracks which versions have applied. Forward-only — no rollback.
 
 Column documentation lives as SQL comments inside the `CREATE TABLE` statements:
 
@@ -404,14 +404,6 @@ The plugin's skill should explain which fields are intended for it (e.g. "`sark_
 sark_patch(table='tasks', id='my-task', col='body', old='foo', new='bar')
 ```
 
-## Hot reload
-
-By default Sark will reload queries, workers, and tool descriptions. Not migrations -- restart to apply schema changes.
-
-Disable per-deployment with `hot_reload: false` in config.
-
-> Note: tool changes take effect server-side immediately, but most MCP clients cache the tool list at session start and need a reconnect to see new tools or signature changes. Existing tools work without reconnect as long as their `params:` block is unchanged** — SQL, description, returns, format can all change freely, even if your agent might be a bit confused.
-
 ## Implementing a plugin
 
 Shortest path:
@@ -610,6 +602,22 @@ Every terminal worker state writes one row to a Sark-managed `_worker_log` table
 | `final_output`          | text from the last assistant turn                                    |
 
 Runs that the `when:` gate skipped do not log — there's no run to record.
+
+### Triggering a worker manually
+
+Workers normally fire on their `schedule:` cron. To run one on demand — debugging a prompt, smoke-testing a `when:` gate — there are two paths depending on where you sit.
+
+**Developing Sark itself (source tree).** Use the mix task. It boots the app, resolves `<plugin>.<worker>` from the live registry, runs one synchronous pass, and streams the transcript to stdout:
+
+```
+mix sark.worker --config config.yml kb.dreamer
+```
+
+**Developing a plugin against a running Docker instance.** Call into the already-running container:
+
+```
+docker exec sark /app/bin/sark rpc 'Sark.CLI.run_worker("kb.dreamer")' && docker logs sark -f --tail 50
+```
 
 ### What a worker run looks like
 

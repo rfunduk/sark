@@ -28,6 +28,11 @@ RUN mix deps.compile
 
 COPY lib lib
 
+# Version single-source-of-truth: git tag → CI build-arg → mix.exs.
+# `.dockerignore` excludes `.git`, so the build can't derive it itself.
+ARG VERSION=0.0.0-dev
+ENV VERSION=${VERSION}
+
 RUN mix release
 
 # ---- runtime ----

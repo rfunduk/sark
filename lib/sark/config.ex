@@ -32,7 +32,6 @@ defmodule Sark.Config do
     :anthropic_api_key,
     :tokens,
     :plugins,
-    :hot_reload,
     :source_path
   ]
 
@@ -46,7 +45,6 @@ defmodule Sark.Config do
           anthropic_api_key: String.t() | nil,
           tokens: %{String.t() => token_entry()},
           plugins: %{String.t() => String.t()},
-          hot_reload: boolean(),
           source_path: String.t()
         }
 
@@ -82,7 +80,6 @@ defmodule Sark.Config do
       anthropic_api_key: Map.get(raw, "anthropic_api_key"),
       tokens: tokens,
       plugins: plugins,
-      hot_reload: parse_hot_reload(Map.get(raw, "hot_reload", true)),
       source_path: abs
     }
   end
@@ -174,11 +171,6 @@ defmodule Sark.Config do
 
   defp parse_plugins(other, _),
     do: raise("config: plugins must be a map of name → path, got #{inspect(other)}")
-
-  defp parse_hot_reload(v) when is_boolean(v), do: v
-
-  defp parse_hot_reload(other),
-    do: raise("config: hot_reload must be boolean, got #{inspect(other)}")
 
   defp parse_log_level(level) when is_binary(level) do
     case level do

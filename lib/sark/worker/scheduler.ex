@@ -15,8 +15,9 @@ defmodule Sark.Worker.Scheduler do
 
   Crashes: a worker Task crash is isolated; the scheduler keeps ticking.
 
-  Manual trigger via `mix sark.worker` is unaffected — it builds a
-  short-lived runner inline, doesn't talk to the scheduler.
+  Manual trigger (`mix sark.worker` / `Sark.CLI.run_worker/1` via
+  release `rpc`) is unaffected — it builds a short-lived runner inline,
+  doesn't talk to the scheduler.
   """
 
   use GenServer
@@ -41,19 +42,6 @@ defmodule Sark.Worker.Scheduler do
   @spec registered_name(String.t()) :: atom
   def registered_name(plugin_name), do: :"sark_scheduler_#{plugin_name}"
 
-  @doc """
-  Replace the spec backing a running scheduler. Used by the hot-reload
-  watcher: after `workers.yml` changes, the loader rebuilds `spec` and
-  pushes it here. In-flight tasks are not interrupted.
-  """
-  @spec update_spec(String.t(), Spec.t()) :: :ok
-  def update_spec(plugin_name, %Spec{} = spec) do
-    case Process.whereis(registered_name(plugin_name)) do
-      nil -> :ok
-      pid -> GenServer.cast(pid, {:update_spec, spec})
-    end
-  end
-
   @impl true
   def init(%Spec{} = spec) do
     scheduled = Enum.filter(spec.workers || [], & &1.schedule)
@@ -73,25 +61,6 @@ defmodule Sark.Worker.Scheduler do
        scheduled: scheduled,
        in_flight: %{}
      }}
-  end
-
-  @impl true
-  def handle_cast({:update_spec, %Spec{} = spec}, state) do
-    scheduled = Enum.filter(spec.workers || [], & &1.schedule)
-    old_names = state.scheduled |> Enum.map(& &1.name) |> MapSet.new()
-    new_names = scheduled |> Enum.map(& &1.name) |> MapSet.new()
-
-    added = MapSet.difference(new_names, old_names) |> MapSet.to_list()
-    removed = MapSet.difference(old_names, new_names) |> MapSet.to_list()
-
-    if added != [] or removed != [] do
-      Logger.info(
-        "scheduler #{spec.name} — reloaded; " <>
-          "+#{inspect(added)} -#{inspect(removed)} (total #{length(scheduled)})"
-      )
-    end
-
-    {:noreply, %{state | spec: spec, scheduled: scheduled}}
   end
 
   @impl true

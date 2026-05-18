@@ -5,7 +5,6 @@
 listen: 0.0.0.0:8080
 data_dir: /storage/data
 log_level: info
-hot_reload: true
 
 # Optional; only required if any plugin defines workers.
 anthropic_api_key: "${ANTHROPIC_API_KEY}"

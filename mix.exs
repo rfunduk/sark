@@ -1,10 +1,12 @@
 defmodule Sark.MixProject do
   use Mix.Project
 
+  @version System.get_env("VERSION", "0.0.0-dev") |> String.trim_leading("v")
+
   def project do
     [
       app: :sark,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -28,7 +30,6 @@ defmodule Sark.MixProject do
       {:jason, "~> 1.4"},
       {:bbmustache, "~> 1.12"},
       {:phoenix_pubsub, "~> 2.1"},
-      {:file_system, "~> 1.0"},
       {:anthropix, "~> 0.6"},
       {:crontab, "~> 1.2"}
     ]
