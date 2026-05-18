@@ -50,5 +50,5 @@ jobs:
           generate_release_notes: true
           body: |
             ```
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
             ```
