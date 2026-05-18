@@ -28,8 +28,6 @@ RUN mix deps.compile
 
 COPY lib lib
 
-# Version single-source-of-truth: git tag → CI build-arg → mix.exs.
-# `.dockerignore` excludes `.git`, so the build can't derive it itself.
 ARG VERSION=0.0.0-dev
 ENV VERSION=${VERSION}
 
@@ -49,19 +47,10 @@ ENV LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
 WORKDIR /app
 
 RUN useradd --create-home --shell /bin/bash --uid 1000 sark \
-  && mkdir -p /storage \
-  && chown -R sark:sark /app /storage
+  && chown -R sark:sark /app
 
 USER sark
 
 COPY --from=builder --chown=sark:sark /app/_build/prod/rel/sark ./
-
-# Mount point: expects config.yml + plugin dirs + data subdir here.
-#   /storage/config.yml
-#   /storage/data/        (config - data_dir)
-#   /storage/plugins/...  (config - plugin paths)
-VOLUME ["/storage"]
-
-ENV SARK_CONFIG=/storage/config.yml
 
 CMD ["/app/bin/sark", "start"]

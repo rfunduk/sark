@@ -34,11 +34,11 @@ defmodule Sark.Plugin.LoaderTest do
     assert spec.queries == []
   end
 
-  test "queries.yml allow_sql flows into Spec", %{tmp_dir: dir} do
+  test "plugin.yml allow_sql flows into Spec", %{tmp_dir: dir} do
     plugin =
       write_plugin(Path.join(dir, "kv"), %{
         "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);",
-        "queries.yml" => """
+        "plugin.yml" => """
         allow_sql: true
         queries: {}
         """

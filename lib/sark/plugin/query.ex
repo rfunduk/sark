@@ -1,6 +1,6 @@
 defmodule Sark.Plugin.Query do
   @moduledoc """
-  Parsed canned query loaded from `queries.yml`.
+  Parsed canned query loaded from `plugin.yml`.
 
   A query may have one or more SQL statements. `sql:` accepts a string
   (one statement) or a list of strings (statements run in order, in a
@@ -74,12 +74,12 @@ defmodule Sark.Plugin.Query do
   @valid_types ~w(integer real text blob boolean array object)a
 
   @doc """
-  Parse a single entry from `queries.yml` into a `%Query{}`.
+  Parse a single entry from `plugin.yml` into a `%Query{}`.
   """
   @spec parse!(String.t(), map) :: t
   def parse!(name_str, entry) when is_binary(name_str) and is_map(entry) do
     name = String.to_atom(name_str)
-    where = "queries.yml: #{name_str}"
+    where = "plugin.yml: #{name_str}"
 
     description = fetch_string!(entry, "description", where)
     raw_sqls = parse_sql!(Map.get(entry, "sql"), where)

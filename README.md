@@ -8,56 +8,106 @@ Sark is MCP-only and ships no skill format. Skills (Claude Code, Cursor rules, e
 
 *Why?* I want my agents to use skills to do things but with some storage backend. Often it's fine to just have the agent write markdown files somewhere and the skills can refer to them, but this breaks down quickly -- just like my 'dotfiles', I want my todo list or whatever from any machine I use, and my phone too.
 
-*But doesn't MCP suck?* There are very many sucky MCP servers, but as a protocol I think it's great. Sark provides tools you can use to craft an agent friendly response from your database (so you arent just pooping out a huge JSON blob), for example.
+*But doesn't MCP suck?* There are very many sucky MCP servers, but as a protocol I think it's great. Sark provides tools you can use to craft an agent friendly response from your database (so you arent just pooping out a huge JSON blob).
 
-*What agents are supported?* Personally I'm primarily using Claude Code. But since MCP is a standard, and Sark has no opinions on skills structure, you can pretty much do anything you want. Maybe you want to use hooks to inject usage of your MCP into every session, or maybe you want to invoke the tools manually `/with-slash-commands`, or anything else you can think of.
+*What agents are supported?* Personally I'm primarily using Claude Code. But since MCP is a standard and Sark has no opinions on skills structure, you can pretty much do anything you want. Maybe you want to use hooks to inject usage of your MCP into every session, or maybe you want to invoke the tools manually `/with-slash-commands`, or anything else you can think of.
 
-## Run
+## Usage
+
+Pull the published image and run it:
 
 ```bash
-docker build -t sark .
 docker run -d --name sark \
   -p 8080:8080 \
   -v /path/to/storage:/storage \
-  sark
+  -v /path/to/plugins:/storage/plugins \
+  -e SARK_CONFIG=/storage/config.yml \
+  ghcr.io/rfunduk/sark:latest
 ```
 
-Container mounts `/storage` for everything stateful:
+Or build image instead of pulling:
 
-```
-/storage/
-  config.yml          # listen, tokens, plugins map
-  data/               # SQLite DBs
-  plugins/<name>/     # plugin dirs
+```bash
+docker build -t sark-dev .
+docker run ...
 ```
 
-Each plugin gets its own MCP endpoint at `POST /<plugin>/mcp`.
-
-Building from source for dev, you need Elixir 1.19+ and an appropriate `config.yml`:
+Or build from source if you have Elixir 1.19+:
 
 ```
 mix deps.get
-mix sark --config config.dev.yml
+SARK_CONFIG=config.dev.yml mix sark
 ```
 
-## Config
+As you can see, you need a config file -- see [`config.yml.example`](./config.yml.example)
 
-See [`config.yml.example`](./config.yml.example)
 
-## Plugin layout
+## Your First Plugin
+
+Shortest path:
+
+1. Create the plugin directory (example here is `kv`) with `migrations/0001_initial.sql`.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS kv (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    ```
+
+2. Add `plugin.yml`:
+
+    ```yaml
+    queries:
+      put:
+        description: Upsert a key
+        returns: results
+        write: true
+        params:
+          key:   { type: text }
+          value: { type: text }
+        sql: |
+          INSERT INTO kv (key, value) VALUES (:key, :value)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          RETURNING key
+
+      get:
+        description: Look up a row by key, rendered as a template.
+        returns: results
+        params:
+          key: { type: text }
+        sql: |
+          SELECT key, value FROM kv WHERE key = :key
+    ```
+
+3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: /storage/plugins/kv`) and ensure a token is scoped to it (`plugins: ["*"]` or `plugins: [kv]`).
+4. Boot Sark. The plugin's database is created and migration 1 is applied.
+5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-mytoken"`. Clients that can't set custom headers can pass the token as `?token=mytoken` instead.
+6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`
+
+### Tips
+
+- **Skills should carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark queries are the verbs the skill orchestrates.
+- **Composite reads.** Bundle nested data using `json_object` / `json_group_array` in SQL. Sark auto-decodes the JSON-string columns; templates iterate them directly.
+- **Atomic per tool call.** Each `write: true` query runs in a transaction; failures roll back automatically.
+
+
+## Plugin Authoring
+
+Each plugin runs its own MCP router at `/<plugin>/mcp`, so tools are exposed under their query name.
+
+### Layout
 
 ```
 myplugin/
   migrations/
-    0001_initial.sql       Required. Forward-only SQL, applied once per file.
+    0001_initial.sql
     0002_add_foo.sql
-  queries.yml              Optional. MCP tool definitions.
-  workers.yml              Optional. Background-agent definitions.
-  skills/                  Optional. Travels with the plugin; Sark ignores it.
-    foo-bar/SKILL.md       Load with your MCP client.
+  plugin.yml
+  skills/                  # Sark will ignore. Point Claude here.
+    foo-bar/SKILL.md
 ```
-
-The plugin's SQLite database is created at `{config.data_dir}/{plugin_name}.db` on first boot.
 
 ### Migrations
 
@@ -75,29 +125,33 @@ CREATE TABLE sessions (
 
 Useful if you enable `allow_sql` as then the `sark_catalog` tool will get the schema + comments in response.
 
-### queries.yml
+### `plugin.yml`
 
-Top-level shape:
+Create a `plugin.yml` for each plugin:
 
 ```yaml
-allow_sql: false               # optional, default false. See "Arbitrary SQL access" below.
+allow_sql: false               # optional, default false. See "Arbitrary SQL access"
 
-patchable:                     # optional, default {}. Allow-list for the built-in
-  notes: [body]                # sark_patch tool. See "sark_patch" below.
+include:
+  - otherfile.yml
+  - stuff/*.yml
 
-include:                       # optional. List of paths or globs (plugin-dir-relative).
-  - queries/reads.yml          # literal file (must exist)
-  - queries/writes/*.yml       # glob
+patchable:
+  <table>: [<column>, ...]
 
-queries:                       # optional. Inline queries, merged with includes.
+shared:
+  <name>: ...
+
+queries:
+  <name>: { ... }
+
+workers:
   <name>: { ... }
 ```
 
-All `queries:` blocks across `queries.yml` and any included files are merged into one map. Duplicate names are a hard error.
+More on all of these below.
 
-Each plugin runs its own MCP router at `/<plugin>/mcp`, so tools are exposed under their bare query name (e.g. a query `get` in plugin `kv` is the tool `get` on the `kv` endpoint). Plugin names must match `[a-z0-9][a-z0-9_-]*`.
-
-Per-query shape:
+## Queries
 
 ```yaml
 queries:
@@ -275,55 +329,9 @@ For `write: true` queries, rejects run inside the same transaction as the main s
 
 Reject SQL must be plain `SELECT` (no `INSERT`/`UPDATE`/`DELETE`/`WITH`/`PRAGMA`); enforced at load. Same `:bind` params as `sql:`.
 
-### `shared:` fragments (`@name` references)
-
-Repeated reject blocks (or any other repeated structure) can live in a
-top-level `shared:` map and be referenced from anywhere in the document
-with `@name`:
-
-```yaml
-shared:
-  prefix_rejects:
-    - sql: |
-        SELECT 1 FROM tasks WHERE id LIKE :id || '%' AND status='open'
-        GROUP BY 1 HAVING COUNT(*) > 1
-      message: "ambiguous prefix '{id}' — call resolve first"
-    - sql: SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id LIKE :id || '%')
-      message: "no task matches prefix '{id}'"
-
-queries:
-  update:
-    write: true
-    returns: count
-    params: { id: { type: text }, ... }
-    reject: @prefix_rejects     # whole-value substitution
-    sql: UPDATE tasks SET ... WHERE id = ...
-
-  set_status:
-    write: true
-    returns: count
-    params: { id: { type: text }, ... }
-    reject:
-      - @prefix_rejects          # spliced (since fragment is a list)
-      - sql: SELECT 1 FROM tasks WHERE id = :id AND status = :status
-        message: "task already in status '{status}'"
-    sql: UPDATE tasks SET status = :status WHERE id = ...
-```
-
-Rules:
-
-- `shared:` is a top-level map (sibling to `queries:` and `include:`), one per file. All `shared:` blocks across `queries.yml` and any
-  included files are merged. Duplicate fragment names across files raise at load.
-- A string starting with `@` is a fragment reference. `@name` looks up `shared.name`.
-- **Whole-value substitution.** `field: @name` → fragment value sits literally in place.
-- **List-element splice.** `[..., @name, ...]` — if the fragment is a list, it's flattened in; if it's a single value, it's inserted as one
-  element.
-- Resolution is universal — any field can reference fragments, not just `reject:`. Fragments may reference other fragments (cycles raise).
-- Unknown `@name` raises at parse time with the list of defined fragments. Typos fail loud.
-
 ### Worker-only queries (`internal: true`)
 
-A query marked `internal: true` is **not** registered as an MCP tool. External clients (Claude Code, Cursor, curl) can't see it or call it, and it's omitted from the `sark_catalog` response. The query is still loaded into the plugin's registry and is reachable from inside the same plugin's workers (see [Workers](#workers) below). Same parameter validation, same transactions, same renderers — just hidden from the public surface.
+A query marked `internal: true` is **not** registered as an MCP tool. External clients (Claude Code, Cursor, curl) can't see it or call it, and it's omitted from the `sark_catalog` response.
 
 ```yaml
 queries:
@@ -340,12 +348,74 @@ queries:
 
 Use it for things like writing system-only event kinds, flipping server-managed columns, or reading shadow/history tables that shouldn't be part of the public contract.
 
+
+## Shared Fragments
+
+A `shared:` entry is any reusable subtree — a `params:` block, a `format:`, a reject list, a worker's `tools:`/`system:`, whatever. `@name` substitutes it into **any field of any query or worker**. Example:
+
+```yaml
+shared:
+  id: { type: text, required: true }   # a single param spec
+
+  pagination:                          # a params sub-block
+    limit:  { type: integer, required: false, default: 20 }
+    offset: { type: integer, required: false, default: 0 }
+
+  card:                                # a format object
+    kind: template
+    template: "{{#results}}- {{name}}{{/results}}"
+
+  reader_tools: [list, get]            # a worker tools list
+
+  prefix_rejects:                      # a reject list
+    - sql: |
+        SELECT 1 FROM tasks WHERE id LIKE :id || '%' AND status='open'
+        GROUP BY 1 HAVING COUNT(*) > 1
+      message: "ambiguous prefix '{id}' — call resolve first"
+    - sql: SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id LIKE :id || '%')
+      message: "no task matches prefix '{id}'"
+
+queries:
+  list:
+    returns: results
+    params: @pagination
+    format: @card
+    sql: SELECT name FROM tasks LIMIT :limit OFFSET :offset
+
+  update:
+    write: true
+    returns: count
+    params: { id: @id, status: { type: text } }
+    reject:
+      - @prefix_rejects                # spliced (fragment is a list)
+      - sql: SELECT 1 FROM tasks WHERE id = :id AND status = :status
+        message: "task already in status '{status}'"
+    sql: UPDATE tasks SET status = :status WHERE id = :id
+
+workers:
+  janitor:
+    description: ...
+    model: claude-haiku-4-5
+    tools: @reader_tools               # @name resolves in workers too
+    system: ...
+    prompt: ...
+    schedule: "0 3 * * *"
+```
+
+Rules:
+
+- A string starting with `@` is a fragment reference. `@name` looks up `shared.name`.
+- **Whole-value substitution.** `field: @name` → fragment value sits literally in place.
+- **List-element splice.** `[..., @name, ...]` — if the fragment is a list, it's flattened in; if it's a single value, it's inserted as one element.
+- Fragments may reference other fragments.
+
+
 ## Arbitrary SQL access
 
 Two extra tools — `sark_catalog` and `sark_sql` — let an MCP client introspect the schema and run ad-hoc read-only SQL. Both are off by default. Opt in per plugin:
 
 ```yaml
-# queries.yml
+# plugin.yml
 allow_sql: true
 ```
 
@@ -370,23 +440,10 @@ When enabled:
 
 Most plugins should leave `allow_sql: false` and expose only their curated canned queries — those have validated parameter types, structured response formats, and stable contracts the skill is written against. Leaving it enabled with unsupervised agents will probably eventually result in something like `DELETE FROM tasks;`.
 
-## `sark_patch`
 
-Every plugin gets a `sark_patch(table, id, col, old, new)` tool. It reads `col` from the row matching `id`, replaces every occurrence of the `old` substring with `new`, and writes the result back — all in one writer transaction. Returns the number of replacements made. Errors if `old` doesn't appear in the column (so a typo doesn't silently no-op).
+## Patchable
 
-The point is surgical edits without round-tripping the whole field. A plugin can store a long markdown body in a column and patch a single paragraph or sentence:
-
-```
-sark_patch(table='notes', id=1, col='body',
-           old='There are 50 servers in the pool.',
-           new='There are 100 servers in the pool.')
-```
-
-`sark_patch` is identifier-validated (never arbitrary SQL) and locked down by default — it does nothing until the plugin author explicitly configures specifically allowed tables/columns.
-
-### `patchable:` allow-list
-
-`queries.yml` declares the allow-list at the top level:
+`plugin.yml` declares the allow-list at the top level:
 
 ```yaml
 patchable:
@@ -400,125 +457,28 @@ The tool is always registered (so the agent gets a useful error instead of "tool
 
 The plugin's skill should explain which fields are intended for it (e.g. "`sark_patch` the `notes.body` column when revising notes").
 
+### `sark_patch`
+
+Every plugin gets a `sark_patch(table, id, col, old, new)` tool. It reads `col` from the row matching `id`, replaces every occurrence of the `old` substring with `new`, and writes the result back — all in one writer transaction. Returns the number of replacements made. Errors if `old` doesn't appear in the column (so a typo doesn't silently no-op).
+
+The point is surgical edits without round-tripping the whole field. A plugin can store a long markdown body in a column and patch a single paragraph or sentence:
+
 ```
-sark_patch(table='tasks', id='my-task', col='body', old='foo', new='bar')
-```
-
-## Implementing a plugin
-
-Shortest path:
-
-1. Create the plugin directory (example here is `kv`) with `migrations/0001_initial.sql`.
-
-    ```sql
-    CREATE TABLE IF NOT EXISTS kv (
-      key        TEXT PRIMARY KEY,
-      value      TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-    ```
-
-2. Add `queries.yml`:
-
-    ```yaml
-    queries:
-      put:
-        description: Upsert a key
-        returns: results
-        write: true
-        params:
-          key:   { type: text }
-          value: { type: text }
-        sql: |
-          INSERT INTO kv (key, value) VALUES (:key, :value)
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-          RETURNING key
-
-      get:
-        description: Look up a row by key, rendered as a template.
-        returns: results
-        params:
-          key: { type: text }
-        sql: |
-          SELECT key, value FROM kv WHERE key = :key
-    ```
-
-3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: ../kv`) and ensure a token is scoped to it (`plugins: ["*"]` or `plugins: [kv]`).
-4. Boot Sark. The plugin's database is created and migration 1 is applied.
-5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-mytoken"`. Clients that can't set custom headers can pass the token as `?token=mytoken` instead.
-6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`
-
-Usage:
-
-- **Skills should carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark queries are the verbs the skill orchestrates.
-- **Composite reads.** Bundle nested data using `json_object` / `json_group_array` in SQL. Sark auto-decodes the JSON-string columns; templates iterate them directly.
-- **Atomic per tool call.** Each `write: true` query runs in a transaction; failures roll back automatically.
-
-### Versioning a column
-
-Use a trigger:
-
-```sql
--- shadow table — one row per pre-update snapshot
-CREATE TABLE notes_history (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  note_id INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  replaced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
--- trigger pushes the old row into history before every UPDATE
-CREATE TRIGGER notes_versioning
-BEFORE UPDATE ON notes
-BEGIN
-  INSERT INTO notes_history (note_id, body) VALUES (OLD.id, OLD.body);
-END;
+sark_patch(table='notes', id=1, col='body',
+           old='There are 50 servers in the pool.',
+           new='There are 100 servers in the pool.')
 ```
 
-Any `UPDATE` to `notes` fires the trigger and lands a snapshot in `notes_history`. Reads against `notes_history` work like any other table — expose them via canned queries.
+`sark_patch` is identifier-validated (never arbitrary SQL) and locked down by default.
 
-> Triggers writing to a *different* table (the case above) are safe by default. Triggers that touch the *same* table they fire on (e.g. `AFTER UPDATE ON notes` that updates `notes.updated_at`) need SQLite's `recursive_triggers` PRAGMA disabled (it is, by default) or careful guards to avoid recursion. Easier: bump `updated_at` directly in your `UPDATE` statement instead of via trigger.
-
-You could do bounded retention in the trigger, or add a prune query the skill can run:
-
-```yaml
-prune_notes_history:
-  description: Keep the most recent N versions per note.
-  write: true
-  returns: count
-  params:
-    note_id: { type: integer, required: true }
-    keep:    { type: integer, required: false, default: 10 }
-  sql: |
-    DELETE FROM notes_history
-    WHERE note_id = :note_id
-      AND id NOT IN (
-        SELECT id FROM notes_history
-        WHERE note_id = :note_id
-        ORDER BY replaced_at DESC
-        LIMIT :keep
-      )
-```
 
 ## Workers
 
-A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `queries.yml` surface, same handlers — except the loop runs inside Sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
+A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `plugin.yml` surface, same handlers — except the loop runs inside Sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
 
-### workers.yml
+### Defining workers
 
-Top-level shape mirrors `queries.yml`:
-
-```yaml
-include:                  # optional. Paths or globs (plugin-dir-relative).
-  - workers/*.yml
-
-workers:                  # optional. Inline workers, merged with includes.
-  <name>: { ... }
-```
-
-All `workers:` blocks across `workers.yml` and any included files merge into one map. Duplicate names are a hard error.
-
-Per-worker shape:
+Workers live under the `workers:` key — inline in `plugin.yml` or in any `include:`d file:
 
 ```yaml
 workers:
@@ -566,18 +526,16 @@ workers:
       {{/results}}
 ```
 
-**Rule of thumb:** if two consecutive runs of the worker would produce the same string → `system:`. If it changes per run → `prompt:`. The split exists because `system:` is the cached prefix; mixing per-run data into it breaks the cache and burns tokens.
-
 **Field notes:**
 
-- `tools` is an allowlist of bare tool names from this plugin's `queries.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`sark_patch`, plus `sark_catalog` and `sark_sql` when `allow_sql: true`). Tools outside the list are invisible to the LLM. Unknown names raise at startup. Cross-plugin (`<plugin>.<tool>`) is not supported.
+- `tools` is an allowlist of bare tool names from this plugin's `plugin.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`sark_patch`, plus `sark_catalog` and `sark_sql` when `allow_sql: true`). Tools outside the list are invisible to the LLM. Unknown names raise at startup.
 - `when:` is parameterless SQL. **Empty result set → worker is skipped entirely** (no LLM call, no `_worker_log` row). One or more rows → run. Use it to short-circuit when there's nothing to do.
 - `load:` is parameterless SQL. Result rows render `prompt:` via mustache:
   - 0 rows → empty context (vars expand to `""`).
   - 1 row → columns bind as scalars (`{{pending}}`). JSON aggregate columns (`json_group_array(...)`) are auto-decoded, so `{{#queue}}…{{/queue}}` iterates over them.
   - >1 rows → bound under `{{#results}}…{{/results}}`.
 - `system:` must not contain mustache (`{{...}}`) — it's sent verbatim and cached. Any `{{` in `system:` raises at startup.
-- `prompt:` is mustache-rendered **before** the LLM sees it. `load:` populates the context; without `load:` the prompt is sent as-is.
+- `prompt:` is mustache-rendered before the LLM sees it. `load:` populates the context; without `load:` the prompt is sent as-is.
 - `max_turns` caps the tool-use loop. The runner aborts if the model is still calling tools after this many turns.
 
 ### Caching + cost telemetry
@@ -586,20 +544,20 @@ Sark does cache the `system:` block and tool definitions across turns within a s
 
 Every terminal worker state writes one row to a Sark-managed `_worker_log` table in the plugin's own database. Columns:
 
-| column                  | meaning                                                              |
-| ----------------------- | -------------------------------------------------------------------- |
-| `worker_name`           | `"<name>"` from `workers.yml`                                        |
-| `model`                 | model id sent to the provider                                        |
-| `started_at`/`ended_at` | ISO8601 UTC                                                          |
-| `turns`                 | tool-use loop iterations                                             |
-| `stop_reason`           | `end_turn` / `max_tokens` / `stop_sequence` / `max_turns_exceeded` / `error` |
-| `input_tokens`          | summed across turns                                                  |
-| `output_tokens`         | summed across turns                                                  |
-| `cache_read_tokens`     | summed across turns                                                  |
-| `cache_creation_tokens` | summed across turns                                                  |
-| `service_tier`          | latest non-nil value reported by the provider                        |
-| `error`                 | error string on `error`, NULL otherwise                              |
-| `final_output`          | text from the last assistant turn                                    |
+| column                  | meaning                                         |
+| ----------------------- | ----------------------------------------------- |
+| `worker_name`           | `"<name>"` from `plugin.yml`                    |
+| `model`                 | model id sent to the provider                   |
+| `started_at`/`ended_at` | ISO8601 UTC                                     |
+| `turns`                 | tool-use loop iterations                        |
+| `stop_reason`           | `end_turn` / `max_tokens` / etc                 |
+| `input_tokens`          | summed across turns                             |
+| `output_tokens`         | summed across turns                             |
+| `cache_read_tokens`     | summed across turns                             |
+| `cache_creation_tokens` | summed across turns                             |
+| `service_tier`          | latest non-nil value reported by the provider   |
+| `error`                 | error string on `error`, NULL otherwise         |
+| `final_output`          | text from the last assistant turn               |
 
 Runs that the `when:` gate skipped do not log — there's no run to record.
 
@@ -610,7 +568,7 @@ Workers normally fire on their `schedule:` cron. To run one on demand — debugg
 **Developing Sark itself (source tree).** Use the mix task. It boots the app, resolves `<plugin>.<worker>` from the live registry, runs one synchronous pass, and streams the transcript to stdout:
 
 ```
-mix sark.worker --config config.yml kb.dreamer
+SARK_CONFIG=config.yml mix sark.worker kb.dreamer
 ```
 
 **Developing a plugin against a running Docker instance.** Call into the already-running container:
@@ -646,9 +604,53 @@ Each `[tool_call ...]` was dispatched in-process through the same handler an ext
 
 ### Scheduling
 
-`schedule:` (5-field cron) is required on every worker. The per-plugin scheduler ticks every minute and spawns a `Task` for each due worker. At most one in-flight run per worker — overlapping ticks are skipped (workers are idempotent via the `when:` gate, so a missed tick just means "nothing to do this minute").
+`schedule:` (5-field cron) is required on every worker. The per-plugin scheduler ticks every minute and spawns a `Task` for each due worker. At most one in-flight run per worker — overlapping ticks are skipped.
 
-### Limits
 
-- **No token/cost budget enforcement.** Worker runs to completion or `max_turns`. Cost telemetry is captured in `_worker_log`; enforcement on top of that is not.
-- **Plugin-local tools only.** A worker can't call another plugin's tools.
+## Misc
+
+### Versioning a column
+
+Use a trigger:
+
+```sql
+-- shadow table — one row per pre-update snapshot
+CREATE TABLE notes_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  replaced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- trigger pushes the old row into history before every UPDATE
+CREATE TRIGGER notes_versioning
+BEFORE UPDATE ON notes
+BEGIN
+  INSERT INTO notes_history (note_id, body) VALUES (OLD.id, OLD.body);
+END;
+```
+
+Any `UPDATE` to `notes` fires the trigger and lands a snapshot in `notes_history`. Reads against `notes_history` work like any other table — expose them via canned queries.
+
+> Triggers writing to a *different* table (the case above) are safe by default. Triggers that touch the *same* table they fire on (e.g. `AFTER UPDATE ON notes` that updates `notes.updated_at`) need SQLite's `recursive_triggers` PRAGMA disabled (it is, by default) or careful guards to avoid recursion. Easier: bump `updated_at` directly in your `UPDATE` statement instead of via trigger.
+
+You could do bounded retention in the trigger, or add a prune query the skill can run:
+
+```yaml
+prune_notes_history:
+  description: Keep the most recent N versions per note.
+  write: true
+  returns: count
+  params:
+    note_id: { type: integer, required: true }
+    keep:    { type: integer, required: false, default: 10 }
+  sql: |
+    DELETE FROM notes_history
+    WHERE note_id = :note_id
+      AND id NOT IN (
+        SELECT id FROM notes_history
+        WHERE note_id = :note_id
+        ORDER BY replaced_at DESC
+        LIMIT :keep
+      )
+```

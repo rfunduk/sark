@@ -2,7 +2,7 @@ defmodule Sark.Plugin.Query.Fragments do
   @moduledoc """
   Resolve `@name` fragment references against a `shared:` map.
 
-  `shared:` blocks from `queries.yml` and any included files are merged
+  `shared:` blocks from `plugin.yml` and any included files are merged
   into one map (dupe key across files raises). Each query entry is then
   walked top-to-bottom; any string starting with `@` is treated as a
   reference and replaced with the corresponding `shared` value.

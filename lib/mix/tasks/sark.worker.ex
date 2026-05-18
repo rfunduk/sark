@@ -4,16 +4,16 @@ defmodule Mix.Tasks.Sark.Worker do
   @moduledoc """
   Run one worker once and stream its transcript to stdout.
 
-      mix sark.worker --config config.yml jot.dreamer
-      mix sark.worker -c config.yml jot.dreamer
+      SARK_CONFIG=config.yml mix sark.worker jot.dreamer
 
   The argument is `<plugin>.<worker>`. Boots the OTP application
-  exactly like `mix sark`, looks up the named worker, dispatches it
-  through `Sark.Worker.Runner` with the production Anthropic LLM
-  client, and exits when the loop terminates.
+  exactly like `mix sark` (config via `SARK_CONFIG`), looks up the
+  named worker, dispatches it through `Sark.Worker.Runner` with the
+  production Anthropic LLM client, and exits when the loop terminates.
 
-  No scheduling — this task is the manual trigger. Cron + on_event
-  triggers land later.
+  This is the source-tree dev trigger and runs the worker inline,
+  streaming the transcript. For a running container use the
+  fire-and-forget `Sark.CLI.run_worker/1` via `bin/sark rpc`.
   """
 
   use Mix.Task
@@ -24,25 +24,14 @@ defmodule Mix.Tasks.Sark.Worker do
 
   @impl true
   def run(argv) do
-    {opts, rest, invalid} =
-      OptionParser.parse(argv,
-        strict: [config: :string],
-        aliases: [c: :config]
-      )
-
-    if invalid != [], do: Mix.raise("sark.worker: invalid args #{inspect(invalid)}")
-
-    config_path =
-      Keyword.get(opts, :config) || Mix.raise("sark.worker: --config <path> required")
-
     target =
-      case rest do
+      case argv do
         [t] -> t
         [] -> Mix.raise("sark.worker: missing <plugin>.<worker>")
-        _ -> Mix.raise("sark.worker: pass exactly one <plugin>.<worker>, got #{inspect(rest)}")
+        _ -> Mix.raise("sark.worker: pass exactly one <plugin>.<worker>, got #{inspect(argv)}")
       end
 
-    Sark.CLI.boot!(config_path)
+    {:ok, _} = Application.ensure_all_started(:sark)
 
     {spec, worker} =
       try do

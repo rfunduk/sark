@@ -11,14 +11,14 @@ defmodule Sark.Plugin.Loader do
   Plugin layout:
 
     * `migrations/` — required, forward-only SQL files (`NNNN_name.sql`)
-    * `queries.yml` — optional, MCP tool definitions (+ optional `include:`,
-      `allow_sql:` flags)
+    * `plugin.yml` — optional single entry doc: queries, workers,
+      `allow_sql`/`patchable` flags, and `include:` for splitting
+      definitions across files. See `Sark.Plugin.YAML`.
   """
 
   alias Sark.Plugin.Migrations
-  alias Sark.Plugin.Query.YAML, as: QueriesYAML
   alias Sark.Plugin.Spec
-  alias Sark.Plugin.Worker.YAML, as: WorkersYAML
+  alias Sark.Plugin.YAML, as: PluginYAML
 
   @name_re ~r/\A[a-z0-9][a-z0-9_-]*\z/
 
@@ -35,8 +35,7 @@ defmodule Sark.Plugin.Loader do
     end
 
     migrations = Migrations.discover!(abs)
-    {queries, opts} = QueriesYAML.load(abs)
-    workers = WorkersYAML.load(abs)
+    {queries, workers, opts} = PluginYAML.load(abs)
 
     %Spec{
       name: name,

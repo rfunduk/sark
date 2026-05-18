@@ -1,14 +1,14 @@
 defmodule Mix.Tasks.Sark do
-  @shortdoc "Run sark with --config <path>"
+  @shortdoc "Run sark (config via SARK_CONFIG)"
 
   @moduledoc """
-  Dev runner. Mirrors the release entrypoint:
+  Dev runner. Boots the OTP application and blocks until interrupted.
 
-      mix sark --config path/to/config.yml
-      mix sark -c path/to/config.yml
+      SARK_CONFIG=config.yml mix sark
 
-  Boots the OTP application and blocks until interrupted. Same code
-  path as `Sark.CLI.main/1` — releases call that directly.
+  Config resolution is identical to the release: `SARK_CONFIG` (or the
+  `:sark, :config_path` app env). No CLI flags — boot fails loud if
+  neither is set (see `Sark.Boot`).
   """
 
   use Mix.Task
@@ -16,9 +16,8 @@ defmodule Mix.Tasks.Sark do
   @requirements ["app.config"]
 
   @impl true
-  def run(argv) do
-    path = Sark.CLI.parse_args!(argv, &Mix.raise/1)
-    Sark.CLI.boot!(path)
+  def run(_argv) do
+    {:ok, _} = Application.ensure_all_started(:sark)
     Process.sleep(:infinity)
   end
 end

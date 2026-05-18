@@ -256,7 +256,7 @@ defmodule Sark.MCP.Registration do
     if patchable == %{} do
       base <>
         "No patchable fields configured for plugin `#{plugin}` — every call will be rejected. " <>
-        "Plugin author must add a `patchable:` block to queries.yml to opt fields in."
+        "Plugin author must add a `patchable:` block to plugin.yml to opt fields in."
     else
       paths =
         patchable

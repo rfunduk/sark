@@ -144,7 +144,7 @@ defmodule Sark.MCP.Handlers.PatchText do
   defp non_empty(_, _), do: :ok
 
   # `patchable` is an opt-in allow-list declared by the plugin in
-  # `queries.yml`. Empty / missing → every call is rejected. Plugin
+  # `plugin.yml`. Empty / missing → every call is rejected. Plugin
   # author lists exactly which `table.column` paths the built-in
   # `sark_patch` tool may touch — keeps it from doubling as a
   # back-door around the curated query surface (timestamps, ids,
@@ -161,7 +161,7 @@ defmodule Sark.MCP.Handlers.PatchText do
     cond do
       patchable == %{} ->
         {:error,
-         "validation: no patchable fields configured for plugin `#{plugin}` — add a `patchable:` block to queries.yml to opt fields in"}
+         "validation: no patchable fields configured for plugin `#{plugin}` — add a `patchable:` block to plugin.yml to opt fields in"}
 
       col in cols ->
         :ok

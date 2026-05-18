@@ -1,3 +1,19 @@
+allow_sql: true
+
+patchable:
+  notes: [body]
+
+include:
+  - queries/reads.yml
+  - queries/writes/*.yml
+
+queries:
+  total:
+    description: Count of rows.
+    returns: scalar
+    sql: |
+      SELECT COUNT(*) AS n FROM kv
+
 workers:
   smoke:
     description: Smoke worker — lists keys and reports.

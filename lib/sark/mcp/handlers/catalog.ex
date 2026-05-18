@@ -8,7 +8,7 @@ defmodule Sark.MCP.Handlers.Catalog do
   outcomes, dropped columns, etc. Internal tables (`sqlite_*`,
   `_sark_*`) are filtered out.
 
-  Only registered when the plugin's `queries.yml` sets `allow_sql: true`.
+  Only registered when the plugin's `plugin.yml` sets `allow_sql: true`.
   """
 
   require Phantom.Tool, as: Tool

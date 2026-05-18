@@ -1,6 +1,6 @@
 defmodule Sark.Plugin.Worker do
   @moduledoc """
-  Parsed worker spec loaded from `workers.yml`.
+  Parsed worker spec loaded from `plugin.yml`.
 
   A worker is an internal MCP client driven by a configured Anthropic
   model. `schedule:` (5-field cron) is required — every worker has an
@@ -57,11 +57,11 @@ defmodule Sark.Plugin.Worker do
   @default_max_turns 8
 
   @doc """
-  Parse a single entry from `workers.yml` into a `%Worker{}`.
+  Parse a single entry from `plugin.yml` into a `%Worker{}`.
   """
   @spec parse!(String.t(), map) :: t
   def parse!(name_str, entry) when is_binary(name_str) and is_map(entry) do
-    where = "workers.yml: #{name_str}"
+    where = "plugin.yml: #{name_str}"
 
     description = fetch_string!(entry, "description", where)
     model = fetch_string!(entry, "model", where)
