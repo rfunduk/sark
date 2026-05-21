@@ -1,17 +1,17 @@
 defmodule Sark.MCP.Registry do
   @moduledoc """
-  ETS-backed registry of canned queries, keyed by `{plugin, query_name}`.
+  ETS-backed registry of plugin tools, keyed by `{plugin, tool_name}`.
 
   Created lazily — `ensure_table/0` is idempotent so callers don't need
-  to coordinate a startup process. Used by query handlers to look up the
-  parsed `%Sark.Plugin.Query{}` for an incoming MCP tool call, and by
-  the catalog handler to enumerate a plugin's queries.
+  to coordinate a startup process. Used by the tool handler to look up
+  the parsed `%Sark.Plugin.Tool{}` for an incoming MCP tool call, and
+  by the catalog handler to enumerate a plugin's tools.
   """
 
-  alias Sark.Plugin.Query
   alias Sark.Plugin.Spec
+  alias Sark.Plugin.Tool
 
-  @table :sark_query_registry
+  @table :sark_tool_registry
   @specs :sark_plugin_specs
 
   @spec ensure_table() :: :ok
@@ -36,13 +36,13 @@ defmodule Sark.MCP.Registry do
     end
   end
 
-  @spec put(String.t(), atom, Query.t()) :: :ok
-  def put(plugin, name, %Query{} = q) do
+  @spec put(String.t(), atom, Tool.t()) :: :ok
+  def put(plugin, name, %Tool{} = q) do
     :ets.insert(@table, {{plugin, name}, q})
     :ok
   end
 
-  @spec get(String.t(), atom) :: {:ok, Query.t()} | :error
+  @spec get(String.t(), atom) :: {:ok, Tool.t()} | :error
   def get(plugin, name) do
     case :ets.lookup(@table, {plugin, name}) do
       [{_, q}] -> {:ok, q}
@@ -50,7 +50,7 @@ defmodule Sark.MCP.Registry do
     end
   end
 
-  @spec list_for_plugin(String.t()) :: [Query.t()]
+  @spec list_for_plugin(String.t()) :: [Tool.t()]
   def list_for_plugin(plugin) do
     :ets.match_object(@table, {{plugin, :_}, :_})
     |> Enum.map(fn {_, q} -> q end)

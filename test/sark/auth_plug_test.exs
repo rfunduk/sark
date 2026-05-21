@@ -78,7 +78,7 @@ defmodule Sark.AuthPlugTest do
 
   test "query string scoped token rejected for out-of-scope plugin → 404" do
     conn =
-      conn(:post, "/jot/mcp?token=#{@scoped}")
+      conn(:post, "/missing/mcp?token=#{@scoped}")
       |> call()
 
     assert conn.status == 404

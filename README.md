@@ -1,6 +1,6 @@
 <img src="./assets/sark.png" alt="SARK" />
 
-A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations) and a set of canned queries (YAML); Sark exposes each query as a typed MCP tool. Agents call the tools, Sark validates parameters, runs the SQL, and renders results.
+A generic SQLite-backed MCP server. Plugins declare their schema (SQL migrations) and a set of canned tools (YAML); Sark exposes each as a typed MCP tool. Agents call the tools, Sark validates parameters, runs the SQL, and renders results.
 
 Sark is MCP-only and ships no skill format. Skills (Claude Code, Cursor rules, etc.) are a separate concern and you can handle them as you prefer -- you might have them co-located with the plugin, or in a separate 'AI marketplace', or just locally on your machine.
 
@@ -59,7 +59,7 @@ Shortest path:
 2. Add `plugin.yml`:
 
     ```yaml
-    queries:
+    tools:
       put:
         description: Upsert a key
         returns: results
@@ -88,14 +88,14 @@ Shortest path:
 
 ### Tips
 
-- **Skills should carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark queries are the verbs the skill orchestrates.
+- **Skills should carry domain knowledge.** Vocabularies, heuristics, conversation flow live in skill prose. Sark tools are the verbs the skill orchestrates.
 - **Composite reads.** Bundle nested data using `json_object` / `json_group_array` in SQL. Sark auto-decodes the JSON-string columns; templates iterate them directly.
-- **Atomic per tool call.** Each `write: true` query runs in a transaction; failures roll back automatically.
+- **Atomic per tool call.** Each `write: true` tool runs in a transaction; failures roll back automatically.
 
 
 ## Plugin Authoring
 
-Each plugin runs its own MCP router at `/<plugin>/mcp`, so tools are exposed under their query name.
+Each plugin runs its own MCP router at `/<plugin>/mcp`, so each declared tool is exposed under its name.
 
 ### Layout
 
@@ -142,19 +142,19 @@ patchable:
 shared:
   <name>: ...
 
-queries:
+tools:
   <name>: { ... }
 
-workers:
+pipelines:
   <name>: { ... }
 ```
 
 More on all of these below.
 
-## Queries
+## Tools
 
 ```yaml
-queries:
+tools:
   log_set:
     description: Log a completed set during a workout.   # required
     write: true                                          # default false
@@ -174,7 +174,7 @@ queries:
 `sql:` accepts a string (one statement) or a list of strings. With a list, statements run in order, sharing the declared `params:`. Writes wrap all of them in a single transaction. The response is the last statement's result.
 
 ```yaml
-queries:
+tools:
   reset_plan:
     description: Wipe pending plan and start a new one.
     write: true
@@ -255,10 +255,10 @@ The agent calls one tool with the whole batch; Sark validates each element again
 - `list` — markdown bullets. Default for `returns: results` reads.
 - `template` — mustache.
 
-A template format goes inline under the query:
+A template format goes inline under the tool:
 
 ```yaml
-queries:
+tools:
   weekly_report:
     description: Per-muscle weekly volume.
     returns: results
@@ -301,7 +301,7 @@ format:
 State preconditions — "row already closed", "prefix matches multiple rows" — that param validation can't catch. Each entry is a `SELECT` plus a message; rows returned → reject (main `sql:` skipped, message returned). Empty → pass, next reject runs. First non-empty short-circuits.
 
 ```yaml
-queries:
+tools:
   close_task:
     write: true
     returns: count
@@ -325,18 +325,18 @@ reject:
     message: "no task matches '{id}'"
 ```
 
-For `write: true` queries, rejects run inside the same transaction as the main statement — preconditions can't race against another writer.
+For `write: true` tools, rejects run inside the same transaction as the main statement — preconditions can't race against another writer.
 
 Reject SQL must be plain `SELECT` (no `INSERT`/`UPDATE`/`DELETE`/`WITH`/`PRAGMA`); enforced at load. Same `:bind` params as `sql:`.
 
-### Worker-only queries (`internal: true`)
+### Internal tools (`internal: true`)
 
-A query marked `internal: true` is **not** registered as an MCP tool. External clients (Claude Code, Cursor, curl) can't see it or call it, and it's omitted from the `sark_catalog` response.
+A tool marked `internal: true` is **not** registered as an MCP tool. External clients (Claude Code, Cursor, curl) can't see it or call it, and it's omitted from the `sark_catalog` response. Thus, only pipelines can call it.
 
 ```yaml
-queries:
+tools:
   flag_reconciled:
-    description: Mark a row as reconciled. Worker-only — users shouldn't forge this.
+    description: Mark a row as reconciled.
     internal: true
     write: true
     returns: count
@@ -346,12 +346,12 @@ queries:
       UPDATE rows SET reconciled_at = datetime('now') WHERE id = :id
 ```
 
-Use it for things like writing system-only event kinds, flipping server-managed columns, or reading shadow/history tables that shouldn't be part of the public contract.
+Use them for things like writing system-only event kinds, flipping server-managed columns, or reading shadow/history tables that shouldn't be part of the public contract.
 
 
 ## Shared Fragments
 
-A `shared:` entry is any reusable subtree — a `params:` block, a `format:`, a reject list, a worker's `tools:`/`system:`, whatever. `@name` substitutes it into **any field of any query or worker**. Example:
+A `shared:` entry is any reusable subtree — a `params:` block, a `format:`, a reject list, a pipeline's `llm.tools` / `llm.system`, whatever. `@name` substitutes it into **any field of any tool or pipeline**. Example:
 
 ```yaml
 shared:
@@ -365,7 +365,7 @@ shared:
     kind: template
     template: "{{#results}}- {{name}}{{/results}}"
 
-  reader_tools: [list, get]            # a worker tools list
+  reader_tools: [list, get]            # an llm tools list
 
   prefix_rejects:                      # a reject list
     - sql: |
@@ -375,7 +375,7 @@ shared:
     - sql: SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id LIKE :id || '%')
       message: "no task matches prefix '{id}'"
 
-queries:
+tools:
   list:
     returns: results
     params: @pagination
@@ -392,14 +392,16 @@ queries:
         message: "task already in status '{status}'"
     sql: UPDATE tasks SET status = :status WHERE id = :id
 
-workers:
+pipelines:
   janitor:
     description: ...
-    model: claude-haiku-4-5
-    tools: @reader_tools               # @name resolves in workers too
-    system: ...
-    prompt: ...
     schedule: "0 3 * * *"
+    steps:
+      - llm:
+          model: claude-haiku-4-5
+          tools: @reader_tools         # @name resolves in pipelines too
+          system: ...
+          prompt: ...
 ```
 
 Rules:
@@ -421,7 +423,7 @@ allow_sql: true
 
 When enabled:
 
-- **`sark_catalog`** returns the live schema and the list of canned queries with their parameter schemas:
+- **`sark_catalog`** returns the live schema and the list of canned tools with their parameter schemas:
 
   ```json
   {
@@ -430,7 +432,7 @@ When enabled:
       { "type": "table", "name": "kv", "sql": "CREATE TABLE kv (...)" },
       { "type": "index", "name": "kv_updated_at_idx", "sql": "..." }
     ],
-    "queries": [
+    "tools": [
       { "name": "get", "description": "Look up a row by key.", "params": [...], ... }
     ]
   }
@@ -438,7 +440,7 @@ When enabled:
 
 - **`sark_sql(sql)`** runs an arbitrary `SELECT` / `WITH` / `PRAGMA`.
 
-Most plugins should leave `allow_sql: false` and expose only their curated canned queries — those have validated parameter types, structured response formats, and stable contracts the skill is written against. Leaving it enabled with unsupervised agents will probably eventually result in something like `DELETE FROM tasks;`.
+Most plugins should leave `allow_sql: false` and expose only their curated canned tools — those have validated parameter types, structured response formats, and stable contracts the skill is written against. Leaving it enabled with unsupervised agents will probably eventually result in something like `DELETE FROM tasks;`.
 
 
 ## Patchable
@@ -472,139 +474,121 @@ sark_patch(table='notes', id=1, col='body',
 `sark_patch` is identifier-validated (never arbitrary SQL) and locked down by default.
 
 
-## Workers
+## Pipelines
 
-A worker is a background LLM agent owned by a plugin. It calls the plugin's MCP tools the same way any external client does — same `plugin.yml` surface, same handlers — except the loop runs inside Sark itself, driven by an Anthropic model the plugin author picks. Workers are how a plugin grows ambient behavior: nightly digests, cross-row pattern detection, periodic summaries.
+A pipeline is a step-based background job owned by a plugin. Steps run in order; the stdout of step N becomes the stdin of step N+1. Pipelines are how a plugin grows ambient behavior: ingest from an external system, fold accumulated state into a summary, post a daily digest to Slack.
 
-### Defining workers
+### Defining pipelines
 
-Workers live under the `workers:` key — inline in `plugin.yml` or in any `include:`d file:
+Pipelines live under the `pipelines:` key — inline in `plugin.yml` or in any `include:`d file:
 
 ```yaml
-workers:
-  rollup:
-    description: Nightly — fold each task's accumulated comments into its summary body.
-    model: claude-sonnet-4-6                            # required. Any Anthropic model id.
-    schedule: "0 3 * * *"                               # required. Cron schedule.
-    tools: [task_with_comments, archive_comments]       # required. Allowlist; tools live in this plugin.
-    max_turns: 16                                       # optional, default 8.
+pipelines:
+  ansible_hosts:
+    description: Daily ingest of ansible host inventory.
+    schedule: "0 3 * * *"                              # optional. 5-field cron. nil = manual-only.
+    when: |                                            # optional. Empty result → skip (no log row).
+      SELECT 1 WHERE EXISTS (SELECT 1 FROM ingest_queue)
+    env: [GITHUB_TOKEN]                                # env var names propagated from sark's env.
+    timeout: 600000                                    # optional. Pipeline-level ceiling, ms.
+    steps:
+      - shell: git clone --depth=1 git@github.com:org/automation-mono .
+      - shell: python parse_hosts.py                   # outputs {"hosts": [...]}
+      - tool: upsert_hosts                             # consumes JSON stdin as params
+```
 
-    when: |                                             # optional. Empty result → skip (no LLM call, no log row).
-      SELECT 1 WHERE EXISTS (
-        SELECT 1 FROM task_comments
-        WHERE archived_at IS NULL
-          AND created_at < datetime('now', '-1 day')
-      )
+### Step types
 
-    load: |                                             # optional. Rows feed mustache rendering of `prompt:`.
-      SELECT
-        id, title, body,
-        json_group_array(json_object('id', c.id, 'body', c.body, 'at', c.created_at)) AS comments
-      FROM tasks t
-      JOIN task_comments c ON c.task_id = t.id
-      WHERE c.archived_at IS NULL
-      GROUP BY t.id
+- **`shell:`** — `/bin/sh -c <cmd>` in the pipeline's workdir. Stdin = previous step's stdout. Stdout captured for the next step. Non-zero exit aborts the run.
+- **`load:`** — read-only SQL. JSON-object stdin parsed as `:name` params. Output is the result rows as a JSON array. Writes are rejected at boot.
+- **`tool:`** — call a plugin tool (or a `sark_` built-in) by name. JSON stdin parsed as the tool's params. Output is the tool's response.
+- **`llm:`** — agent loop. JSON stdin populates a mustache context for `prompt:`; the loop runs `model:` + `system:` + `tools:` + `max_turns:` until the model stops calling tools. Final assistant text → stdout.
 
-    system: |                                           # required. NO mustache — sent verbatim and cached.
-      # Role + output rules + invariants. Stable across every run.
-      # Anything identical between two invocations belongs here.
+Each step accepts a per-step `timeout:` in long-form:
+
+```yaml
+steps:
+  - shell: { cmd: gh issue list, timeout: 30000 }
+  - load:  { sql: SELECT ..., timeout: 5000 }
+  - tool:  { name: upsert_hosts, timeout: 60000 }
+  - llm:   { model: ..., prompt: ..., tools: [...], timeout: 120000 }
+```
+
+Per-step `timeout:` overrides the pipeline-level one; both default to no ceiling.
+
+### A Note on `shell:`
+
+You will find the published Sark docker image quite lean, so you might be expecting to `shell: jq -r ...` or `shell: gh pr list ...`. To do this, you should derive your own image from the base:
+
+```
+FROM ghcr.io/rfunduk/sark:latest
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git curl jq python3 gh \
+  && rm -rf /var/lib/apt/lists/*
+USER sark
+```
+
+Alternatively, you could ship Debian bookworm compatible binaries with your plugin!
+
+### Pipe convention
+
+Bytes flow freely between steps. JSON is only required at the `load:` / `tool:` / `llm:` **input** boundary — non-JSON output from `shell:` is fine downstream of another `shell:` but errors if piped into a step that expects JSON. The first step receives empty stdin.
+
+### LLM step
+
+```yaml
+- llm:
+    model: claude-sonnet-4-6
+    tools: [task_with_comments, archive_comments]    # allowlist; names of allowed tools/built-ins.
+    max_turns: 16                                    # default 8.
+    system: |                                        # required. NO mustache — sent verbatim, cached.
       You roll up task comments into the task summary body.
-      For each task: call `task_with_comments` to read current state,
-      compose an updated body that integrates the comment content
-      (preserve facts, drop redundancy, keep markdown structure).
-      Later comments override previous comments or the body on conflict.
       Use `sark_patch` to update the body, then `archive_comments` with
-      the comment ids you folded. Never invent facts. Stop when every
-      task in the queue is handled.
-
-    prompt: |                                           # required. Mustache-rendered against `load:` rows.
-      # Per-run data. Mustache vars from `load:`. Anything that
-      # varies between invocations belongs here.
+      the ids you folded. Stop when every task in the queue is handled.
+    prompt: |                                        # required. Mustache-rendered against stdin.
       Tasks with unfolded comments:
       {{#results}}
       - `{{id}}` — {{title}}
       {{/results}}
 ```
 
-**Field notes:**
+`system:` must not contain mustache (`{{...}}`) — it's sent verbatim and cached. `prompt:` is mustache-rendered using the previous step's JSON stdin as context (an array binds under `{{#results}}`; an object binds at the top level).
 
-- `tools` is an allowlist of bare tool names from this plugin's `plugin.yml` (including any `internal: true` queries — workers can call those, external clients can't) plus the plugin's built-ins (`sark_patch`, plus `sark_catalog` and `sark_sql` when `allow_sql: true`). Tools outside the list are invisible to the LLM. Unknown names raise at startup.
-- `when:` is parameterless SQL. **Empty result set → worker is skipped entirely** (no LLM call, no `_worker_log` row). One or more rows → run. Use it to short-circuit when there's nothing to do.
-- `load:` is parameterless SQL. Result rows render `prompt:` via mustache:
-  - 0 rows → empty context (vars expand to `""`).
-  - 1 row → columns bind as scalars (`{{pending}}`). JSON aggregate columns (`json_group_array(...)`) are auto-decoded, so `{{#queue}}…{{/queue}}` iterates over them.
-  - >1 rows → bound under `{{#results}}…{{/results}}`.
-- `system:` must not contain mustache (`{{...}}`) — it's sent verbatim and cached. Any `{{` in `system:` raises at startup.
-- `prompt:` is mustache-rendered before the LLM sees it. `load:` populates the context; without `load:` the prompt is sent as-is.
-- `max_turns` caps the tool-use loop. The runner aborts if the model is still calling tools after this many turns.
+`tools:` is a list of allowed tools (including `internal: true`) or built-ins (`sark_patch`, etc). Unknown names raise at runtime.
 
-### Caching + cost telemetry
+### Concurrency
 
-Sark does cache the `system:` block and tool definitions across turns within a single run, however since most workers are over long cadences (daily / weekly) we won't generally get much in the way of cache benefits.
+A per-pipeline lock arbitrates between the scheduler, `Sark.CLI.run_pipeline`, and the `sark_pipelines_run_now` MCP tool. A cron fire that collides with an in-flight run is dropped (logged as skipped). A manual trigger that collides errors with `busy:`.
 
-Every terminal worker state writes one row to a Sark-managed `_worker_log` table in the plugin's own database. Columns:
+### Telemetry
 
-| column                  | meaning                                         |
-| ----------------------- | ----------------------------------------------- |
-| `worker_name`           | `"<name>"` from `plugin.yml`                    |
-| `model`                 | model id sent to the provider                   |
-| `started_at`/`ended_at` | ISO8601 UTC                                     |
-| `turns`                 | tool-use loop iterations                        |
-| `stop_reason`           | `end_turn` / `max_tokens` / etc                 |
-| `input_tokens`          | summed across turns                             |
-| `output_tokens`         | summed across turns                             |
-| `cache_read_tokens`     | summed across turns                             |
-| `cache_creation_tokens` | summed across turns                             |
-| `service_tier`          | latest non-nil value reported by the provider   |
-| `error`                 | error string on `error`, NULL otherwise         |
-| `final_output`          | text from the last assistant turn               |
+Every terminal run writes one row to a Sark-managed `_pipeline_log` table in the plugin's own database; each step writes one row to `_pipeline_step_log`. Together they capture: start/end timestamps, status (success / failed / skipped), trigger (schedule / manual), per-step exit codes (shell), row counts (load / tool), LLM token usage (model, turns, stop reason, input/output/cache tokens, service tier), and the final assistant text.
 
-Runs that the `when:` gate skipped do not log — there's no run to record.
+Skipped runs (gated out by `when:`) don't write rows.
 
-### Triggering a worker manually
-
-Workers normally fire on their `schedule:` cron. To run one on demand — debugging a prompt, smoke-testing a `when:` gate — there are two paths depending on where you sit.
-
-**Developing Sark itself (source tree).** Use the mix task. It boots the app, resolves `<plugin>.<worker>` from the live registry, runs one synchronous pass, and streams the transcript to stdout:
+### Triggering a pipeline manually
 
 ```
-SARK_CONFIG=config.yml mix sark.worker kb.dreamer
+# Source tree (streams transcript)
+SARK_CONFIG=config.yml mix sark.pipeline kb.dreamer
+
+# Live container (fire-and-forget)
+docker exec sark /app/bin/sark rpc 'Sark.CLI.run_pipeline("kb.dreamer")'
+docker logs sark -f --tail 50
 ```
 
-**Developing a plugin against a running Docker instance.** Call into the already-running container:
+### Built-in observability tools
 
-```
-docker exec sark /app/bin/sark rpc 'Sark.CLI.run_worker("kb.dreamer")' && docker logs sark -f --tail 50
-```
+Every plugin gets these without declaring them. Tool descriptions are shown via `sark_catalog` (when `allow_sql: true`) or your MCP client's tool list.
 
-### What a worker run looks like
+- **`sark_pipelines_list`** — declared pipelines + last-run summary.
+- **`sark_pipelines_log(pipeline, run_id?)`** — full per-step log for one run. `run_id` omitted → latest run for that pipeline.
+- **`sark_pipelines_recent(pipeline?, limit?)`** — recent runs across all pipelines or one. Default limit 20.
+- **`sark_pipelines_costs(pipeline?, since?)`** — token rollup grouped by pipeline + model (for `llm:` steps). Your skill multiplies by its own price table.
+- **`sark_pipelines_run_now(pipeline)`** — fire-and-forget manual trigger.
 
-```
-running worker tasks.dreamer (model=claude-sonnet-4-6, max_turns=8)
-
---- turn 1 ---
-[assistant] Scanning recent activity.
-[tool_call #toolu_01a] list_active({})
-[tool_result #toolu_01a ok] - L2 workers — agentic substrate (`l2-workers`) ...
-
---- turn 2 ---
-[assistant] Found a cross-task pattern between l2-workers and plugin-test-harness.
-[tool_call #toolu_02a] append({"slug":"l2-workers","section":"findings","text":"..."})
-[tool_result #toolu_02a ok] 1
-
---- turn 3 ---
-[assistant] Done.
-
-[stop] reason=:end_turn turns=3
-
-[done] turns=3 stop=:end_turn
-```
-
-Each `[tool_call ...]` was dispatched in-process through the same handler an external MCP client would hit. Errors come back to the LLM as tool_result blocks with `is_error: true`, so the model can recover.
-
-### Scheduling
-
-`schedule:` (5-field cron) is required on every worker. The per-plugin scheduler ticks every minute and spawns a `Task` for each due worker. At most one in-flight run per worker — overlapping ticks are skipped.
+The `sark_pipelines_*` prefix is reserved — a plugin tool that collides raises at registration.
 
 
 ## Misc
@@ -630,11 +614,11 @@ BEGIN
 END;
 ```
 
-Any `UPDATE` to `notes` fires the trigger and lands a snapshot in `notes_history`. Reads against `notes_history` work like any other table — expose them via canned queries.
+Any `UPDATE` to `notes` fires the trigger and lands a snapshot in `notes_history`. Reads against `notes_history` work like any other table — expose them via canned tools.
 
 > Triggers writing to a *different* table (the case above) are safe by default. Triggers that touch the *same* table they fire on (e.g. `AFTER UPDATE ON notes` that updates `notes.updated_at`) need SQLite's `recursive_triggers` PRAGMA disabled (it is, by default) or careful guards to avoid recursion. Easier: bump `updated_at` directly in your `UPDATE` statement instead of via trigger.
 
-You could do bounded retention in the trigger, or add a prune query the skill can run:
+You could do bounded retention in the trigger, or add a prune tool the skill can run:
 
 ```yaml
 prune_notes_history:

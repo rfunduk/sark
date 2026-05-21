@@ -1,7 +1,7 @@
 defmodule Sark.Plugin.YAMLTest do
   use ExUnit.Case, async: true
 
-  alias Sark.Plugin.Worker
+  alias Sark.Plugin.Pipeline
   alias Sark.Plugin.YAML
 
   @moduletag :tmp_dir
@@ -18,9 +18,9 @@ defmodule Sark.Plugin.YAMLTest do
     plugin_dir
   end
 
-  defp q_yaml(name) do
+  defp t_yaml(name) do
     """
-    queries:
+    tools:
       #{name}:
         description: q
         returns: scalar
@@ -28,16 +28,14 @@ defmodule Sark.Plugin.YAMLTest do
     """
   end
 
-  defp w_yaml(name) do
+  defp p_yaml(name) do
     """
-    workers:
+    pipelines:
       #{name}:
-        description: w
-        model: m
-        tools: [a]
-        system: s
-        prompt: p
+        description: p
         schedule: "0 3 * * *"
+        steps:
+          - shell: echo hi
     """
   end
 
@@ -46,15 +44,15 @@ defmodule Sark.Plugin.YAMLTest do
     assert YAML.load(plugin) == {[], [], %{allow_sql: false, patchable: %{}}}
   end
 
-  test "loads inline queries + workers", %{tmp_dir: dir} do
+  test "loads inline tools + pipelines", %{tmp_dir: dir} do
     plugin =
       write(Path.join(dir, "p"), %{
-        "plugin.yml" => q_yaml("a") <> w_yaml("smoke")
+        "plugin.yml" => t_yaml("a") <> p_yaml("smoke")
       })
 
-    {queries, workers, opts} = YAML.load(plugin)
-    assert [%{name: :a}] = queries
-    assert [%Worker{name: :smoke, model: "m", tools: ["a"]}] = workers
+    {tools, pipelines, opts} = YAML.load(plugin)
+    assert [%{name: :a}] = tools
+    assert [%Pipeline{name: :smoke, steps: [%{kind: :shell}]}] = pipelines
     assert opts == %{allow_sql: false, patchable: %{}}
   end
 
@@ -62,7 +60,7 @@ defmodule Sark.Plugin.YAMLTest do
     test "allow_sql: true picked up", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
-          "plugin.yml" => "allow_sql: true\n" <> q_yaml("a")
+          "plugin.yml" => "allow_sql: true\n" <> t_yaml("a")
         })
 
       {_, _, opts} = YAML.load(plugin)
@@ -76,7 +74,7 @@ defmodule Sark.Plugin.YAMLTest do
           patchable:
             notes: [body, title]
             tasks: [body]
-          queries: {}
+          tools: {}
           """
         })
 
@@ -85,14 +83,14 @@ defmodule Sark.Plugin.YAMLTest do
     end
 
     test "patchable defaults to empty map", %{tmp_dir: dir} do
-      plugin = write(Path.join(dir, "p"), %{"plugin.yml" => q_yaml("a")})
+      plugin = write(Path.join(dir, "p"), %{"plugin.yml" => t_yaml("a")})
       {_, _, opts} = YAML.load(plugin)
       assert opts.patchable == %{}
     end
 
     test "patchable rejects non-map", %{tmp_dir: dir} do
       plugin =
-        write(Path.join(dir, "p"), %{"plugin.yml" => "patchable: [notes]\nqueries: {}\n"})
+        write(Path.join(dir, "p"), %{"plugin.yml" => "patchable: [notes]\ntools: {}\n"})
 
       assert_raise RuntimeError, ~r/patchable must be a map/, fn -> YAML.load(plugin) end
     end
@@ -100,7 +98,7 @@ defmodule Sark.Plugin.YAMLTest do
     test "patchable rejects bad table identifier", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
-          "plugin.yml" => "patchable:\n  \"bad-table\": [body]\nqueries: {}\n"
+          "plugin.yml" => "patchable:\n  \"bad-table\": [body]\ntools: {}\n"
         })
 
       assert_raise RuntimeError, ~r/patchable table name/, fn -> YAML.load(plugin) end
@@ -109,7 +107,7 @@ defmodule Sark.Plugin.YAMLTest do
     test "patchable rejects bad column identifier", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
-          "plugin.yml" => "patchable:\n  notes: [\"bad col\"]\nqueries: {}\n"
+          "plugin.yml" => "patchable:\n  notes: [\"bad col\"]\ntools: {}\n"
         })
 
       assert_raise RuntimeError, ~r/patchable.notes entry/, fn -> YAML.load(plugin) end
@@ -117,7 +115,7 @@ defmodule Sark.Plugin.YAMLTest do
 
     test "patchable rejects non-list cols", %{tmp_dir: dir} do
       plugin =
-        write(Path.join(dir, "p"), %{"plugin.yml" => "patchable:\n  notes: body\nqueries: {}\n"})
+        write(Path.join(dir, "p"), %{"plugin.yml" => "patchable:\n  notes: body\ntools: {}\n"})
 
       assert_raise RuntimeError, ~r/must be a list of column names/, fn ->
         YAML.load(plugin)
@@ -126,30 +124,30 @@ defmodule Sark.Plugin.YAMLTest do
 
     test "allow_sql non-boolean raises", %{tmp_dir: dir} do
       plugin =
-        write(Path.join(dir, "p"), %{"plugin.yml" => "allow_sql: yes_please\nqueries: {}\n"})
+        write(Path.join(dir, "p"), %{"plugin.yml" => "allow_sql: yes_please\ntools: {}\n"})
 
       assert_raise RuntimeError, ~r/allow_sql must be boolean/, fn -> YAML.load(plugin) end
     end
   end
 
   describe "include" do
-    test "literal files merge queries + workers", %{tmp_dir: dir} do
+    test "literal files merge tools + pipelines", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" =>
             """
             include:
               - extra.yml
-            """ <> q_yaml("a"),
-          "extra.yml" => q_yaml("b") <> w_yaml("worker_b")
+            """ <> t_yaml("a"),
+          "extra.yml" => t_yaml("b") <> p_yaml("p_b")
         })
 
-      {queries, workers, _} = YAML.load(plugin)
-      assert Enum.map(queries, & &1.name) == [:a, :b]
-      assert Enum.map(workers, & &1.name) == [:worker_b]
+      {tools, pipelines, _} = YAML.load(plugin)
+      assert Enum.map(tools, & &1.name) == [:a, :b]
+      assert Enum.map(pipelines, & &1.name) == [:p_b]
     end
 
-    test "one included file may carry queries: + workers: + shared: together", %{tmp_dir: dir} do
+    test "one included file may carry tools: + pipelines: + shared: together", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => "include:\n  - all.yml\n",
@@ -159,7 +157,7 @@ defmodule Sark.Plugin.YAMLTest do
               sql: SELECT 1 WHERE :id = ''
               message: "no match for '{id}'"
 
-          queries:
+          tools:
             upd:
               description: q
               write: true
@@ -169,18 +167,16 @@ defmodule Sark.Plugin.YAMLTest do
               reject: @no_match
               sql: UPDATE t SET v = 1 WHERE id = :id
 
-          workers:
-            w1:
-              description: w
-              model: m
-              tools: [a]
-              system: s
-              prompt: p
+          pipelines:
+            p1:
+              description: p
               schedule: "0 3 * * *"
+              steps:
+                - shell: echo hi
           """
         })
 
-      {[%{name: :upd, reject: [r]}], [%Worker{name: :w1}], _} = YAML.load(plugin)
+      {[%{name: :upd, reject: [r]}], [%Pipeline{name: :p1}], _} = YAML.load(plugin)
       assert r.message == "no match for '{id}'"
     end
 
@@ -188,32 +184,32 @@ defmodule Sark.Plugin.YAMLTest do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => "include:\n  - q/*.yml\n",
-          "q/foo.yml" => q_yaml("foo"),
-          "q/bar.yml" => q_yaml("bar")
+          "q/foo.yml" => t_yaml("foo"),
+          "q/bar.yml" => t_yaml("bar")
         })
 
-      {queries, _, _} = YAML.load(plugin)
-      assert Enum.map(queries, & &1.name) == [:bar, :foo]
+      {tools, _, _} = YAML.load(plugin)
+      assert Enum.map(tools, & &1.name) == [:bar, :foo]
     end
 
-    test "duplicate query across files raises naming both", %{tmp_dir: dir} do
+    test "duplicate tool across files raises naming both", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
-          "plugin.yml" => "include:\n  - extra.yml\n" <> q_yaml("dup"),
-          "extra.yml" => q_yaml("dup")
+          "plugin.yml" => "include:\n  - extra.yml\n" <> t_yaml("dup"),
+          "extra.yml" => t_yaml("dup")
         })
 
-      assert_raise RuntimeError, ~r/duplicate query `dup`/, fn -> YAML.load(plugin) end
+      assert_raise RuntimeError, ~r/duplicate tool `dup`/, fn -> YAML.load(plugin) end
     end
 
-    test "duplicate worker across files raises", %{tmp_dir: dir} do
+    test "duplicate pipeline across files raises", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
-          "plugin.yml" => "include:\n  - extra.yml\n" <> w_yaml("same"),
-          "extra.yml" => w_yaml("same")
+          "plugin.yml" => "include:\n  - extra.yml\n" <> p_yaml("same"),
+          "extra.yml" => p_yaml("same")
         })
 
-      assert_raise RuntimeError, ~r/duplicate worker `same`/, fn -> YAML.load(plugin) end
+      assert_raise RuntimeError, ~r/duplicate pipeline `same`/, fn -> YAML.load(plugin) end
     end
 
     test "missing literal include raises", %{tmp_dir: dir} do
@@ -226,10 +222,10 @@ defmodule Sark.Plugin.YAMLTest do
 
     test "glob with no matches is fine", %{tmp_dir: dir} do
       plugin =
-        write(Path.join(dir, "p"), %{"plugin.yml" => "include:\n  - q/*.yml\n" <> q_yaml("a")})
+        write(Path.join(dir, "p"), %{"plugin.yml" => "include:\n  - q/*.yml\n" <> t_yaml("a")})
 
-      {queries, _, _} = YAML.load(plugin)
-      assert [%{name: :a}] = queries
+      {tools, _, _} = YAML.load(plugin)
+      assert [%{name: :a}] = tools
     end
 
     test "include must be a list", %{tmp_dir: dir} do
@@ -241,7 +237,7 @@ defmodule Sark.Plugin.YAMLTest do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => "include:\n  - extra.yml\n",
-          "extra.yml" => "allow_sql: true\n" <> q_yaml("a")
+          "extra.yml" => "allow_sql: true\n" <> t_yaml("a")
         })
 
       assert_raise RuntimeError, ~r/allow_sql .*entry-only/, fn -> YAML.load(plugin) end
@@ -251,7 +247,7 @@ defmodule Sark.Plugin.YAMLTest do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => "patchable:\n  notes: [body]\ninclude:\n  - extra.yml\n",
-          "extra.yml" => "patchable:\n  tasks: [title]\n" <> q_yaml("a")
+          "extra.yml" => "patchable:\n  tasks: [title]\n" <> t_yaml("a")
         })
 
       {_, _, opts} = YAML.load(plugin)
@@ -271,70 +267,86 @@ defmodule Sark.Plugin.YAMLTest do
     end
   end
 
-  describe "workers" do
-    test "workers resolve @shared fragments too", %{tmp_dir: dir} do
+  describe "pipelines" do
+    test "pipelines resolve @shared fragments", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => """
           shared:
             kv_tools: [list, get]
 
-          workers:
-            w:
-              description: w
-              model: m
-              tools: @kv_tools
-              system: s
-              prompt: p
+          pipelines:
+            p:
+              description: p
               schedule: "0 3 * * *"
+              steps:
+                - llm:
+                    model: m
+                    tools: @kv_tools
+                    system: s
+                    prompt: p
+                    max_turns: 2
           """
         })
 
-      {_, [%Worker{name: :w, tools: tools}], _} = YAML.load(plugin)
+      {_, [%Pipeline{name: :p, steps: [%{kind: :llm, tools: tools}]}], _} = YAML.load(plugin)
       assert tools == ["list", "get"]
     end
 
-    test "parses optional when: and load:", %{tmp_dir: dir} do
+    test "parses optional when:", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => """
-          workers:
+          pipelines:
             gated:
               description: g
-              model: m
-              tools: [a]
+              schedule: "0 3 * * *"
               when: |
                 SELECT 1
-              load: |
-                SELECT count(*) AS n FROM x
-              system: s
-              prompt: p {{n}}
-              schedule: "0 3 * * *"
+              steps:
+                - shell: echo hi
           """
         })
 
-      {_, [%Worker{name: :gated, when_sql: w, load_sql: l}], _} = YAML.load(plugin)
+      {_, [%Pipeline{name: :gated, when_sql: w}], _} = YAML.load(plugin)
       assert w =~ "SELECT 1"
-      assert l =~ "FROM x"
     end
 
-    test "system: with mustache raises", %{tmp_dir: dir} do
+    test "llm system: with mustache raises", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{
           "plugin.yml" => """
-          workers:
+          pipelines:
             bad:
               description: g
-              model: m
-              tools: [a]
-              system: |
-                Today is {{date}}.
-              prompt: p
               schedule: "0 3 * * *"
+              steps:
+                - llm:
+                    model: m
+                    tools: []
+                    system: |
+                      Today is {{date}}.
+                    prompt: p
+                    max_turns: 2
           """
         })
 
       assert_raise ArgumentError, ~r/system.*mustache/i, fn -> YAML.load(plugin) end
+    end
+
+    test "unscheduled pipelines load with schedule: nil", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          pipelines:
+            manual:
+              description: m
+              steps:
+                - shell: echo hi
+          """
+        })
+
+      {_, [%Pipeline{name: :manual, schedule: nil}], _} = YAML.load(plugin)
     end
   end
 
@@ -348,7 +360,7 @@ defmodule Sark.Plugin.YAMLTest do
               sql: SELECT 1 WHERE :id = ''
               message: "no match for '{id}'"
 
-          queries:
+          tools:
             a:
               description: q
               write: true
@@ -379,7 +391,7 @@ defmodule Sark.Plugin.YAMLTest do
               message: "no match for '{id}'"
           """,
           "q/upd.yml" => """
-          queries:
+          tools:
             upd:
               description: q
               write: true
@@ -433,7 +445,7 @@ defmodule Sark.Plugin.YAMLTest do
               sql: SELECT 1
               message: x
 
-          queries:
+          tools:
             a:
               description: q
               returns: scalar
@@ -457,7 +469,7 @@ defmodule Sark.Plugin.YAMLTest do
               message: "no '{id}'"
             alias_reject: "@base_reject"
 
-          queries:
+          tools:
             a:
               description: q
               write: true
@@ -481,7 +493,7 @@ defmodule Sark.Plugin.YAMLTest do
             a: "@b"
             b: "@a"
 
-          queries:
+          tools:
             q1:
               description: q
               returns: scalar

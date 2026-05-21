@@ -10,10 +10,9 @@ defmodule Sark.Config do
       anthropic_api_key: "${ANTHROPIC_API_KEY}"  # optional, ${VAR} interpolated
       tokens:
         - { name: ryan, plugins: ["*"], token: sk-ryan }
-        - { name: wife, plugins: [jot], token: sk-wife }
+        - { name: mark, plugins: [kb], token: sk-mark }
       plugins:
-        jean: ~/code/sark-jean
-        jot:  ~/code/sark-jot
+        kb:  ~/code/sark-kb
         kv:   test/fixtures/plugins/kv
 
   `tokens[*].plugins` is either `["*"]` (wildcard — all plugins) or a list

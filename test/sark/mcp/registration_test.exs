@@ -28,7 +28,7 @@ defmodule Sark.MCP.RegistrationTest do
     spec
   end
 
-  test "registers per-query tools + sark_catalog + sark_sql in Phantom cache", %{tmp_dir: dir} do
+  test "registers per-tool entries + sark_catalog + sark_sql in Phantom cache", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     router = Registration.router_module("kv")
@@ -47,7 +47,7 @@ defmodule Sark.MCP.RegistrationTest do
     refute "secret_note" in names
   end
 
-  test "internal queries land in registry but not in Phantom cache or codegen handler",
+  test "internal tools land in registry but not in Phantom cache or codegen handler",
        %{tmp_dir: dir} do
     boot_kv!(dir)
 
@@ -62,11 +62,11 @@ defmodule Sark.MCP.RegistrationTest do
     refute :secret_note in (handler.__info__(:functions) |> Keyword.keys())
   end
 
-  test "stores parsed queries in Sark.MCP.Registry", %{tmp_dir: dir} do
+  test "stores parsed tools in Sark.MCP.Registry", %{tmp_dir: dir} do
     boot_kv!(dir)
 
-    queries = SarkRegistry.list_for_plugin("kv")
-    names = Enum.map(queries, & &1.name) |> Enum.sort()
+    tools = SarkRegistry.list_for_plugin("kv")
+    names = Enum.map(tools, & &1.name) |> Enum.sort()
 
     assert names == [
              :add_note,
@@ -175,7 +175,7 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "key"
   end
 
-  test "catalog returns live schema + queries", %{tmp_dir: dir} do
+  test "catalog returns live schema + tools", %{tmp_dir: dir} do
     boot_kv!(dir)
 
     mod = Sark.MCP.Registration.handler_module("kv")
@@ -194,9 +194,9 @@ defmodule Sark.MCP.RegistrationTest do
     refute Enum.any?(doc.schema, fn e -> String.starts_with?(e.name, "_sark_") end)
     refute Enum.any?(doc.schema, fn e -> String.starts_with?(e.name, "sqlite_") end)
 
-    query_names = Enum.map(doc.queries, & &1.name) |> Enum.sort()
+    tool_names = Enum.map(doc.tools, & &1.name) |> Enum.sort()
 
-    assert query_names ==
+    assert tool_names ==
              [
                "add_note",
                "bool_reject_demo",
@@ -459,7 +459,7 @@ defmodule Sark.MCP.RegistrationTest do
       name: "empty",
       dir: "/tmp/nope",
       migrations: [],
-      queries: [],
+      tools: [],
       patchable: %{}
     }
 
@@ -500,7 +500,7 @@ defmodule Sark.MCP.RegistrationTest do
       name: "locked",
       dir: "/tmp/nope",
       migrations: [],
-      queries: [],
+      tools: [],
       patchable: %{}
     }
 
@@ -517,13 +517,13 @@ defmodule Sark.MCP.RegistrationTest do
     assert text =~ "no patchable fields configured"
   end
 
-  test "raises when a query name collides with a reserved built-in" do
+  test "raises when a tool name collides with a reserved built-in" do
     spec = %Sark.Plugin.Spec{
       name: "kv",
       dir: @kv_fixture,
       migrations: [],
-      queries: [
-        %Sark.Plugin.Query{
+      tools: [
+        %Sark.Plugin.Tool{
           name: :sark_patch,
           description: "x",
           returns: :results,

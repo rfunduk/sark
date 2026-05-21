@@ -1,7 +1,7 @@
 defmodule Sark.MCP.Handlers.Catalog do
   @moduledoc """
   Per-plugin catalog handler. Returns the live schema (read from
-  `sqlite_master`) and the list of canned queries with their MCP-relevant
+  `sqlite_master`) and the list of canned tools with their MCP-relevant
   metadata as a structured JSON document.
 
   Schema reflects the post-migration state of the DB — `ALTER TABLE`
@@ -11,12 +11,12 @@ defmodule Sark.MCP.Handlers.Catalog do
   Only registered when the plugin's `plugin.yml` sets `allow_sql: true`.
   """
 
-  require Phantom.Tool, as: Tool
+  require Phantom.Tool, as: Reply
 
   alias Sark.MCP.Registry
   alias Sark.MCP.Telemetry
   alias Sark.Plugin.DB
-  alias Sark.Plugin.Query
+  alias Sark.Plugin.Tool
 
   @spec call(String.t(), map, term) :: {:reply, map, term}
   def call(plugin, params, session) do
@@ -28,10 +28,10 @@ defmodule Sark.MCP.Handlers.Catalog do
   defp do_call(plugin, _params, session) do
     case lookup_spec(plugin) do
       nil ->
-        {:reply, Tool.error("no such plugin: #{plugin}"), session}
+        {:reply, Reply.error("no such plugin: #{plugin}"), session}
 
       spec ->
-        queries =
+        tools =
           plugin
           |> Registry.list_for_plugin()
           |> Enum.reject(& &1.internal)
@@ -39,10 +39,10 @@ defmodule Sark.MCP.Handlers.Catalog do
         doc = %{
           name: spec.name,
           schema: live_schema(plugin),
-          queries: Enum.map(queries, &query_to_map/1)
+          tools: Enum.map(tools, &tool_to_map/1)
         }
 
-        {:reply, Tool.text(doc), session}
+        {:reply, Reply.text(doc), session}
     end
   end
 
@@ -72,7 +72,7 @@ defmodule Sark.MCP.Handlers.Catalog do
     end
   end
 
-  defp query_to_map(%Query{} = q) do
+  defp tool_to_map(%Tool{} = q) do
     %{
       name: Atom.to_string(q.name),
       description: q.description,

@@ -47,8 +47,7 @@ defmodule Sark.Plugin do
     Logger.info("plugin #{spec.name} ready — db=#{db_path}")
 
     pool_children = DB.pool_children(spec.name, db_path)
-
-    scheduler_child = [{Sark.Worker.Scheduler, spec: spec}]
+    scheduler_child = [{Sark.Pipeline.Scheduler, spec: spec}]
 
     Supervisor.init(
       pool_children ++ scheduler_child,

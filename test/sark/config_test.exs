@@ -138,11 +138,11 @@ defmodule Sark.ConfigTest do
       data_dir: #{Path.join(dir, "data")}
       tokens: []
       plugins:
-        jean: plugins/jean
+        workouts: plugins/workouts
       """)
 
     cfg = Sark.Config.load!(path)
-    assert cfg.plugins == %{"jean" => Path.join(plugins_dir, "jean")}
+    assert cfg.plugins == %{"workouts" => Path.join(plugins_dir, "workouts")}
   end
 
   test "scopes a token to specific plugins", %{tmp_dir: dir} do
@@ -151,15 +151,15 @@ defmodule Sark.ConfigTest do
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       tokens:
-        - { name: wife, plugins: [jot], token: sk-wife }
+        - { name: steve, plugins: [kb], token: sk-steve }
       plugins:
-        jot:  ./jot
-        jean: ./jean
+        kb:  ./kb
+        workouts: ./workouts
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-wife" => %{name: "wife", allowed: allowed}} = cfg.tokens
-    assert MapSet.equal?(allowed, MapSet.new(["jot"]))
+    %{"sk-steve" => %{name: "steve", allowed: allowed}} = cfg.tokens
+    assert MapSet.equal?(allowed, MapSet.new(["kb"]))
   end
 
   test "rejects token referencing unknown plugin", %{tmp_dir: dir} do
@@ -170,7 +170,7 @@ defmodule Sark.ConfigTest do
       tokens:
         - { name: bad, plugins: [ghost], token: sk-bad }
       plugins:
-        jot: ./jot
+        kb: ./kb
       """)
 
     assert_raise RuntimeError, ~r/unknown plugin `ghost`/, fn ->

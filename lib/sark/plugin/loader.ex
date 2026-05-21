@@ -11,7 +11,7 @@ defmodule Sark.Plugin.Loader do
   Plugin layout:
 
     * `migrations/` — required, forward-only SQL files (`NNNN_name.sql`)
-    * `plugin.yml` — optional single entry doc: queries, workers,
+    * `plugin.yml` — optional single entry doc: tools, pipelines,
       `allow_sql`/`patchable` flags, and `include:` for splitting
       definitions across files. See `Sark.Plugin.YAML`.
   """
@@ -35,14 +35,14 @@ defmodule Sark.Plugin.Loader do
     end
 
     migrations = Migrations.discover!(abs)
-    {queries, workers, opts} = PluginYAML.load(abs)
+    {tools, pipelines, opts} = PluginYAML.load(abs)
 
     %Spec{
       name: name,
       dir: abs,
       migrations: migrations,
-      queries: queries,
-      workers: workers,
+      tools: tools,
+      pipelines: pipelines,
       allow_sql: Map.get(opts, :allow_sql, false),
       patchable: Map.get(opts, :patchable, %{})
     }

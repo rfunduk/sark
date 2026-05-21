@@ -2,14 +2,14 @@ defmodule Sark.Plugin.Spec do
   @moduledoc """
   In-memory representation of a plugin loaded from disk.
 
-  Plugin name is the basename of `dir` (e.g. `/srv/sark-plugins/jean` → `"jean"`).
+  Plugin name is the basename of `dir` (e.g. `/srv/sark-plugins/kb` → `"kb"`).
   Used to derive the per-plugin SQLite filename (`{data_dir}/{name}.db`) and
   the registered DB pool names.
 
   `allow_sql` opts the plugin into the `sark_catalog` + `sark_sql` tools
   (live schema introspection + arbitrary read-only SELECT/WITH/PRAGMA).
   Default false — most plugins should expose a curated set of canned
-  queries only.
+  tools only.
 
   `patchable` is the allow-list of `{table, column}` paths the built-in
   `sark_patch` tool may touch. Map of table name → list of column names,
@@ -26,8 +26,8 @@ defmodule Sark.Plugin.Spec do
     :migrations,
     allow_sql: false,
     patchable: %{},
-    queries: [],
-    workers: []
+    tools: [],
+    pipelines: []
   ]
 
   @type migration :: %{version: pos_integer, path: String.t(), sql: String.t()}
@@ -38,7 +38,7 @@ defmodule Sark.Plugin.Spec do
           migrations: [migration],
           allow_sql: boolean(),
           patchable: %{optional(String.t()) => [String.t()]},
-          queries: [Sark.Plugin.Query.t()],
-          workers: [Sark.Plugin.Worker.t()]
+          tools: [Sark.Plugin.Tool.t()],
+          pipelines: [Sark.Plugin.Pipeline.t()]
         }
 end

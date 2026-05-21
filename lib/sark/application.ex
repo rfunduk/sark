@@ -9,7 +9,7 @@ defmodule Sark.Application do
     if Application.get_env(:sark, :auto_start, true) do
       start_supervised(Sark.Boot.load_config!())
     else
-      Supervisor.start_link([], strategy: :one_for_one, name: Sark.Supervisor)
+      Supervisor.start_link(base_children(), strategy: :one_for_one, name: Sark.Supervisor)
     end
   end
 
@@ -18,18 +18,17 @@ defmodule Sark.Application do
 
     {ip, port} = config.listen
 
-    children = [
-      {Phoenix.PubSub, name: Sark.PubSub},
-      {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Sark.PubSub]},
-      {Task.Supervisor, name: Sark.Worker.TaskSup},
-      {Sark.AuthRegistry, config.tokens},
-      {Sark.PluginSupervisor,
-       [
-         plugins: config.plugins,
-         data_dir: config.data_dir
-       ]},
-      {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}
-    ]
+    children =
+      base_children() ++
+        [
+          {Sark.AuthRegistry, config.tokens},
+          {Sark.PluginSupervisor,
+           [
+             plugins: config.plugins,
+             data_dir: config.data_dir
+           ]},
+          {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}
+        ]
 
     Logger.info(
       "sark starting — listen=#{:inet.ntoa(ip)}:#{port} " <>
@@ -39,6 +38,15 @@ defmodule Sark.Application do
     )
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Sark.Supervisor)
+  end
+
+  defp base_children do
+    [
+      {Phoenix.PubSub, name: Sark.PubSub},
+      {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Sark.PubSub]},
+      {Task.Supervisor, name: Sark.Pipeline.TaskSup},
+      Sark.Pipeline.Lock
+    ]
   end
 
   defp configure_logger(%Sark.Config{log_level: level}) do

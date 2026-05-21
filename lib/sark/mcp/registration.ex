@@ -4,7 +4,7 @@ defmodule Sark.MCP.Registration do
 
   For each plugin spec:
 
-    * stores spec + queries in `Sark.MCP.Registry`
+    * stores spec + tools in `Sark.MCP.Registry`
     * codegens a handler module `Sark.MCP.Generated.<Plugin>` with one
       2-arity function per tool (delegates to the appropriate handler)
     * codegens a Phantom router module `Sark.MCP.PluginRouter.<Plugin>`
@@ -22,10 +22,10 @@ defmodule Sark.MCP.Registration do
   require Logger
 
   alias Sark.MCP.Registry
-  alias Sark.Plugin.Query
   alias Sark.Plugin.Spec
+  alias Sark.Plugin.Tool
 
-  @reserved_names ~w(sark_catalog sark_sql sark_patch)a
+  @reserved_names ~w(sark_catalog sark_sql sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now)a
 
   @spec register_plugin!(Spec.t()) :: :ok
   def register_plugin!(%Spec{} = spec) do
@@ -34,7 +34,7 @@ defmodule Sark.MCP.Registration do
     Registry.delete_plugin(spec.name)
     Registry.put_spec(spec)
 
-    Enum.each(spec.queries, fn q ->
+    Enum.each(spec.tools, fn q ->
       Registry.put(spec.name, q.name, q)
     end)
 
@@ -46,7 +46,7 @@ defmodule Sark.MCP.Registration do
     Phantom.Cache.add_tool(router, build_tool_specs(spec, handler))
 
     Logger.info(
-      "mcp registration — plugin=#{spec.name} queries=#{length(spec.queries)} +sark_catalog +sark_sql +sark_patch"
+      "mcp registration — plugin=#{spec.name} tools=#{length(spec.tools)} +sark_catalog +sark_sql +sark_patch +sark_pipelines_*"
     )
 
     :ok
@@ -72,32 +72,33 @@ defmodule Sark.MCP.Registration do
   defp camelize(plugin), do: Macro.camelize(String.replace(plugin, "-", "_"))
 
   # Built-in tools (`sark_patch`, `sark_catalog`, `sark_sql`) live alongside
-  # plugin-declared queries in the same per-plugin namespace. The `sark_`
-  # prefix is reserved — raising on collision keeps a query from silently
-  # shadowing a built-in (or vice versa) depending on registration order.
-  defp check_reserved_names!(%Spec{name: plugin, queries: queries}) do
-    Enum.each(queries, fn q ->
+  # plugin-declared tools in the same per-plugin namespace. The `sark_`
+  # prefix is reserved — raising on collision keeps a plugin tool from
+  # silently shadowing a built-in (or vice versa) depending on
+  # registration order.
+  defp check_reserved_names!(%Spec{name: plugin, tools: tools}) do
+    Enum.each(tools, fn q ->
       if q.name in @reserved_names do
-        raise "plugin #{plugin}: query name `#{q.name}` is reserved (built-in tools: #{Enum.map_join(@reserved_names, ", ", &Atom.to_string/1)})"
+        raise "plugin #{plugin}: tool name `#{q.name}` is reserved (built-in tools: #{Enum.map_join(@reserved_names, ", ", &Atom.to_string/1)})"
       end
     end)
   end
 
-  defp generate_handler!(%Spec{name: plugin, queries: queries}) do
+  defp generate_handler!(%Spec{name: plugin, tools: tools}) do
     module = handler_module(plugin)
 
-    query_funcs =
-      queries
+    tool_funcs =
+      tools
       |> Enum.reject(& &1.internal)
       |> Enum.map(fn q ->
         fname = q.name
-        query_name = q.name
+        tool_name = q.name
 
         quote do
           def unquote(fname)(params, session) do
-            Sark.MCP.Handlers.Query.call(
+            Sark.MCP.Handlers.Tool.call(
               unquote(plugin),
-              unquote(query_name),
+              unquote(tool_name),
               params,
               session
             )
@@ -112,10 +113,10 @@ defmodule Sark.MCP.Registration do
         end
       end
 
-    sql_query_func =
+    sql_func =
       quote do
         def sark_sql(params, session) do
-          Sark.MCP.Handlers.SqlQuery.call(unquote(plugin), params, session)
+          Sark.MCP.Handlers.SQL.call(unquote(plugin), params, session)
         end
       end
 
@@ -126,9 +127,30 @@ defmodule Sark.MCP.Registration do
         end
       end
 
+    pipelines_funcs =
+      for {fname, handler_fn} <- [
+            sark_pipelines_list: :list,
+            sark_pipelines_log: :log,
+            sark_pipelines_recent: :recent,
+            sark_pipelines_costs: :costs,
+            sark_pipelines_run_now: :run_now
+          ] do
+        quote do
+          def unquote(fname)(params, session) do
+            Sark.MCP.Handlers.Pipelines.unquote(handler_fn)(
+              unquote(plugin),
+              params,
+              session
+            )
+          end
+        end
+      end
+
     body =
       quote do
-        (unquote_splicing(query_funcs ++ [catalog_func, sql_query_func, patch_text_func]))
+        (unquote_splicing(
+           tool_funcs ++ [catalog_func, sql_func, patch_text_func] ++ pipelines_funcs
+         ))
       end
 
     purge_if_loaded(module)
@@ -174,11 +196,11 @@ defmodule Sark.MCP.Registration do
   end
 
   defp build_tool_specs(
-         %Spec{name: plugin, queries: queries, allow_sql: allow_sql, patchable: patchable},
+         %Spec{name: plugin, tools: tools, allow_sql: allow_sql, patchable: patchable},
          handler
        ) do
-    query_specs =
-      queries
+    tool_specs =
+      tools
       |> Enum.reject(& &1.internal)
       |> Enum.map(fn q ->
         %{
@@ -186,7 +208,7 @@ defmodule Sark.MCP.Registration do
           handler: handler,
           function: q.name,
           description: q.description,
-          input_schema: Query.to_json_schema(q),
+          input_schema: Tool.to_json_schema(q),
           meta: %{file: __ENV__.file, line: __ENV__.line}
         }
       end)
@@ -199,7 +221,7 @@ defmodule Sark.MCP.Registration do
             handler: handler,
             function: :sark_catalog,
             description:
-              "Live schema (from sqlite_master) and canned queries for plugin `#{plugin}`.",
+              "Live schema (from sqlite_master) and canned tools for plugin `#{plugin}`.",
             input_schema: %{type: "object", properties: %{}, required: []},
             meta: %{file: __ENV__.file, line: __ENV__.line}
           },
@@ -240,7 +262,19 @@ defmodule Sark.MCP.Registration do
       meta: %{file: __ENV__.file, line: __ENV__.line}
     }
 
-    query_specs ++ sql_specs ++ [patch_text_spec]
+    pipelines_specs =
+      Enum.map(Sark.MCP.Handlers.Pipelines.tool_specs(), fn ts ->
+        %{
+          name: ts.name,
+          handler: handler,
+          function: String.to_atom(ts.name),
+          description: ts.description,
+          input_schema: ts.input_schema,
+          meta: %{file: __ENV__.file, line: __ENV__.line}
+        }
+      end)
+
+    tool_specs ++ sql_specs ++ [patch_text_spec] ++ pipelines_specs
   end
 
   @doc false

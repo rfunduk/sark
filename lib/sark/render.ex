@@ -1,8 +1,8 @@
 defmodule Sark.Render do
   @moduledoc """
-  Render a query result as a string for an MCP tool response.
+  Render a tool result as a string for an MCP tool response.
 
-  The `value` shape depends on the query's `returns`:
+  The `value` shape depends on the tool's `returns`:
     * `:results` → list of string-keyed maps (0..N)
     * `:scalar` → raw value
     * `:count` → integer
@@ -15,10 +15,10 @@ defmodule Sark.Render do
     * `{:template, tpl}` — `:bbmustache.render/3`; results bound to `{{#results}}…{{/results}}`
   """
 
-  alias Sark.Plugin.Query
+  alias Sark.Plugin.Tool
 
-  @type returns :: Query.returns()
-  @type format :: Query.format()
+  @type returns :: Tool.returns()
+  @type format :: Tool.format()
 
   @spec render(term, format, returns, [String.t()] | nil) :: String.t()
   def render(value, format, returns, cols \\ nil)

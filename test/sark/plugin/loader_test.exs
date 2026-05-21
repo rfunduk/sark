@@ -31,7 +31,7 @@ defmodule Sark.Plugin.LoaderTest do
     assert [%{version: 1, sql: sql}] = spec.migrations
     assert sql =~ "CREATE TABLE kv"
     assert spec.allow_sql == false
-    assert spec.queries == []
+    assert spec.tools == []
   end
 
   test "plugin.yml allow_sql flows into Spec", %{tmp_dir: dir} do
@@ -40,7 +40,7 @@ defmodule Sark.Plugin.LoaderTest do
         "migrations/0001_initial.sql" => "CREATE TABLE x(y TEXT);",
         "plugin.yml" => """
         allow_sql: true
-        queries: {}
+        tools: {}
         """
       })
 

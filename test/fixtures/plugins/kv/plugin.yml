@@ -4,56 +4,37 @@ patchable:
   notes: [body]
 
 include:
-  - queries/reads.yml
-  - queries/writes/*.yml
+  - tools/reads.yml
+  - tools/writes/*.yml
 
-queries:
+tools:
   total:
     description: Count of rows.
     returns: scalar
     sql: |
       SELECT COUNT(*) AS n FROM kv
 
-workers:
+pipelines:
+  inventory_ingest:
+    description: Deterministic ingest — load rows and upsert.
+    schedule: "0 3 * * *"
+    steps:
+      - load: SELECT key, value FROM kv
+
+  note_add:
+    description: Single-tool pipeline that wraps add_note. Unscheduled.
+    steps:
+      - tool: add_note
+
   smoke:
-    description: Smoke worker — lists keys and reports.
-    model: claude-haiku-4-5
+    description: LLM pipeline — list keys and pick one.
     schedule: "0 0 1 1 0"
-    tools: [list, get]
-    max_turns: 4
-    system: |
-      You are a smoke-test worker for the kv plugin. Be terse.
-    prompt: |
-      List the keys in the kv store and pick one to summarize.
-
-  gated:
-    description: Worker gated on the kv table being non-empty.
-    model: claude-haiku-4-5
-    schedule: "0 0 1 1 0"
-    tools: [list, get]
-    max_turns: 2
-    when: |
-      SELECT 1 FROM kv LIMIT 1
-    system: |
-      Gate test worker.
-    prompt: |
-      kv has rows.
-
-  briefed:
-    description: Worker that loads context into its prompt.
-    model: claude-haiku-4-5
-    schedule: "0 0 1 1 0"
-    tools: [list, get]
-    max_turns: 2
-    load: |
-      SELECT
-        COUNT(*) AS total,
-        json_group_array(json_object('key', key, 'value', value)) AS items
-      FROM kv
-    system: |
-      Brief test worker.
-    prompt: |
-      total: {{total}}
-      {{#items}}
-      - {{key}} = {{value}}
-      {{/items}}
+    steps:
+      - llm:
+          model: claude-haiku-4-5
+          tools: [list, get]
+          max_turns: 4
+          system: |
+            You are a smoke-test pipeline for the kv plugin. Be terse.
+          prompt: |
+            List the keys in the kv store and pick one to summarize.

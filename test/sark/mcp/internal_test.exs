@@ -130,14 +130,14 @@ defmodule Sark.MCP.InternalTest do
     {:ok, _} = Internal.call_tool("kv", "secret_note", %{"body" => "ssh"})
   end
 
-  test "catalog filters internal queries out of public response", %{spec: spec} do
+  test "catalog filters internal tools out of public response", %{spec: spec} do
     spec = %Spec{spec | allow_sql: true}
     {:ok, text} = Internal.call_tool("kv", "sark_catalog", %{})
     decoded = Jason.decode!(text)
 
-    query_names = Enum.map(decoded["queries"], & &1["name"])
-    refute "secret_note" in query_names
-    assert "add_note" in query_names
+    tool_names = Enum.map(decoded["tools"], & &1["name"])
+    refute "secret_note" in tool_names
+    assert "add_note" in tool_names
 
     _ = spec
   end

@@ -94,14 +94,14 @@ defmodule Sark.RenderTest do
     end
   end
 
-  describe "default_format/2 (via Query)" do
+  describe "default_format/2 (via Tool)" do
     test "matches the spec rule matrix" do
-      alias Sark.Plugin.Query
-      assert Query.default_format(:results, false) == :list
-      assert Query.default_format(:scalar, false) == :json
-      assert Query.default_format(:count, false) == :json
-      assert Query.default_format(:none, false) == :json
-      assert Query.default_format(:results, true) == :json
+      alias Sark.Plugin.Tool
+      assert Tool.default_format(:results, false) == :list
+      assert Tool.default_format(:scalar, false) == :json
+      assert Tool.default_format(:count, false) == :json
+      assert Tool.default_format(:none, false) == :json
+      assert Tool.default_format(:results, true) == :json
     end
   end
 end

@@ -1,40 +1,40 @@
 defmodule Sark.Plugin.YAML do
   @moduledoc """
   Read a plugin's `plugin.yml` (the single soft-convention entry doc)
-  off disk into queries, workers, and plugin-wide opts.
+  off disk into tools, pipelines, and plugin-wide opts.
 
   Entry shape:
 
       allow_sql: false       # optional, plugin-wide bool. Entry doc ONLY.
       include:               # optional, entry doc ONLY. Paths or globs,
-        - queries/*.yml      #   plugin-dir-relative. Each is a YAML map
-        - workers/*.yml      #   with any of queries:/workers:/shared:/patchable:.
+        - tools/*.yml        #   plugin-dir-relative. Each is a YAML map
+        - pipelines/*.yml    #   with any of tools:/pipelines:/shared:/patchable:.
       patchable:             # optional. table → [columns], mergeable.
         notes: [body]
       shared:                # optional, mergeable across files.
         frag: ...
-      queries:               # optional, mergeable across files.
+      tools:                 # optional, mergeable across files.
         <name>: { ... }
-      workers:               # optional, mergeable across files.
+      pipelines:             # optional, mergeable across files.
         <name>: { ... }
 
-  All `queries:` / `workers:` / `shared:` / `patchable:` blocks across
+  All `tools:` / `pipelines:` / `shared:` / `patchable:` blocks across
   `plugin.yml` and every included file are merged into one map each; a
-  duplicate key (query, worker, fragment, or patchable table) raises,
+  duplicate key (tool, pipeline, fragment, or patchable table) raises,
   naming both source files.
 
   `allow_sql` and `include` are entry-only — present in an included
   file they raise (loud, not silently dropped). Includes are leaves:
   no recursive include.
 
-  Returns `{queries, workers, opts}`. Absent `plugin.yml` →
+  Returns `{tools, pipelines, opts}`. Absent `plugin.yml` →
   `{[], [], %{allow_sql: false, patchable: %{}}}` (a migrations-only
   plugin).
   """
 
-  alias Sark.Plugin.Query
-  alias Sark.Plugin.Query.Fragments
-  alias Sark.Plugin.Worker
+  alias Sark.Plugin.Pipeline
+  alias Sark.Plugin.Tool
+  alias Sark.Plugin.Tool.Fragments
 
   @entry "plugin.yml"
   @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
@@ -42,7 +42,7 @@ defmodule Sark.Plugin.YAML do
 
   @type opts :: %{allow_sql: boolean(), patchable: %{optional(String.t()) => [String.t()]}}
 
-  @spec load(Path.t()) :: {[Query.t()], [Worker.t()], opts()}
+  @spec load(Path.t()) :: {[Tool.t()], [Pipeline.t()], opts()}
   def load(plugin_dir) do
     path = Path.join(plugin_dir, @entry)
 
@@ -67,8 +67,6 @@ defmodule Sark.Plugin.YAML do
   defp empty, do: {[], [], %{allow_sql: false, patchable: %{}}}
 
   defp parse_root!(doc, plugin_dir, root_path) do
-    # Entry doc contributes its own queries/workers/shared, plus the
-    # included files' (entry-only keys rejected in includes).
     docs = [{doc, root_path} | include_docs!(Map.get(doc, "include", []), plugin_dir, root_path)]
 
     shared =
@@ -76,22 +74,22 @@ defmodule Sark.Plugin.YAML do
       |> Enum.map(fn {d, src} -> {section_map!(d, "shared", src), src} end)
       |> merge_no_dupes!("shared fragment")
 
-    queries =
+    tools =
       docs
-      |> Enum.flat_map(fn {d, src} -> tagged(d, "queries", src) end)
-      |> merge_no_dupes_entries!("query")
+      |> Enum.flat_map(fn {d, src} -> tagged(d, "tools", src) end)
+      |> merge_no_dupes_entries!("tool")
       |> Enum.sort_by(fn {name, _, _} -> name end)
       |> Enum.map(fn {name, entry, source} ->
-        Query.parse!(name, resolve!(entry, shared, name, source))
+        Tool.parse!(name, resolve!(entry, shared, name, source))
       end)
 
-    workers =
+    pipelines =
       docs
-      |> Enum.flat_map(fn {d, src} -> tagged(d, "workers", src) end)
-      |> merge_no_dupes_entries!("worker")
+      |> Enum.flat_map(fn {d, src} -> tagged(d, "pipelines", src) end)
+      |> merge_no_dupes_entries!("pipeline")
       |> Enum.sort_by(fn {name, _, _} -> name end)
       |> Enum.map(fn {name, entry, source} ->
-        Worker.parse!(name, resolve!(entry, shared, name, source))
+        Pipeline.parse!(name, resolve!(entry, shared, name, source))
       end)
 
     patchable =
@@ -104,7 +102,7 @@ defmodule Sark.Plugin.YAML do
       patchable: patchable
     }
 
-    {queries, workers, opts}
+    {tools, pipelines, opts}
   end
 
   # --- include expansion -----------------------------------------------------
@@ -174,8 +172,6 @@ defmodule Sark.Plugin.YAML do
 
   # --- section collection + merge --------------------------------------------
 
-  # Resolve `@name` fragment refs in an entry tree against the merged
-  # `shared:` map. Applied to both queries and workers.
   defp resolve!(entry, shared, name, source) do
     Fragments.resolve(entry, shared)
   rescue

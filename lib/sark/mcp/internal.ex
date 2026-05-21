@@ -8,21 +8,21 @@ defmodule Sark.MCP.Internal do
   worker runner threads these back into the LLM loop as `tool_result`
   blocks.
 
-  `tools_for/1` enumerates the tools a plugin exposes, including the
+  `tools_for/2` enumerates the tools a plugin exposes, including the
   built-ins gated by `allow_sql` and the always-on `sark_patch`. A
-  worker's `tools:` allowlist is enforced *outside* this module — the
+  worker's allowlist is enforced *outside* this module — the
   dispatcher trusts callers; the runner is the gate.
 
   v1 is plugin-local: the `plugin` arg is set by the caller (the
   worker's owning plugin). Cross-plugin calls (`<plugin>.<tool>` in
-  `tools:`) are reserved for a later iteration.
+  the allowlist) are reserved for a later iteration.
   """
 
   alias Sark.MCP.Handlers
   alias Sark.MCP.Registry
   alias Sark.Plugin.Spec
 
-  @builtin_always ~w(sark_patch)
+  @builtin_always ~w(sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now)
   @builtin_allow_sql ~w(sark_catalog sark_sql)
 
   @spec call_tool(String.t(), String.t(), map) :: {:ok, String.t()} | {:error, String.t()}
@@ -37,13 +37,28 @@ defmodule Sark.MCP.Internal do
     do: Handlers.Catalog.call(plugin, params, nil)
 
   defp dispatch(plugin, "sark_sql", params),
-    do: Handlers.SqlQuery.call(plugin, params, nil)
+    do: Handlers.SQL.call(plugin, params, nil)
 
   defp dispatch(plugin, "sark_patch", params),
     do: Handlers.PatchText.call(plugin, params, nil)
 
+  defp dispatch(plugin, "sark_pipelines_list", params),
+    do: Handlers.Pipelines.list(plugin, params, nil)
+
+  defp dispatch(plugin, "sark_pipelines_log", params),
+    do: Handlers.Pipelines.log(plugin, params, nil)
+
+  defp dispatch(plugin, "sark_pipelines_recent", params),
+    do: Handlers.Pipelines.recent(plugin, params, nil)
+
+  defp dispatch(plugin, "sark_pipelines_costs", params),
+    do: Handlers.Pipelines.costs(plugin, params, nil)
+
+  defp dispatch(plugin, "sark_pipelines_run_now", params),
+    do: Handlers.Pipelines.run_now(plugin, params, nil)
+
   defp dispatch(plugin, tool_name, params) do
-    Handlers.Query.call(plugin, String.to_atom(tool_name), params, nil)
+    Handlers.Tool.call(plugin, String.to_atom(tool_name), params, nil)
   end
 
   defp unwrap({:reply, %{content: content, isError: true}, _session}),
@@ -84,13 +99,13 @@ defmodule Sark.MCP.Internal do
   end
 
   defp available_tools(%Spec{} = spec) do
-    query_tools =
-      Enum.into(spec.queries, %{}, fn q ->
+    tool_specs =
+      Enum.into(spec.tools, %{}, fn q ->
         {Atom.to_string(q.name),
          %{
            name: Atom.to_string(q.name),
            description: q.description,
-           input_schema: Sark.Plugin.Query.to_json_schema(q)
+           input_schema: Sark.Plugin.Tool.to_json_schema(q)
          }}
       end)
 
@@ -98,7 +113,7 @@ defmodule Sark.MCP.Internal do
       builtin_specs(spec)
       |> Enum.into(%{}, fn schema -> {schema.name, schema} end)
 
-    Map.merge(query_tools, builtins)
+    Map.merge(tool_specs, builtins)
   end
 
   defp builtin_specs(%Spec{allow_sql: allow_sql} = spec) do
@@ -136,7 +151,7 @@ defmodule Sark.MCP.Internal do
   defp builtin_spec("sark_catalog", %Spec{name: plugin}) do
     %{
       name: "sark_catalog",
-      description: "Live schema and canned queries for plugin `#{plugin}`.",
+      description: "Live schema and canned tools for plugin `#{plugin}`.",
       input_schema: %{type: "object", properties: %{}, required: []}
     }
   end
@@ -151,6 +166,10 @@ defmodule Sark.MCP.Internal do
         properties: %{"sql" => %{type: "string"}}
       }
     }
+  end
+
+  defp builtin_spec("sark_pipelines_" <> _ = name, %Spec{}) do
+    Enum.find(Sark.MCP.Handlers.Pipelines.tool_specs(), &(&1.name == name))
   end
 
   @doc """

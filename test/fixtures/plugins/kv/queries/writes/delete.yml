@@ -1,9 +1,0 @@
-queries:
-  delete:
-    description: Delete a key, returns affected row count.
-    returns: count
-    write: true
-    params:
-      key: { type: text }
-    sql: |
-      DELETE FROM kv WHERE key = :key
