@@ -73,7 +73,7 @@ defmodule Sark.Plugin.LoaderTest do
   test "raises when migrations/ missing", %{tmp_dir: dir} do
     plugin = write_plugin(Path.join(dir, "broken"), %{})
 
-    assert_raise RuntimeError, ~r/missing required `migrations\/` directory/, fn ->
+    assert_raise RuntimeError, ~r/missing migrations directory/, fn ->
       Loader.load!(Path.basename(plugin), plugin)
     end
   end
@@ -114,7 +114,7 @@ defmodule Sark.Plugin.LoaderTest do
     plugin = Path.join(dir, "broken")
     File.mkdir_p!(Path.join(plugin, "migrations"))
 
-    assert_raise RuntimeError, ~r/`migrations\/` is empty/, fn ->
+    assert_raise RuntimeError, ~r/is empty/, fn ->
       Loader.load!(Path.basename(plugin), plugin)
     end
   end

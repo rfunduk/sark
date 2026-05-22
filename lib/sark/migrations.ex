@@ -21,6 +21,57 @@ defmodule Sark.Migrations do
           sql: String.t()
         }
 
+  @migration_re ~r/^(\d+)_([a-z0-9_]+)\.sql$/
+
+  @doc """
+  Discover migrations on disk under `mig_dir`. Returns
+  `[%{version, name, path, sql}]` sorted ascending by version. Raises
+  on bad filenames, version gaps, or a missing/empty directory.
+  `source_label` is used in error messages so callers don't have to
+  embed their own context.
+  """
+  @spec discover!(Path.t(), String.t()) :: [migration()]
+  def discover!(mig_dir, source_label) do
+    unless File.dir?(mig_dir) do
+      raise "#{source_label}: missing migrations directory `#{mig_dir}`"
+    end
+
+    files =
+      mig_dir
+      |> File.ls!()
+      |> Enum.filter(&String.ends_with?(&1, ".sql"))
+      |> Enum.sort()
+
+    if files == [] do
+      raise "#{source_label}: `#{mig_dir}` is empty (need at least 0001_*.sql)"
+    end
+
+    parsed =
+      Enum.map(files, fn fname ->
+        case Regex.run(@migration_re, fname) do
+          [_, ver_str, name] ->
+            ver = String.to_integer(ver_str)
+            path = Path.join(mig_dir, fname)
+            %{version: ver, name: name, path: path, sql: File.read!(path)}
+
+          _ ->
+            raise "#{source_label}: bad migration filename `#{fname}` " <>
+                    "(expected `<version>_<name>.sql`, e.g. `0001_initial.sql`)"
+        end
+      end)
+      |> Enum.sort_by(& &1.version)
+
+    versions = Enum.map(parsed, & &1.version)
+    expected = Enum.to_list(1..length(versions))
+
+    if versions != expected do
+      raise "#{source_label}: migration versions must be contiguous from 1, " <>
+              "got #{inspect(versions)} (expected #{inspect(expected)})"
+    end
+
+    parsed
+  end
+
   @doc """
   Apply pending migrations against the DB at `db_path`. Opens the DB,
   sets WAL + foreign_keys, ensures the tracker table exists, validates

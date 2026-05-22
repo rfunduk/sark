@@ -77,7 +77,7 @@ defmodule Sark.Plugin.MigrationsTest do
     end
 
     test "raises on missing migrations dir", %{tmp_dir: dir} do
-      assert_raise RuntimeError, ~r/missing required `migrations\/`/, fn ->
+      assert_raise RuntimeError, ~r/missing migrations directory/, fn ->
         Migrations.discover!(dir)
       end
     end
@@ -85,7 +85,7 @@ defmodule Sark.Plugin.MigrationsTest do
     test "raises on empty migrations dir", %{tmp_dir: dir} do
       File.mkdir_p!(Path.join(dir, "migrations"))
 
-      assert_raise RuntimeError, ~r/`migrations\/` is empty/, fn ->
+      assert_raise RuntimeError, ~r/is empty/, fn ->
         Migrations.discover!(dir)
       end
     end

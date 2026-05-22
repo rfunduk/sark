@@ -59,14 +59,14 @@ defmodule Sark.Pipeline.RunnerTest do
 
   defp fetch_run_row(spec, run_id) do
     {:ok, _, rows} =
-      DB.read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", [run_id])
+      DB.sark_read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", [run_id])
 
     rows
   end
 
   defp fetch_step_rows(spec, run_id) do
     {:ok, _, rows} =
-      DB.read(
+      DB.sark_read(
         spec.name,
         "SELECT * FROM _pipeline_step_log WHERE run_id = ? ORDER BY step_index",
         [run_id]
@@ -528,7 +528,7 @@ defmodule Sark.Pipeline.RunnerTest do
       assert {:ok, :skipped} = run!(pipeline, spec)
 
       # No rows in either log table.
-      {:ok, _, rows} = DB.read(spec.name, "SELECT * FROM _pipeline_log", [])
+      {:ok, _, rows} = DB.sark_read(spec.name, "SELECT * FROM _pipeline_log", [])
       assert rows == []
     end
 
@@ -695,7 +695,7 @@ defmodule Sark.Pipeline.RunnerTest do
       assert last["row_count"] == 1
     end
 
-    test "rollback also rolls back the run log row's terminal status", %{spec: spec} do
+    test "rollback drops data writes but preserves the log row's terminal status", %{spec: spec} do
       pipeline =
         build_pipeline("txn_log_state", %{
           "transactional" => true,
@@ -709,14 +709,15 @@ defmodule Sark.Pipeline.RunnerTest do
       rid = run_id()
       assert {:error, _} = run!(pipeline, spec, run_id: rid)
 
-      # The DELETE from the rollback removes the run log row entirely
-      # (Log.start_run wrote it inside the txn). Pipeline failure
-      # observability for transactional runs is a known limitation —
-      # the run vanishes when its txn rolls back.
-      {:ok, _, []} =
-        DB.read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", [rid])
+      # Log writes target the sark DB, so the run log row survives the
+      # plugin-data rollback with `failed` status — failure-observability
+      # is the whole reason for the split.
+      {:ok, _, [row]} =
+        DB.sark_read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", [rid])
 
-      # Most importantly, no kv side effects.
+      assert row["status"] == "failed"
+
+      # Plugin data, however, did roll back: no kv side effects.
       {:ok, _, []} =
         DB.read(spec.name, "SELECT * FROM kv WHERE key = ?", ["txn_log"])
     end
@@ -853,7 +854,7 @@ defmodule Sark.Pipeline.RunnerTest do
     test "sark_pipelines_log_prune builtin inside txn does not deadlock", %{spec: spec} do
       # Seed an old run that we'll prune.
       {:ok, _} =
-        DB.write(
+        DB.sark_write(
           spec.name,
           "INSERT INTO _pipeline_log (run_id, pipeline, started_at, finished_at, status, triggered_by) VALUES (?, ?, ?, ?, ?, ?)",
           [
@@ -878,7 +879,7 @@ defmodule Sark.Pipeline.RunnerTest do
       assert {:ok, _} = run!(pipeline, spec)
 
       {:ok, _, []} =
-        DB.read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", ["old_for_prune"])
+        DB.sark_read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", ["old_for_prune"])
     end
   end
 

@@ -107,7 +107,7 @@ defmodule Sark.MCP.InternalTest do
     end
   end
 
-  test "tools_for refuses sark_sql/sark_catalog when allow_sql is false", %{spec: spec} do
+  test "tools_for refuses sark_sql/sark_catalog when allow_sql is false", %{spec: %Spec{} = spec} do
     spec = %Spec{spec | allow_sql: false}
 
     assert_raise ArgumentError, ~r/unknown tool `sark_sql`/, fn ->
@@ -115,7 +115,8 @@ defmodule Sark.MCP.InternalTest do
     end
   end
 
-  test "tools_for surfaces sark_sql/sark_catalog when allow_sql is true", %{spec: spec} do
+  test "tools_for surfaces sark_sql/sark_catalog when allow_sql is true",
+       %{spec: %Spec{} = spec} do
     spec = %Spec{spec | allow_sql: true}
     tools = Internal.tools_for(spec, ["sark_catalog", "sark_sql"])
     names = Enum.map(tools, & &1.name) |> Enum.sort()
@@ -130,7 +131,7 @@ defmodule Sark.MCP.InternalTest do
     {:ok, _} = Internal.call_tool("kv", "secret_note", %{"body" => "ssh"})
   end
 
-  test "catalog filters internal tools out of public response", %{spec: spec} do
+  test "catalog filters internal tools out of public response", %{spec: %Spec{} = spec} do
     spec = %Spec{spec | allow_sql: true}
     {:ok, text} = Internal.call_tool("kv", "sark_catalog", %{})
     decoded = Jason.decode!(text)

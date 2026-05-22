@@ -2,8 +2,10 @@ defmodule Sark.Pipeline.Log do
   @moduledoc """
   Per-plugin persistence of pipeline runs.
 
-  Two sark-managed tables (created idempotently at boot, see
-  `Sark.Plugin.Migrations`):
+  Writes target the plugin's sark DB (`<plugin>.sark.db`) — independent
+  of the plugin data DB, so a transactional pipeline run that rolls
+  back its data writes still leaves the log row standing with terminal
+  status. Two tables (versioned in `priv/internal_migrations/`):
 
     * `_pipeline_log` — one row per terminal run
         (run_id PK, pipeline, started_at, finished_at, status, error,
@@ -16,10 +18,9 @@ defmodule Sark.Pipeline.Log do
          final_output)
 
   Plugins do not own these tables — they are sark's read surface for
-  the observability tools landing in Phase B.
+  the observability tools.
 
-  Skipped runs (gated out by `when:`) do not insert rows. Same posture
-  as the legacy worker log.
+  Skipped runs (gated out by `when:`) do not insert rows.
   """
 
   alias Sark.Plugin.DB
@@ -51,8 +52,8 @@ defmodule Sark.Pipeline.Log do
   Inserting up front lets per-step rows reference `run_id` via FK and
   also exposes in-flight runs to observability tools.
   """
-  @spec start_run(String.t(), map, keyword) :: :ok | {:error, term}
-  def start_run(plugin, %{} = entry, opts \\ []) when is_binary(plugin) do
+  @spec start_run(String.t(), map) :: :ok | {:error, term}
+  def start_run(plugin, %{} = entry) when is_binary(plugin) do
     binds = [
       entry.run_id,
       Atom.to_string(entry.pipeline),
@@ -63,7 +64,7 @@ defmodule Sark.Pipeline.Log do
       Atom.to_string(entry.triggered_by)
     ]
 
-    case write(plugin, @insert_run_sql, binds, opts) do
+    case DB.sark_write(plugin, @insert_run_sql, binds) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
     end
@@ -73,13 +74,13 @@ defmodule Sark.Pipeline.Log do
   Update the terminal state of an in-flight run row.
   `status` is one of `:success` / `:failed` / `:cancelled`.
   """
-  @spec finish_run(String.t(), String.t(), atom, String.t(), String.t() | nil, keyword) ::
+  @spec finish_run(String.t(), String.t(), atom, String.t(), String.t() | nil) ::
           :ok | {:error, term}
-  def finish_run(plugin, run_id, status, finished_at, error, opts \\ [])
+  def finish_run(plugin, run_id, status, finished_at, error)
       when is_binary(plugin) and is_binary(run_id) and is_atom(status) and is_binary(finished_at) do
     binds = [finished_at, Atom.to_string(status), error, run_id]
 
-    case write(plugin, @update_run_sql, binds, opts) do
+    case DB.sark_write(plugin, @update_run_sql, binds) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
     end
@@ -104,8 +105,8 @@ defmodule Sark.Pipeline.Log do
        ?, ?)
   |
 
-  @spec record_step(String.t(), map, keyword) :: :ok | {:error, term}
-  def record_step(plugin, %{} = e, opts \\ []) when is_binary(plugin) do
+  @spec record_step(String.t(), map) :: :ok | {:error, term}
+  def record_step(plugin, %{} = e) when is_binary(plugin) do
     binds = [
       e.run_id,
       e.step_index,
@@ -130,19 +131,9 @@ defmodule Sark.Pipeline.Log do
       e[:final_output]
     ]
 
-    case write(plugin, @insert_step_sql, binds, opts) do
+    case DB.sark_write(plugin, @insert_step_sql, binds) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
-    end
-  end
-
-  # When `conn:` is in opts (transactional pipeline), write via that
-  # held writer connection so the log row participates in the same txn
-  # as the data. Otherwise route through the writer pool as normal.
-  defp write(plugin, sql, binds, opts) do
-    case Keyword.get(opts, :conn) do
-      nil -> DB.write(plugin, sql, binds)
-      conn -> Exqlite.query(conn, sql, binds)
     end
   end
 

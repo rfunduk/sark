@@ -118,7 +118,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
 
   # Most recent run per pipeline. SQLite window-functions / row_number works
   # but a simple correlated subquery is more readable for a small set.
-  defp last_runs_by_pipeline(plugin, opts) do
+  defp last_runs_by_pipeline(plugin, _opts) do
     sql = """
     SELECT pipeline, run_id, started_at, finished_at, status, error, triggered_by
     FROM _pipeline_log AS l
@@ -127,7 +127,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
     )
     """
 
-    case DB.read(plugin, sql, [], opts) do
+    case DB.sark_read(plugin, sql, []) do
       {:ok, _, rows} ->
         Enum.into(rows, %{}, fn row -> {row["pipeline"], row} end)
 
@@ -164,12 +164,11 @@ defmodule Sark.MCP.Handlers.Pipelines do
     end
   end
 
-  defp resolve_run_id(plugin, pipeline_name, nil, opts) do
-    case DB.read(
+  defp resolve_run_id(plugin, pipeline_name, nil, _opts) do
+    case DB.sark_read(
            plugin,
            "SELECT run_id FROM _pipeline_log WHERE pipeline = ? ORDER BY started_at DESC LIMIT 1",
-           [pipeline_name],
-           opts
+           [pipeline_name]
          ) do
       {:ok, _, [%{"run_id" => id}]} -> {:ok, id}
       {:ok, _, []} -> {:error, "no runs found for pipeline `#{pipeline_name}`"}
@@ -180,19 +179,18 @@ defmodule Sark.MCP.Handlers.Pipelines do
   defp resolve_run_id(_plugin, _pipeline_name, run_id, _opts) when is_binary(run_id),
     do: {:ok, run_id}
 
-  defp build_log_doc(plugin, run_id, opts) do
+  defp build_log_doc(plugin, run_id, _opts) do
     run_row =
-      case DB.read(plugin, "SELECT * FROM _pipeline_log WHERE run_id = ?", [run_id], opts) do
+      case DB.sark_read(plugin, "SELECT * FROM _pipeline_log WHERE run_id = ?", [run_id]) do
         {:ok, _, [row]} -> row
         _ -> nil
       end
 
     step_rows =
-      case DB.read(
+      case DB.sark_read(
              plugin,
              "SELECT * FROM _pipeline_step_log WHERE run_id = ? ORDER BY step_index",
-             [run_id],
-             opts
+             [run_id]
            ) do
         {:ok, _, rows} -> rows
         _ -> []
@@ -203,7 +201,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
 
   # ── recent ────────────────────────────────────────────────────────────────
 
-  defp do_recent(plugin, params, session, opts) do
+  defp do_recent(plugin, params, session, _opts) do
     limit = parse_limit(Map.get(params, "limit"), 20)
     pipeline = Map.get(params, "pipeline")
 
@@ -227,7 +225,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
            """, [name, limit]}
       end
 
-    case DB.read(plugin, sql, binds, opts) do
+    case DB.sark_read(plugin, sql, binds) do
       {:ok, _, rows} -> reply_json(rows, session)
       {:error, e} -> reply_error("internal: #{inspect(e)}", session)
     end
@@ -249,7 +247,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
 
   # Returns token rollups grouped by (pipeline, model). The connected skill
   # turns these into dollar amounts using a price table it maintains.
-  defp do_costs(plugin, params, session, opts) do
+  defp do_costs(plugin, params, session, _opts) do
     pipeline_filter = Map.get(params, "pipeline")
     since = Map.get(params, "since")
 
@@ -283,7 +281,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
     ORDER BY l.pipeline, s.model
     """
 
-    case DB.read(plugin, sql, extra_binds, opts) do
+    case DB.sark_read(plugin, sql, extra_binds) do
       {:ok, _, rows} -> reply_json(rows, session)
       {:error, e} -> reply_error("internal: #{inspect(e)}", session)
     end
@@ -360,7 +358,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
   # `older_than` (duration like "30d"). Cascades to `_pipeline_step_log`
   # via an explicit per-run DELETE — the writer pool isn't opened with
   # `PRAGMA foreign_keys = ON`, so we don't rely on FK cascade.
-  defp do_prune(plugin, params, session, opts) do
+  defp do_prune(plugin, params, session, _opts) do
     with {:ok, older_than} <- fetch_string(params, "older_than"),
          {:ok, seconds} <- parse_duration(older_than) do
       pipeline_filter =
@@ -374,7 +372,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
         |> DateTime.add(-seconds, :second)
         |> DateTime.to_iso8601()
 
-      case run_prune(plugin, pipeline_filter, cutoff, opts) do
+      case run_prune(plugin, pipeline_filter, cutoff) do
         {:ok, deleted} -> reply_json(%{deleted: deleted}, session)
         {:error, msg} -> reply_error(msg, session)
       end
@@ -383,28 +381,18 @@ defmodule Sark.MCP.Handlers.Pipelines do
     end
   end
 
-  # When called from a transactional pipeline, `opts[:conn]` holds the
-  # writer conn — skip the nested DB.txn (would deadlock on a 1-conn
-  # writer pool) and run statements directly on the caller's conn.
-  defp run_prune(plugin, pipeline_filter, cutoff, opts) do
+  # Targets the sark DB (separate from any in-flight plugin-data txn).
+  # No conn-threading needed — log writes are always independent of
+  # plugin transactional runs.
+  defp run_prune(plugin, pipeline_filter, cutoff) do
     {count_sql, step_sql, log_sql, binds} = prune_sql(pipeline_filter, cutoff)
 
-    case Keyword.get(opts, :conn) do
-      nil ->
-        DB.txn(plugin, fn conn ->
-          prune_exec(conn, count_sql, step_sql, log_sql, binds)
-        end)
-        |> case do
-          {:ok, n} -> {:ok, n}
-          {:error, e} -> {:error, "internal: #{inspect(e)}"}
-        end
-
-      conn ->
-        try do
-          {:ok, prune_exec(conn, count_sql, step_sql, log_sql, binds)}
-        rescue
-          e -> {:error, "internal: #{Exception.message(e)}"}
-        end
+    DB.sark_txn(plugin, fn conn ->
+      prune_exec(conn, count_sql, step_sql, log_sql, binds)
+    end)
+    |> case do
+      {:ok, n} -> {:ok, n}
+      {:error, e} -> {:error, "internal: #{inspect(e)}"}
     end
   end
 

@@ -1,16 +1,25 @@
 defmodule Sark.Plugin.DB do
   @moduledoc """
-  Per-plugin SQLite access. Two DBConnection pools per plugin:
+  Per-plugin SQLite access. Each plugin gets two DBs, each with two
+  pools:
 
-    * **writer** — `pool_size: 1`. Serialises writes; needed because
-      SQLite's WAL allows concurrent reads but only one writer.
-    * **reader** — `pool_size: 4`. Each conn is opened with
-      `PRAGMA query_only = ON` so a buggy SELECT path can't accidentally
-      mutate the database.
+    * `:data` — plugin-authored tables. The plugin migration track
+      applies here. This is what plugin tools read and write.
+    * `:sark` — framework-managed tables (versioned schema track,
+      observability log, future internal state). Sark owns the schema;
+      plugin authors never write here directly.
 
-  Both pools point at the same `.db` file. Pool process names are
-  derived from the plugin name so call sites can address them without
-  passing pids around.
+  Per DB:
+
+    * **writer** — `pool_size: 1`. Serialises writes; SQLite's WAL
+      allows concurrent reads but only one writer.
+    * **reader** — `pool_size: 4`. Each conn opened with
+      `PRAGMA query_only = ON` so a buggy SELECT can't mutate.
+
+  Pool process names are derived from the plugin name + DB kind so
+  call sites can address them without passing pids around. The
+  one-arg `writer_name/1` / `reader_name/1` default to the `:data`
+  DB for backwards compatibility — existing call sites keep working.
   """
 
   alias Exqlite.Result
@@ -20,20 +29,47 @@ defmodule Sark.Plugin.DB do
 
   @type plugin_name :: String.t()
   @type role :: :read | :write
+  @type db_kind :: :data | :sark
 
   @spec writer_name(plugin_name) :: atom
-  def writer_name(name), do: :"sark_plugin_#{name}_writer"
+  def writer_name(name), do: writer_name(name, :data)
+
+  @spec writer_name(plugin_name, db_kind) :: atom
+  def writer_name(name, :data), do: :"sark_plugin_#{name}_writer"
+  def writer_name(name, :sark), do: :"sark_plugin_#{name}_sark_writer"
 
   @spec reader_name(plugin_name) :: atom
-  def reader_name(name), do: :"sark_plugin_#{name}_reader"
+  def reader_name(name), do: reader_name(name, :data)
+
+  @spec reader_name(plugin_name, db_kind) :: atom
+  def reader_name(name, :data), do: :"sark_plugin_#{name}_reader"
+  def reader_name(name, :sark), do: :"sark_plugin_#{name}_sark_reader"
 
   @doc """
-  Child specs for the writer + reader pools. Returned in the order they
-  should be started (writer first; if anything ever races on first
-  connect, the writer wins).
+  Sibling sark DB path derived from the plugin DB path
+  (`<dir>/<name>.db` → `<dir>/<name>.sark.db`).
+  """
+  @spec sark_db_path(Path.t()) :: Path.t()
+  def sark_db_path(data_db_path) do
+    dir = Path.dirname(data_db_path)
+    base = Path.basename(data_db_path, ".db")
+    Path.join(dir, "#{base}.sark.db")
+  end
+
+  @doc """
+  Child specs for both DBs' writer + reader pools. Returned in start
+  order: sark writer + reader first, then data writer + reader. Sark
+  DB starts first so its tables exist before the data pools come up
+  and start serving queries that may reference framework state.
   """
   @spec pool_children(plugin_name, Path.t()) :: [Supervisor.child_spec()]
-  def pool_children(name, db_path) do
+  def pool_children(name, data_db_path) do
+    sark_path = sark_db_path(data_db_path)
+
+    pool_pair(name, :sark, sark_path) ++ pool_pair(name, :data, data_db_path)
+  end
+
+  defp pool_pair(name, kind, db_path) do
     base = [
       database: db_path,
       journal_mode: :wal,
@@ -44,21 +80,21 @@ defmodule Sark.Plugin.DB do
     writer_opts =
       base ++
         [
-          name: writer_name(name),
+          name: writer_name(name, kind),
           pool_size: @writer_pool_size
         ]
 
     reader_opts =
       base ++
         [
-          name: reader_name(name),
+          name: reader_name(name, kind),
           pool_size: @reader_pool_size,
           custom_pragmas: [{:query_only, true}]
         ]
 
     [
-      Supervisor.child_spec({Exqlite, writer_opts}, id: {:writer, name}),
-      Supervisor.child_spec({Exqlite, reader_opts}, id: {:reader, name})
+      Supervisor.child_spec({Exqlite, writer_opts}, id: {:writer, name, kind}),
+      Supervisor.child_spec({Exqlite, reader_opts}, id: {:reader, name, kind})
     ]
   end
 
@@ -120,6 +156,37 @@ defmodule Sark.Plugin.DB do
           {:ok, any} | {:error, term}
   def txn(name, fun, opts \\ []) do
     DBConnection.transaction(writer_name(name), fun, opts)
+  end
+
+  # ── sark DB variants ───────────────────────────────────────────────────────
+  #
+  # Mirror of `read/3`, `write/3`, `txn/2` against the sark-managed DB.
+  # Used by framework code (observability, log writers, future internal
+  # tools); plugin tools should never call these directly.
+
+  @doc "Like `read/4` but against the sark DB."
+  @spec sark_read(plugin_name, iodata, [term], keyword) ::
+          {:ok, [String.t()], [map]} | {:error, term}
+  def sark_read(name, sql, params \\ [], opts \\ []) do
+    target = Keyword.get(opts, :conn) || reader_name(name, :sark)
+
+    case Exqlite.query(target, sql, params) do
+      {:ok, %Result{} = r} -> {:ok, columns(r), rows_to_maps(r)}
+      {:error, _} = e -> e
+    end
+  end
+
+  @doc "Like `write/3` but against the sark DB."
+  @spec sark_write(plugin_name, iodata, [term]) :: {:ok, Result.t()} | {:error, term}
+  def sark_write(name, sql, params \\ []) do
+    Exqlite.query(writer_name(name, :sark), sql, params)
+  end
+
+  @doc "Like `txn/3` but against the sark DB."
+  @spec sark_txn(plugin_name, (DBConnection.t() -> any), keyword) ::
+          {:ok, any} | {:error, term}
+  def sark_txn(name, fun, opts \\ []) do
+    DBConnection.transaction(writer_name(name, :sark), fun, opts)
   end
 
   @doc """

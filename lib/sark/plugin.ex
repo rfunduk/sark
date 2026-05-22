@@ -41,6 +41,7 @@ defmodule Sark.Plugin do
     db_path = Path.join(data_dir, "#{spec.name}.db")
     File.mkdir_p!(Path.dirname(db_path))
 
+    :ok = apply_internal_migrations!(spec.name, DB.sark_db_path(db_path))
     :ok = Migrations.apply!(spec.name, db_path, spec.migrations)
     Registration.register_plugin!(spec)
 
@@ -52,6 +53,23 @@ defmodule Sark.Plugin do
     Supervisor.init(
       pool_children ++ scheduler_child,
       strategy: :rest_for_one
+    )
+  end
+
+  # Apply the sark-internal migration track against the plugin's sark
+  # DB. Migrations ship in `priv/internal_migrations/` and are
+  # version-locked to the sark release. Sark.Migrations.apply! opens
+  # the DB in readwrite mode, creating the file on first boot, sets
+  # WAL, ensures the tracker, then applies any pending migrations.
+  defp apply_internal_migrations!(plugin_name, sark_db_path) do
+    mig_dir = Path.join(:code.priv_dir(:sark), "internal_migrations")
+    label = "sark internal (#{plugin_name})"
+
+    Sark.Migrations.apply!(
+      source_label: label,
+      db_path: sark_db_path,
+      migrations: Sark.Migrations.discover!(mig_dir, label),
+      tracker_table: "_migrations"
     )
   end
 end

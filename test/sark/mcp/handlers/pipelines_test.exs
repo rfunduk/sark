@@ -250,7 +250,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
       wait_for_run!(spec, decoded["run_id"])
 
       {:ok, _, [%{"status" => status}]} =
-        DB.read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [
+        DB.sark_read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [
           decoded["run_id"]
         ])
 
@@ -339,9 +339,9 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
   end
 
   describe "sark_pipelines_log_prune" do
-    defp insert_run!(spec, run_id, pipeline, finished_at, step_count \\ 0) do
+    defp insert_run!(spec, run_id, pipeline, finished_at, step_count) do
       {:ok, _} =
-        DB.write(
+        DB.sark_write(
           spec.name,
           "INSERT INTO _pipeline_log (run_id, pipeline, started_at, finished_at, status, triggered_by) VALUES (?, ?, ?, ?, ?, ?)",
           [run_id, pipeline, finished_at, finished_at, "success", "manual"]
@@ -349,7 +349,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
 
       for i <- 0..(step_count - 1)//1 do
         {:ok, _} =
-          DB.write(
+          DB.sark_write(
             spec.name,
             "INSERT INTO _pipeline_step_log (run_id, step_index, step_type, started_at, finished_at, status) VALUES (?, ?, ?, ?, ?, ?)",
             [run_id, i, "shell", finished_at, finished_at, "success"]
@@ -361,7 +361,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
     defp step_count(spec), do: count(spec, "_pipeline_step_log")
 
     defp count(spec, table) do
-      {:ok, _, [%{"n" => n}]} = DB.read(spec.name, "SELECT COUNT(*) AS n FROM #{table}", [])
+      {:ok, _, [%{"n" => n}]} = DB.sark_read(spec.name, "SELECT COUNT(*) AS n FROM #{table}", [])
       n
     end
 
@@ -387,7 +387,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
       assert step_count(spec) == 3
 
       {:ok, _, [%{"run_id" => surviving}]} =
-        DB.read(spec.name, "SELECT run_id FROM _pipeline_log", [])
+        DB.sark_read(spec.name, "SELECT run_id FROM _pipeline_log", [])
 
       assert surviving == "fresh"
     end
@@ -406,7 +406,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
       assert run_count(spec) == 1
 
       {:ok, _, [%{"pipeline" => survivor}]} =
-        DB.read(spec.name, "SELECT pipeline FROM _pipeline_log", [])
+        DB.sark_read(spec.name, "SELECT pipeline FROM _pipeline_log", [])
 
       assert survivor == "smoke"
     end
@@ -424,7 +424,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
 
       assert step_count(spec) == 2
 
-      {:ok, _, rows} = DB.read(spec.name, "SELECT run_id FROM _pipeline_step_log", [])
+      {:ok, _, rows} = DB.sark_read(spec.name, "SELECT run_id FROM _pipeline_step_log", [])
       assert Enum.all?(rows, &(&1["run_id"] == "fresh1"))
     end
 
@@ -524,7 +524,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
       flunk("run #{run_id} never completed")
     end
 
-    case DB.read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [run_id]) do
+    case DB.sark_read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [run_id]) do
       {:ok, _, [%{"status" => s}]} when s in ["success", "failed"] ->
         :ok
 

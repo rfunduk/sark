@@ -131,33 +131,31 @@ defmodule Sark.Pipeline.Runner do
   # Non-transactional path: start_run + finish_run pool-checkout their
   # own conn; run_steps writes step rows the same way.
   defp execute_pipeline(%{pipeline: %Pipeline{transactional: false}} = state) do
-    :ok = log_start(state, [])
+    :ok = log_start(state)
     result = run_steps(state)
-    finalize(state, result, [])
+    finalize(state, result)
   end
 
-  # Transactional path: open one writer txn for the entire run. start_run,
-  # finish_run, and every step's log row go through the held conn. On
-  # error/cancel the whole txn rolls back — log rows for the run vanish
-  # along with any data writes. That's the intentional design: a
-  # transactional pipeline that fails leaves no trace, mirroring the
-  # all-or-nothing semantics callers asked for.
+  # Transactional path: open one writer txn on the plugin's data DB for
+  # the run's data writes. Log writes target the plugin's sark DB on a
+  # separate conn — independent of the data txn, so a failure that
+  # rolls back data still leaves a terminal log row.
   #
   # Per-step Task.async timeouts are disabled inside a transaction
-  # because the writer conn is bound to this process and can't be used
-  # from a spawned Task. Shell step timeouts still work — they don't
-  # touch the DB.
+  # because the data-writer conn is bound to this process and can't be
+  # used from a spawned Task. Shell step timeouts still work — they
+  # don't touch the DB.
   defp execute_pipeline(%{plugin: plugin, on_event: on_event, run_id: run_id} = state) do
+    :ok = log_start(state)
+
     result =
       DB.txn(
         plugin,
         fn conn ->
           s = %{state | conn: conn}
-          :ok = log_start(s, conn: conn)
 
           case run_steps(s) do
             :ok ->
-              :ok = log_finish(s, :success, nil, conn: conn)
               :ok
 
             {:cancelled, _} = c ->
@@ -172,57 +170,57 @@ defmodule Sark.Pipeline.Runner do
 
     case result do
       {:ok, :ok} ->
+        :ok = log_finish(state, :success, nil)
         cleanup_workdir(state.workdir)
         on_event.({:run_ok, %{run_id: run_id}})
         {:ok, %{run_id: run_id}}
 
       {:error, {:cancelled, msg}} ->
+        :ok = log_finish(state, :cancelled, msg)
         on_event.({:run_fail, %{run_id: run_id, error: msg}})
         {:error, msg}
 
       {:error, {:error, msg}} ->
+        :ok = log_finish(state, :failed, msg)
         on_event.({:run_fail, %{run_id: run_id, error: msg}})
         {:error, msg}
 
       {:error, other} ->
         msg = "txn: #{inspect(other)}"
+        :ok = log_finish(state, :failed, msg)
         on_event.({:run_fail, %{run_id: run_id, error: msg}})
         {:error, msg}
     end
   end
 
-  defp log_start(state, opts) do
-    Log.start_run(
-      state.plugin,
-      %{
-        run_id: state.run_id,
-        pipeline: state.pipeline.name,
-        started_at: state.started_at,
-        triggered_by: state.triggered_by
-      },
-      opts
-    )
+  defp log_start(state) do
+    Log.start_run(state.plugin, %{
+      run_id: state.run_id,
+      pipeline: state.pipeline.name,
+      started_at: state.started_at,
+      triggered_by: state.triggered_by
+    })
   end
 
-  defp log_finish(state, status, error, opts) do
-    Log.finish_run(state.plugin, state.run_id, status, now_iso8601(), error, opts)
+  defp log_finish(state, status, error) do
+    Log.finish_run(state.plugin, state.run_id, status, now_iso8601(), error)
   end
 
-  defp finalize(%{on_event: on_event, run_id: run_id, workdir: workdir} = state, :ok, opts) do
-    :ok = log_finish(state, :success, nil, opts)
+  defp finalize(%{on_event: on_event, run_id: run_id, workdir: workdir} = state, :ok) do
+    :ok = log_finish(state, :success, nil)
     cleanup_workdir(workdir)
     on_event.({:run_ok, %{run_id: run_id}})
     {:ok, %{run_id: run_id}}
   end
 
-  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:cancelled, msg}, opts) do
-    :ok = log_finish(state, :cancelled, msg, opts)
+  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:cancelled, msg}) do
+    :ok = log_finish(state, :cancelled, msg)
     on_event.({:run_fail, %{run_id: run_id, error: msg}})
     {:error, msg}
   end
 
-  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:error, msg}, opts) do
-    :ok = log_finish(state, :failed, msg, opts)
+  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:error, msg}) do
+    :ok = log_finish(state, :failed, msg)
     on_event.({:run_fail, %{run_id: run_id, error: msg}})
     {:error, msg}
   end
@@ -263,8 +261,6 @@ defmodule Sark.Pipeline.Runner do
     state.on_event.({:step_start, %{index: idx, kind: step.kind}})
     started_at = now_iso8601()
 
-    log_opts = log_opts(state)
-
     case run_step(step, stdin, state) do
       {:ok, stdout, extras} ->
         :ok =
@@ -272,8 +268,7 @@ defmodule Sark.Pipeline.Runner do
             state.plugin,
             base_step_entry(state.run_id, idx, step.kind, started_at, :success, nil)
             |> Map.put(:stdout_bytes, byte_size(stdout))
-            |> Map.merge(extras),
-            log_opts
+            |> Map.merge(extras)
           )
 
         state.on_event.({:step_ok, %{index: idx, kind: step.kind, bytes: byte_size(stdout)}})
@@ -291,17 +286,13 @@ defmodule Sark.Pipeline.Runner do
           Log.record_step(
             state.plugin,
             base_step_entry(state.run_id, idx, step.kind, started_at, :failed, msg)
-            |> Map.merge(extras),
-            log_opts
+            |> Map.merge(extras)
           )
 
         state.on_event.({:step_fail, %{index: idx, kind: step.kind, error: msg}})
         {:halt, {:error, "step #{idx} (#{step.kind}): #{msg}"}}
     end
   end
-
-  defp log_opts(%{conn: nil}), do: []
-  defp log_opts(%{conn: conn}), do: [conn: conn]
 
   defp base_step_entry(run_id, idx, kind, started_at, status, error) do
     %{

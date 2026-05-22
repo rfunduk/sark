@@ -68,7 +68,7 @@ defmodule Sark.CLITest do
       wait_for_completion!(spec, run_id)
 
       {:ok, _, [%{"status" => status}]} =
-        DB.read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [run_id])
+        DB.sark_read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [run_id])
 
       assert status == "success"
     end
@@ -94,7 +94,7 @@ defmodule Sark.CLITest do
       flunk("run #{run_id} did not complete within 2s")
     end
 
-    case DB.read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [run_id]) do
+    case DB.sark_read(spec.name, "SELECT status FROM _pipeline_log WHERE run_id = ?", [run_id]) do
       {:ok, _, [%{"status" => s}]} when s in ["success", "failed"] ->
         :ok
 

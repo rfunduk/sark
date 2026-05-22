@@ -575,7 +575,7 @@ A per-pipeline lock arbitrates between the scheduler, `Sark.CLI.run_pipeline`, a
 
 ### Telemetry
 
-Every terminal run writes one row to a Sark-managed `_pipeline_log` table in the plugin's own database; each step writes one row to `_pipeline_step_log`. Together they capture: start/end timestamps, status (success / failed / skipped), trigger (schedule / manual), per-step exit codes (shell), row counts (load / tool), LLM token usage (model, turns, stop reason, input/output/cache tokens, service tier), and the final assistant text.
+Every run leaves a durable audit trail — per-run header + per-step rows capturing start/end timestamps, status (success / failed / cancelled), trigger (schedule / manual), per-step exit codes (shell), row counts (load / tool), LLM token usage (model, turns, stop reason, input/output/cache tokens, service tier), and the final assistant text. Inspect via the built-in `sark_pipelines_*` tools (see below).
 
 Skipped runs (gated out by `when:`) don't write rows.
 
@@ -592,15 +592,15 @@ docker logs sark -f --tail 50
 
 ### Built-in observability tools
 
-Every plugin gets these without declaring them. Tool descriptions are shown via `sark_catalog` (when `allow_sql: true`) or your MCP client's tool list.
+Every plugin gets these without declaring them.
 
 - **`sark_pipelines_list`** — declared pipelines + last-run summary.
 - **`sark_pipelines_log(pipeline, run_id?)`** — full per-step log for one run. `run_id` omitted → latest run for that pipeline.
 - **`sark_pipelines_recent(pipeline?, limit?)`** — recent runs across all pipelines or one. Default limit 20.
-- **`sark_pipelines_costs(pipeline?, since?)`** — token rollup grouped by pipeline + model (for `llm:` steps). Your skill multiplies by its own price table.
+- **`sark_pipelines_costs(pipeline?, since?)`** — token rollup grouped by pipeline + model (for `llm:` steps). Your skill multiplies by its own price table if desired.
 - **`sark_pipelines_run_now(pipeline)`** — fire-and-forget manual trigger.
-
-The `sark_pipelines_*` prefix is reserved — a plugin tool that collides raises at registration.
+- **`sark_pipelines_cancel(pipeline, run_id?)`** — best-effort cancel of an in-flight run. Runner peeks between steps; the current step finishes naturally before the run halts.
+- **`sark_pipelines_log_prune(pipeline?, older_than)`** — delete run + step rows older than a duration (e.g. `30d`, `6h`). Plugin authors wire their own cleanup pipeline; no built-in retention.
 
 
 ## Misc

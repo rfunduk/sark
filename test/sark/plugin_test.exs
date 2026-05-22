@@ -20,6 +20,7 @@ defmodule Sark.PluginTest do
 
     db_path = Path.join(dir, "kv.db")
     assert File.exists?(db_path)
+    assert File.exists?(Path.join(dir, "kv.sark.db"))
 
     {:ok, _} =
       DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["greeting", "hello"])
@@ -81,6 +82,32 @@ defmodule Sark.PluginTest do
              DB.read(spec.name, sql, [])
 
     assert [%{"key" => "a", "value" => "1"}, %{"key" => "b", "value" => "2"}] = items
+  end
+
+  test "sark DB pools are reachable under their kind-tagged names", %{tmp_dir: dir} do
+    spec = Loader.load!("kv", @kv_fixture)
+    start_plugin!(spec, dir)
+
+    # Verify both writer + reader pools for the sark DB are alive.
+    assert is_pid(Process.whereis(DB.writer_name(spec.name, :sark)))
+    assert is_pid(Process.whereis(DB.reader_name(spec.name, :sark)))
+
+    # And distinct from the data-DB pools.
+    refute DB.writer_name(spec.name, :sark) == DB.writer_name(spec.name, :data)
+  end
+
+  test "sark-internal migrations populate _pipeline_log + _pipeline_step_log in the sark DB",
+       %{tmp_dir: dir} do
+    spec = Loader.load!("kv", @kv_fixture)
+    start_plugin!(spec, dir)
+
+    # Tracker reflects applied internal migrations.
+    assert {:ok, _, [%{"version" => 1}]} =
+             DB.sark_read(spec.name, "SELECT version FROM _migrations ORDER BY version", [])
+
+    # Tables exist + are queryable on the sark DB.
+    assert {:ok, _, []} = DB.sark_read(spec.name, "SELECT * FROM _pipeline_log", [])
+    assert {:ok, _, []} = DB.sark_read(spec.name, "SELECT * FROM _pipeline_step_log", [])
   end
 
   test "leaves non-JSON strings starting with [ or { untouched", %{tmp_dir: dir} do
