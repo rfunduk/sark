@@ -10,7 +10,14 @@ log_level: info
 anthropic_api_key: "${ANTHROPIC_API_KEY}"
 
 # Bearer tokens. Each entry:
-#   { name: <label>, plugins: [<plugin1>, <plugin2>, ...] | ["*"], token: <secret> }
+#   { name: <label>, plugins: <scope>, token: <secret> }
+#
+# `<scope>` is a list. Entries can be:
+#   - "*"                — every known plugin, every tool
+#   - <plugin>           — that plugin, every tool
+#   - {<plugin>: <pat>}  — that plugin, only tools matching the glob(s)
+#   - {<plugin>: [<pat>, <pat>...]}
+#   - {"*": <pat>|[...]} — all plugins, only matching tools
 tokens:
   - { name: default, plugins: ["*"], token: "${SARK_TOKEN}" }
 

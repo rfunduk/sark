@@ -87,6 +87,7 @@ defmodule Sark.AuthPlug do
           conn
           |> assign(:token_name, name)
           |> assign(:plugin, plugin)
+          |> assign(:token_entry, entry)
         else
           not_found(conn)
         end

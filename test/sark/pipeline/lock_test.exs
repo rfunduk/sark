@@ -72,9 +72,9 @@ defmodule Sark.Pipeline.LockTest do
       # Killing the pid should free the slot via Lock's monitor.
       send(pid, :die)
 
-      # Wait for monitor message to arrive in Lock. Polling avoids a
-      # fixed sleep.
-      wait_until(fn -> Lock.acquire("p", :crashy) != {:busy, "_unused_"} end, 500)
+      # Wait for monitor message to arrive in Lock. Poll `in_flight/0`
+      # so we don't consume the slot ourselves while checking.
+      wait_until(fn -> not Enum.any?(Lock.in_flight(), &match?({"p", :crashy, _}, &1)) end, 500)
 
       assert {:ok, _new_id} = Lock.acquire("p", :crashy)
       Lock.release("p", :crashy)

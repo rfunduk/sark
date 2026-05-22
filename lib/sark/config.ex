@@ -9,15 +9,33 @@ defmodule Sark.Config do
       log_level: info                # optional
       anthropic_api_key: "${ANTHROPIC_API_KEY}"  # optional, ${VAR} interpolated
       tokens:
-        - { name: ryan, plugins: ["*"], token: sk-ryan }
-        - { name: mark, plugins: [kb], token: sk-mark }
+        - { name: ryan,   plugins: ["*"], token: sk-ryan }
+        - { name: reader, plugins: [{kv: ["get", "list", "find"]}], token: sk-ro }
+        - { name: mixed,  plugins: [kb, {kv: "read_*"}], token: sk-mix }
       plugins:
         kb:  ~/code/sark-kb
-        kv:   test/fixtures/plugins/kv
+        kv:  test/fixtures/plugins/kv
 
-  `tokens[*].plugins` is either `["*"]` (wildcard — all plugins) or a list
-  of plugin names. Reachability check happens in `Sark.AuthPlug` against
-  the URL path `/<plugin>/mcp`.
+  Each entry in `tokens[*].plugins` is either:
+
+    * a string — plugin name (full access to all of its tools), or `"*"`
+      (every known plugin)
+    * a single-key map — `{plugin: pattern_or_list}` where the value is a
+      glob pattern (`*` / `?`) or list of glob patterns matched against
+      tool names. `plugin` can be `"*"` to apply patterns across every
+      known plugin.
+
+  `["*"]` shorthand is equivalent to `[{"*": "*"}]` — every plugin, every
+  tool. Multiple entries for the same plugin union; if any contributes
+  `"*"` the plugin's surface is unrestricted.
+
+  Patterns are anchored fnmatch (`read_*` matches `read_foo` but not
+  `foo_read`). Globs only work if the plugin author names tools
+  consistently — sark doesn't enforce naming.
+
+  Reachability check happens in `Sark.AuthPlug` against the URL path
+  `/<plugin>/mcp`. Tool-name filtering happens in the generated router's
+  `connect/2` via `Phantom.Session.allowed_tools`.
 
   `plugins` is a map: name (used everywhere — tool routing, DB filename,
   pool registry) → directory path. Decoupling the name from the on-disk
@@ -35,7 +53,8 @@ defmodule Sark.Config do
   ]
 
   @type listen :: {:inet.ip_address(), :inet.port_number()}
-  @type allowed :: :all | MapSet.t(String.t())
+  @type tool_patterns :: :all | [Regex.t()]
+  @type allowed :: :all | %{String.t() => tool_patterns()}
   @type token_entry :: %{name: String.t(), allowed: allowed()}
   @type t :: %__MODULE__{
           listen: listen(),
@@ -130,24 +149,107 @@ defmodule Sark.Config do
 
   defp parse_tokens(other, _), do: raise("config: tokens must be list, got #{inspect(other)}")
 
-  defp parse_allowed(_name, ["*"], _plugins), do: :all
+  # Legacy shorthand: `plugins: ["*"]` → unrestricted everywhere. Kept
+  # because it's terser than `[{"*": "*"}]` for the common "give me a
+  # full-access token" case and matches the README example.
+  defp parse_allowed(_token_name, ["*"], _plugins), do: :all
+
+  # Scalar sugar — `plugins: "*"` / `plugins: "kv"` parse as list-of-one,
+  # matching the same string→list affordance the per-plugin pattern value
+  # already gives (`{kv: "read_*"}`).
+  defp parse_allowed(token_name, s, plugins) when is_binary(s),
+    do: parse_allowed(token_name, [s], plugins)
 
   defp parse_allowed(token_name, list, plugins) when is_list(list) do
-    Enum.each(list, fn p ->
-      unless is_binary(p) do
-        raise "config: token `#{token_name}` plugins must be strings, got #{inspect(p)}"
-      end
-
-      unless Map.has_key?(plugins, p) do
-        raise "config: token `#{token_name}` references unknown plugin `#{p}`"
-      end
-    end)
-
-    MapSet.new(list)
+    list
+    |> Enum.reduce(%{}, fn entry, acc -> merge_entry(entry, acc, token_name, plugins) end)
+    |> expand_wildcard(plugins)
   end
 
   defp parse_allowed(token_name, other, _) do
-    raise "config: token `#{token_name}` plugins must be `[\"*\"]` or list of plugin names, got #{inspect(other)}"
+    raise "config: token `#{token_name}` plugins must be a list, got #{inspect(other)}"
+  end
+
+  defp merge_entry(plugin, acc, token_name, plugins) when is_binary(plugin) do
+    validate_plugin_or_wildcard!(plugin, token_name, plugins)
+    Map.update(acc, plugin, :all, &merge_patterns(&1, :all))
+  end
+
+  defp merge_entry(map, acc, token_name, plugins) when is_map(map) and map_size(map) == 1 do
+    [{plugin, raw}] = Map.to_list(map)
+
+    unless is_binary(plugin) do
+      raise "config: token `#{token_name}` plugin key must be string, got #{inspect(plugin)}"
+    end
+
+    validate_plugin_or_wildcard!(plugin, token_name, plugins)
+    patterns = parse_pattern_value(raw, token_name, plugin)
+    Map.update(acc, plugin, patterns, &merge_patterns(&1, patterns))
+  end
+
+  defp merge_entry(other, _acc, token_name, _plugins) do
+    raise "config: token `#{token_name}` plugins entries must be a plugin name or a single-key map " <>
+            "(got #{inspect(other)})"
+  end
+
+  defp validate_plugin_or_wildcard!("*", _token, _plugins), do: :ok
+
+  defp validate_plugin_or_wildcard!(name, token_name, plugins) do
+    unless Map.has_key?(plugins, name) do
+      raise "config: token `#{token_name}` references unknown plugin `#{name}`"
+    end
+  end
+
+  defp parse_pattern_value(s, token_name, plugin) when is_binary(s),
+    do: [compile_glob!(s, token_name, plugin)]
+
+  defp parse_pattern_value(list, token_name, plugin) when is_list(list) do
+    Enum.map(list, fn
+      s when is_binary(s) ->
+        compile_glob!(s, token_name, plugin)
+
+      other ->
+        raise "config: token `#{token_name}` tool pattern for `#{plugin}` must be string, got #{inspect(other)}"
+    end)
+  end
+
+  defp parse_pattern_value(other, token_name, plugin) do
+    raise "config: token `#{token_name}` tool patterns for `#{plugin}` must be string or list, got #{inspect(other)}"
+  end
+
+  defp merge_patterns(:all, _), do: :all
+  defp merge_patterns(_, :all), do: :all
+  defp merge_patterns(a, b) when is_list(a) and is_list(b), do: a ++ b
+
+  defp expand_wildcard(map, plugins) do
+    case Map.pop(map, "*") do
+      {nil, m} ->
+        m
+
+      {wild, m} ->
+        Enum.reduce(Map.keys(plugins), m, fn p, acc ->
+          Map.update(acc, p, wild, &merge_patterns(&1, wild))
+        end)
+    end
+  end
+
+  defp compile_glob!(s, token_name, plugin) do
+    regex =
+      s
+      |> String.graphemes()
+      |> Enum.map_join(fn
+        "*" -> ".*"
+        "?" -> "."
+        c -> Regex.escape(c)
+      end)
+
+    case Regex.compile("\\A" <> regex <> "\\z") do
+      {:ok, re} ->
+        re
+
+      {:error, reason} ->
+        raise "config: token `#{token_name}` bad tool pattern `#{s}` for plugin `#{plugin}`: #{inspect(reason)}"
+    end
   end
 
   defp parse_plugins(map, config_dir) when is_map(map) do

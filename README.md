@@ -81,7 +81,16 @@ Shortest path:
           SELECT key, value FROM kv WHERE key = :key
     ```
 
-3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: /storage/plugins/kv`) and ensure a token is scoped to it (`plugins: ["*"]` or `plugins: [kv]`).
+3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: /storage/plugins/kv`) and ensure a token is scoped to it.
+
+    ```yaml
+    tokens:
+      - { name: full,   plugins: "*",                              token: sk-full }
+      - { name: kvonly, plugins: [kv],                             token: sk-kv }
+      - { name: reader, plugins: [{kv: ["get", "list", "find"]}],  token: sk-ro }
+      - { name: mixed,  plugins: [myplugin, {kv: "report_*"}],     token: sk-mix }
+    ```
+
 4. Boot Sark. The plugin's database is created and migration 1 is applied.
 5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-mytoken"`. Clients that can't set custom headers can pass the token as `?token=mytoken` instead.
 6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`

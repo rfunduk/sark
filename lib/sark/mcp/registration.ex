@@ -169,9 +169,12 @@ defmodule Sark.MCP.Registration do
           instructions: "Sark plugin `#{unquote(plugin)}`."
 
         @impl true
-        def connect(session, _info) do
-          # Auth + scope already validated upstream by `Sark.AuthPlug`.
-          {:ok, session}
+        def connect(session, conn) do
+          # Auth + plugin scope already validated upstream by `Sark.AuthPlug`.
+          # Resolve per-token tool allow-list against this plugin's tool set
+          # and stash on the session — Phantom.Cache.list/3 filters
+          # `tools/list` + `tools/call` against `session.allowed_tools`.
+          {:ok, Sark.MCP.Registration.apply_token_allowlist(session, conn, unquote(plugin))}
         end
       end
 
@@ -179,6 +182,33 @@ defmodule Sark.MCP.Registration do
     Module.create(module, body, Macro.Env.location(__ENV__))
     module
   end
+
+  @doc """
+  Compute the per-token tool name allow-list for `plugin` against
+  the currently registered tools, and apply it to `session`.
+
+  Skipped (session left untouched) when the conn has no `:token_entry`
+  assign — e.g. internal handler calls in tests that bypass `Sark.AuthPlug`.
+  """
+  @spec apply_token_allowlist(map(), Plug.Conn.t() | map(), String.t()) :: map()
+  def apply_token_allowlist(session, %Plug.Conn{} = conn, plugin) do
+    case Map.get(conn.assigns, :token_entry) do
+      nil ->
+        session
+
+      entry ->
+        names =
+          Phantom.Cache.list(nil, router_module(plugin), :tools)
+          |> Enum.map(& &1.name)
+
+        case Sark.AuthRegistry.tool_allowlist(entry, plugin, names) do
+          :all -> session
+          list when is_list(list) -> %{session | allowed_tools: list}
+        end
+    end
+  end
+
+  def apply_token_allowlist(session, _other, _plugin), do: session
 
   defp purge_if_loaded(module) do
     if Code.ensure_loaded?(module) do

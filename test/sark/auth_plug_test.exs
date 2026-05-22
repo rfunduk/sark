@@ -26,7 +26,7 @@ defmodule Sark.AuthPlugTest do
       {AuthRegistry,
        %{
          @valid => %{name: "default", allowed: :all},
-         @scoped => %{name: "kv-only", allowed: MapSet.new(["kv"])}
+         @scoped => %{name: "kv-only", allowed: %{"kv" => :all}}
        }}
     )
 
