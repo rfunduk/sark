@@ -277,12 +277,12 @@ defmodule Sark.Pipeline.RunnerTest do
       assert s1["stdout_bytes"] > 2
     end
 
-    test "non-JSON stdin into load step fails with a clear message", %{spec: spec} do
+    test "non-JSON stdin into load step (with params) fails with a clear message", %{spec: spec} do
       pipeline =
         build_pipeline("bad_json", %{
           "steps" => [
             %{"shell" => "echo not_json"},
-            %{"load" => "SELECT 1 AS one"}
+            %{"load" => "SELECT value FROM kv WHERE key = :key"}
           ]
         })
 
@@ -293,6 +293,23 @@ defmodule Sark.Pipeline.RunnerTest do
       [_, s1] = fetch_step_rows(spec, rid)
       assert s1["status"] == "failed"
       assert s1["error"] =~ "expected JSON"
+    end
+
+    test "load step with no params ignores stdin", %{spec: spec} do
+      pipeline =
+        build_pipeline("paramless_load", %{
+          "steps" => [
+            %{"shell" => "echo arbitrary_garbage"},
+            %{"load" => "SELECT 1 AS one"}
+          ]
+        })
+
+      rid = run_id()
+      assert {:ok, _} = run!(pipeline, spec, run_id: rid)
+
+      [_, s1] = fetch_step_rows(spec, rid)
+      assert s1["status"] == "success"
+      assert s1["row_count"] == 1
     end
 
     test "writes are rejected at parse time" do

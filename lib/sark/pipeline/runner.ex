@@ -316,6 +316,17 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
+  # No `:param` placeholders → stdin irrelevant. Lets `load:` be a
+  # first step or follow a step whose stdout isn't a JSON object.
+  defp load_body(%{param_order: []} = step, _stdin, state) do
+    case DB.read(state.plugin, step.compiled_sql, [], read_opts(state)) do
+      {:ok, _cols, rows} -> {:ok, Jason.encode!(rows), %{row_count: length(rows)}}
+      {:error, %Exqlite.Error{message: msg}} -> {:error, "sql: #{msg}", %{}}
+      {:error, msg} when is_binary(msg) -> {:error, msg, %{}}
+      {:error, msg} -> {:error, inspect(msg), %{}}
+    end
+  end
+
   defp load_body(step, stdin, state) do
     with {:ok, params_map} <- decode_json_stdin(stdin, "load"),
          {:ok, binds} <- bind_load_params(step, params_map),
