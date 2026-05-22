@@ -25,7 +25,7 @@ defmodule Sark.MCP.Registration do
   alias Sark.Plugin.Spec
   alias Sark.Plugin.Tool
 
-  @reserved_names ~w(sark_catalog sark_sql sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune)a
+  @reserved_names ~w(sark_catalog sark_sql sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune sark_pipelines_disable sark_pipelines_enable)a
 
   @spec register_plugin!(Spec.t()) :: :ok
   def register_plugin!(%Spec{} = spec) do
@@ -135,7 +135,9 @@ defmodule Sark.MCP.Registration do
             sark_pipelines_costs: :costs,
             sark_pipelines_run_now: :run_now,
             sark_pipelines_cancel: :cancel,
-            sark_pipelines_log_prune: :prune
+            sark_pipelines_log_prune: :prune,
+            sark_pipelines_disable: :disable,
+            sark_pipelines_enable: :enable
           ] do
         quote do
           def unquote(fname)(params, session) do

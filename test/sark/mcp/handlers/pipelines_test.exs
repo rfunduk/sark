@@ -489,6 +489,57 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
     end
   end
 
+  describe "sark_pipelines_disable + sark_pipelines_enable" do
+    test "disable persists in _pipeline_state and State.disabled?/2 reflects it", %{spec: spec} do
+      refute Sark.Pipeline.State.disabled?(spec.name, :inventory_ingest)
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_disable", %{
+                 "pipeline" => "inventory_ingest"
+               })
+
+      assert %{"ok" => true, "pipeline" => "inventory_ingest", "disabled" => true} =
+               Jason.decode!(json)
+
+      assert Sark.Pipeline.State.disabled?(spec.name, :inventory_ingest)
+    end
+
+    test "enable clears the flag (no-op if not disabled)", %{spec: spec} do
+      :ok = Sark.Pipeline.State.disable(spec.name, :inventory_ingest)
+      assert Sark.Pipeline.State.disabled?(spec.name, :inventory_ingest)
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_enable", %{
+                 "pipeline" => "inventory_ingest"
+               })
+
+      assert %{"ok" => true, "pipeline" => "inventory_ingest", "disabled" => false} =
+               Jason.decode!(json)
+
+      refute Sark.Pipeline.State.disabled?(spec.name, :inventory_ingest)
+
+      # Idempotent re-enable.
+      assert {:ok, _} =
+               Internal.call_tool(spec.name, "sark_pipelines_enable", %{
+                 "pipeline" => "inventory_ingest"
+               })
+    end
+
+    test "validation: unknown pipeline name", %{spec: spec} do
+      assert {:error, msg} =
+               Internal.call_tool(spec.name, "sark_pipelines_disable", %{
+                 "pipeline" => "does_not_exist"
+               })
+
+      assert msg =~ "not found"
+    end
+
+    test "validation: missing pipeline param", %{spec: spec} do
+      assert {:error, msg} = Internal.call_tool(spec.name, "sark_pipelines_disable", %{})
+      assert msg =~ "validation"
+    end
+  end
+
   describe "reserved names" do
     test "raises when a tool name collides with a reserved sark_pipelines_* built-in" do
       spec = %Sark.Plugin.Spec{

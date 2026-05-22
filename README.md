@@ -601,6 +601,7 @@ Every plugin gets these without declaring them.
 - **`sark_pipelines_run_now(pipeline)`** — fire-and-forget manual trigger.
 - **`sark_pipelines_cancel(pipeline, run_id?)`** — best-effort cancel of an in-flight run. Runner peeks between steps; the current step finishes naturally before the run halts.
 - **`sark_pipelines_log_prune(pipeline?, older_than)`** — delete run + step rows older than a duration (e.g. `30d`, `6h`). Plugin authors wire their own cleanup pipeline; no built-in retention.
+- **`sark_pipelines_disable(pipeline)`** / **`sark_pipelines_enable(pipeline)`** — toggle scheduled execution. Disabled = scheduler silently skips at tick time; manual triggers still fire.
 
 
 ## Misc

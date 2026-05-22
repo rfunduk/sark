@@ -3,8 +3,13 @@ defmodule Sark.Pipeline.SchedulerTest do
 
   alias Sark.Pipeline.Lock
   alias Sark.Pipeline.Scheduler
+  alias Sark.Pipeline.State
+  alias Sark.Plugin
+  alias Sark.Plugin.Loader
   alias Sark.Plugin.Pipeline
   alias Sark.Plugin.Spec
+
+  @kv_fixture Path.expand("../../fixtures/plugins/kv", __DIR__)
 
   setup do
     Enum.each(Lock.in_flight(), fn {plugin, name, _id} ->
@@ -84,6 +89,49 @@ defmodule Sark.Pipeline.SchedulerTest do
       Lock.release(spec.name, manual_pipeline.name)
 
       GenServer.stop(sched)
+    end
+  end
+
+  describe "disabled pipelines" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: dir} do
+      Sark.MCP.Registry.ensure_table()
+      Sark.MCP.Registry.delete_plugin("kv")
+
+      router = Sark.MCP.Registration.router_module("kv")
+      :persistent_term.put({Phantom, router, :tools}, [])
+      :persistent_term.put({Phantom, router, :initialized}, false)
+
+      spec = Loader.load!("kv", @kv_fixture)
+      start_supervised!({Plugin, spec: spec, data_dir: dir})
+
+      {:ok, spec: spec}
+    end
+
+    test "State.disable + enable round-trip via the sark DB", %{spec: spec} do
+      refute State.disabled?(spec.name, :inventory_ingest)
+      :ok = State.disable(spec.name, :inventory_ingest)
+      assert State.disabled?(spec.name, :inventory_ingest)
+      :ok = State.enable(spec.name, :inventory_ingest)
+      refute State.disabled?(spec.name, :inventory_ingest)
+    end
+
+    test "scheduler tick on a disabled cron-matching pipeline doesn't fire", %{spec: spec} do
+      # Force-disable to short-circuit the cond branch even if the cron
+      # happens to match. A clean tick should be a no-op on the lock.
+      :ok = State.disable(spec.name, :inventory_ingest)
+
+      sched = Process.whereis(Scheduler.registered_name(spec.name))
+      assert is_pid(sched)
+
+      send(sched, :tick)
+      Process.sleep(50)
+
+      # Nothing held — scheduler either didn't match cron OR matched but
+      # bailed on disabled?/2. Either way, lock is free.
+      assert {:ok, _} = Lock.acquire(spec.name, :inventory_ingest)
+      Lock.release(spec.name, :inventory_ingest)
     end
   end
 

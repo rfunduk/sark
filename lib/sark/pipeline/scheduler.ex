@@ -27,6 +27,7 @@ defmodule Sark.Pipeline.Scheduler do
   alias Sark.Plugin.Spec
   alias Sark.Pipeline.Lock
   alias Sark.Pipeline.Runner
+  alias Sark.Pipeline.State
 
   @tick_interval_ms 60_000
 
@@ -66,8 +67,16 @@ defmodule Sark.Pipeline.Scheduler do
     now = DateTime.utc_now() |> DateTime.to_naive() |> truncate_to_minute()
 
     Enum.each(state.scheduled, fn %Pipeline{} = pipeline ->
-      if matches?(pipeline.schedule, now) do
-        attempt_fire(state.spec, pipeline)
+      cond do
+        not matches?(pipeline.schedule, now) ->
+          :ok
+
+        State.disabled?(state.spec.name, pipeline.name) ->
+          # Silent skip — no log row, matches `when:`-gated skip posture.
+          :ok
+
+        true ->
+          attempt_fire(state.spec, pipeline)
       end
     end)
 

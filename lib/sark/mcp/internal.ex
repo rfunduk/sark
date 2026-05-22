@@ -22,7 +22,7 @@ defmodule Sark.MCP.Internal do
   alias Sark.MCP.Registry
   alias Sark.Plugin.Spec
 
-  @builtin_always ~w(sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune)
+  @builtin_always ~w(sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune sark_pipelines_disable sark_pipelines_enable)
   @builtin_allow_sql ~w(sark_catalog sark_sql)
 
   @spec call_tool(String.t(), String.t(), map, keyword) ::
@@ -70,6 +70,12 @@ defmodule Sark.MCP.Internal do
 
   defp dispatch(plugin, "sark_pipelines_log_prune", params, opts),
     do: Handlers.Pipelines.prune(plugin, params, nil, opts)
+
+  defp dispatch(plugin, "sark_pipelines_disable", params, opts),
+    do: Handlers.Pipelines.disable(plugin, params, nil, opts)
+
+  defp dispatch(plugin, "sark_pipelines_enable", params, opts),
+    do: Handlers.Pipelines.enable(plugin, params, nil, opts)
 
   defp dispatch(plugin, tool_name, params, opts) do
     Handlers.Tool.call(plugin, String.to_atom(tool_name), params, nil, opts)

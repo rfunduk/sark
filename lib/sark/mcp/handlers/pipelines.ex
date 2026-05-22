@@ -88,6 +88,20 @@ defmodule Sark.MCP.Handlers.Pipelines do
     end)
   end
 
+  @spec disable(String.t(), map, term, keyword) :: {:reply, map, term}
+  def disable(plugin, params, session, _opts \\ []) do
+    Telemetry.with_logging("#{plugin}.sark_pipelines_disable", params, fn ->
+      do_toggle(plugin, params, session, :disable)
+    end)
+  end
+
+  @spec enable(String.t(), map, term, keyword) :: {:reply, map, term}
+  def enable(plugin, params, session, _opts \\ []) do
+    Telemetry.with_logging("#{plugin}.sark_pipelines_enable", params, fn ->
+      do_toggle(plugin, params, session, :enable)
+    end)
+  end
+
   # ── list ──────────────────────────────────────────────────────────────────
 
   defp do_list(plugin, session, opts) do
@@ -352,6 +366,49 @@ defmodule Sark.MCP.Handlers.Pipelines do
   defp resolve_cancel_run_id(_plugin, _pipeline_name, run_id) when is_binary(run_id),
     do: {:ok, run_id}
 
+  # ── enable / disable ──────────────────────────────────────────────────────
+
+  # Toggle a pipeline's scheduler state. `disable` makes the scheduler
+  # silently skip the named pipeline at tick time; manual triggers
+  # still fire. `enable` clears the flag. State persisted in `_pipeline_state`
+  # on the plugin's sark DB.
+  defp do_toggle(plugin, params, session, action) do
+    with {:ok, pipeline_name} <- fetch_string(params, "pipeline"),
+         :ok <- validate_pipeline_exists(plugin, pipeline_name) do
+      result =
+        case action do
+          :disable -> Sark.Pipeline.State.disable(plugin, pipeline_name)
+          :enable -> Sark.Pipeline.State.enable(plugin, pipeline_name)
+        end
+
+      case result do
+        :ok ->
+          reply_json(%{ok: true, pipeline: pipeline_name, disabled: action == :disable}, session)
+
+        {:error, e} ->
+          reply_error("internal: #{inspect(e)}", session)
+      end
+    else
+      {:error, msg} -> reply_error(msg, session)
+    end
+  end
+
+  defp validate_pipeline_exists(plugin, pipeline_name) do
+    case Registry.get_spec(plugin) do
+      :error ->
+        {:error, "no such plugin: #{plugin}"}
+
+      {:ok, %Spec{pipelines: pipelines}} ->
+        atom_name = String.to_atom(pipeline_name)
+
+        if Enum.any?(pipelines, fn %Pipeline{name: n} -> n == atom_name end) do
+          :ok
+        else
+          {:error, "validation: pipeline `#{pipeline_name}` not found"}
+        end
+    end
+  end
+
   # ── prune ─────────────────────────────────────────────────────────────────
 
   # Deletes `_pipeline_log` rows whose `finished_at` is older than
@@ -460,6 +517,8 @@ defmodule Sark.MCP.Handlers.Pipelines do
       sark_pipelines_run_now
       sark_pipelines_cancel
       sark_pipelines_log_prune
+      sark_pipelines_disable
+      sark_pipelines_enable
     )a
   end
 
@@ -479,6 +538,30 @@ defmodule Sark.MCP.Handlers.Pipelines do
               type: "string",
               description: "Run id. Omit for the in-flight run."
             }
+          }
+        }
+      },
+      %{
+        name: "sark_pipelines_disable",
+        description:
+          "Disable a pipeline's scheduled execution. Scheduler will silently skip it at tick time. Manual trigger (`sark_pipelines_run_now`) still fires. Returns `{ok: true, pipeline, disabled: true}`.",
+        input_schema: %{
+          type: "object",
+          required: ["pipeline"],
+          properties: %{
+            "pipeline" => %{type: "string", description: "Pipeline name."}
+          }
+        }
+      },
+      %{
+        name: "sark_pipelines_enable",
+        description:
+          "Re-enable a previously-disabled pipeline. Scheduler resumes firing on its `schedule:`. Returns `{ok: true, pipeline, disabled: false}`. No-op if the pipeline wasn't disabled.",
+        input_schema: %{
+          type: "object",
+          required: ["pipeline"],
+          properties: %{
+            "pipeline" => %{type: "string", description: "Pipeline name."}
           }
         }
       },
