@@ -1045,5 +1045,58 @@ defmodule Sark.Pipeline.RunnerTest do
       assert row["status"] == "timed_out"
       assert row["finished_at"] != row["started_at"]
     end
+
+    @tag :setsid_pgid
+    test "setsid wrap reaps backgrounded grandchildren on pipeline timeout", %{spec: spec} do
+      # Tag a unique marker into the cmdline so we can find the
+      # specific sleep we spawned (vs anything else on the system).
+      marker = "sark_setsid_test_#{:erlang.unique_integer([:positive])}"
+
+      pipeline =
+        build_pipeline("setsid_reap", %{
+          "timeout" => 300,
+          "steps" => [
+            %{
+              "shell" => "( sleep 600 #{marker} & ); sleep 60 #{marker}"
+            }
+          ]
+        })
+
+      assert {:error, msg} = run!(pipeline, spec)
+      assert msg =~ "pipeline timeout"
+
+      # Sidecar SIGTERM → 100ms grace → SIGKILL. Allow generous time
+      # for the OS to actually reap.
+      assert eventually_no_marker?(marker, 2_000),
+             "found surviving processes for marker `#{marker}`"
+    end
+  end
+
+  defp eventually_no_marker?(marker, timeout_ms, elapsed \\ 0)
+  defp eventually_no_marker?(_marker, timeout_ms, elapsed) when elapsed >= timeout_ms, do: false
+
+  defp eventually_no_marker?(marker, timeout_ms, elapsed) do
+    if cmdlines_with(marker) == [] do
+      true
+    else
+      Process.sleep(50)
+      eventually_no_marker?(marker, timeout_ms, elapsed + 50)
+    end
+  end
+
+  defp cmdlines_with(marker) do
+    "/proc"
+    |> File.ls!()
+    |> Enum.filter(&Regex.match?(~r/^\d+$/, &1))
+    |> Enum.flat_map(fn pid ->
+      case File.read("/proc/#{pid}/cmdline") do
+        {:ok, raw} ->
+          line = raw |> String.replace(<<0>>, " ") |> String.trim()
+          if String.contains?(line, marker), do: [{pid, line}], else: []
+
+        _ ->
+          []
+      end
+    end)
   end
 end
