@@ -13,19 +13,21 @@ defmodule Sark.Plugin.Migrations do
     * each migration runs in its own transaction; failure leaves it unapplied
     * forward-only — no down migrations
     * never edit an applied migration; sark doesn't enforce, contract only
-  """
 
-  require Logger
+  Apply delegates to `Sark.Migrations` — the shared runner used by
+  both this plugin-migration track and (forthcoming) the sark-internal
+  migration track.
+  """
 
   alias Exqlite.Sqlite3
 
-  @migration_re ~r/^(\d+)_[a-z0-9_]+\.sql$/
+  @migration_re ~r/^(\d+)_([a-z0-9_]+)\.sql$/
 
   @doc """
-  Discover migrations on disk. Returns `[%{version, path, sql}]` sorted
-  ascending by version. Raises on bad filenames or version gaps.
+  Discover migrations on disk. Returns `[%{version, name, path, sql}]`
+  sorted ascending by version. Raises on bad filenames or version gaps.
   """
-  @spec discover!(Path.t()) :: [%{version: pos_integer, path: Path.t(), sql: String.t()}]
+  @spec discover!(Path.t()) :: [Sark.Migrations.migration()]
   def discover!(plugin_dir) do
     mig_dir = Path.join(plugin_dir, "migrations")
 
@@ -46,10 +48,10 @@ defmodule Sark.Plugin.Migrations do
     parsed =
       Enum.map(files, fn fname ->
         case Regex.run(@migration_re, fname) do
-          [_, ver_str] ->
+          [_, ver_str, name] ->
             ver = String.to_integer(ver_str)
             path = Path.join(mig_dir, fname)
-            %{version: ver, path: path, sql: File.read!(path)}
+            %{version: ver, name: name, path: path, sql: File.read!(path)}
 
           _ ->
             raise "plugin #{plugin_dir}: bad migration filename `#{fname}` " <>
@@ -70,179 +72,91 @@ defmodule Sark.Plugin.Migrations do
   end
 
   @doc """
-  Apply any unapplied migrations against the DB at `db_path`. Sets
-  WAL + foreign_keys on the connection before applying. Idempotent —
-  re-runs are no-ops once the applied set matches the file set.
+  Apply any unapplied migrations against the DB at `db_path`. Ensures
+  sark-managed system tables (`_pipeline_log`, `_pipeline_step_log`)
+  exist, then delegates the migration loop to `Sark.Migrations`.
   """
-  @spec apply!(String.t(), Path.t(), [%{version: pos_integer, path: Path.t(), sql: String.t()}]) ::
-          :ok
+  @spec apply!(String.t(), Path.t(), [Sark.Migrations.migration()]) :: :ok
   def apply!(plugin_name, db_path, migrations) do
+    :ok = ensure_system_tables!(db_path)
+
+    Sark.Migrations.apply!(
+      source_label: "plugin #{plugin_name}",
+      db_path: db_path,
+      migrations: migrations,
+      tracker_table: "_sark_migrations"
+    )
+  end
+
+  # Sark-owned tables created idempotently before plugin migrations
+  # apply. Slated to move into a sark-internal migration ladder; kept here
+  # until that lands so M2 observability keeps working unchanged.
+  defp ensure_system_tables!(db_path) do
     {:ok, db} = Sqlite3.open(db_path, mode: :readwrite)
 
     try do
       :ok = Sqlite3.execute(db, "PRAGMA journal_mode = WAL")
       :ok = Sqlite3.execute(db, "PRAGMA foreign_keys = ON")
-      :ok = ensure_table(db)
-      :ok = ensure_system_tables(db)
 
-      applied = applied_versions(db)
-      file_versions = Enum.map(migrations, & &1.version)
-
-      validate_applied_is_prefix!(plugin_name, applied, file_versions)
-
-      pending = Enum.reject(migrations, fn m -> MapSet.member?(applied, m.version) end)
-
-      Enum.each(pending, fn m -> apply_one!(db, plugin_name, m) end)
-
-      :ok
+      with :ok <-
+             Sqlite3.execute(db, """
+               CREATE TABLE IF NOT EXISTS _pipeline_log (
+                 run_id       TEXT    PRIMARY KEY,
+                 pipeline     TEXT    NOT NULL,
+                 started_at   TEXT    NOT NULL,
+                 finished_at  TEXT    NOT NULL,
+                 status       TEXT    NOT NULL,
+                 error        TEXT,
+                 triggered_by TEXT    NOT NULL
+               );
+             """),
+           :ok <-
+             Sqlite3.execute(
+               db,
+               "CREATE INDEX IF NOT EXISTS _pipeline_log_started_at ON _pipeline_log(started_at)"
+             ),
+           :ok <-
+             Sqlite3.execute(
+               db,
+               "CREATE INDEX IF NOT EXISTS _pipeline_log_pipeline ON _pipeline_log(pipeline)"
+             ),
+           :ok <-
+             Sqlite3.execute(db, """
+               CREATE TABLE IF NOT EXISTS _pipeline_step_log (
+                 id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                 run_id                TEXT    NOT NULL,
+                 step_index            INTEGER NOT NULL,
+                 step_type             TEXT    NOT NULL,
+                 started_at            TEXT    NOT NULL,
+                 finished_at           TEXT    NOT NULL,
+                 status                TEXT    NOT NULL,
+                 error                 TEXT,
+                 exit_code             INTEGER,
+                 stdout_bytes          INTEGER,
+                 stderr_tail           TEXT,
+                 tool_name             TEXT,
+                 row_count             INTEGER,
+                 model                 TEXT,
+                 turns                 INTEGER,
+                 stop_reason           TEXT,
+                 input_tokens          INTEGER,
+                 output_tokens         INTEGER,
+                 cache_read_tokens     INTEGER,
+                 cache_creation_tokens INTEGER,
+                 service_tier          TEXT,
+                 final_output          TEXT,
+                 FOREIGN KEY (run_id) REFERENCES _pipeline_log(run_id) ON DELETE CASCADE
+               );
+             """),
+           :ok <-
+             Sqlite3.execute(
+               db,
+               "CREATE INDEX IF NOT EXISTS _pipeline_step_log_run_id ON _pipeline_step_log(run_id)"
+             ) do
+        :ok
+      end
     after
       Sqlite3.close(db)
-    end
-  end
-
-  defp ensure_table(db) do
-    Sqlite3.execute(db, """
-      CREATE TABLE IF NOT EXISTS _sark_migrations (
-        version    INTEGER PRIMARY KEY,
-        applied_at TEXT NOT NULL
-      );
-    """)
-  end
-
-  # Sark-owned tables (prefixed with `_`) created idempotently before
-  # plugin migrations run. Forward-compatible additions only: each new
-  # column would need a real migration ladder; we don't have one yet.
-  defp ensure_system_tables(db) do
-    with :ok <-
-           Sqlite3.execute(db, """
-             CREATE TABLE IF NOT EXISTS _pipeline_log (
-               run_id       TEXT    PRIMARY KEY,
-               pipeline     TEXT    NOT NULL,
-               started_at   TEXT    NOT NULL,
-               finished_at  TEXT    NOT NULL,
-               status       TEXT    NOT NULL,
-               error        TEXT,
-               triggered_by TEXT    NOT NULL
-             );
-           """),
-         :ok <-
-           Sqlite3.execute(
-             db,
-             "CREATE INDEX IF NOT EXISTS _pipeline_log_started_at ON _pipeline_log(started_at)"
-           ),
-         :ok <-
-           Sqlite3.execute(
-             db,
-             "CREATE INDEX IF NOT EXISTS _pipeline_log_pipeline ON _pipeline_log(pipeline)"
-           ),
-         :ok <-
-           Sqlite3.execute(db, """
-             CREATE TABLE IF NOT EXISTS _pipeline_step_log (
-               id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-               run_id                TEXT    NOT NULL,
-               step_index            INTEGER NOT NULL,
-               step_type             TEXT    NOT NULL,
-               started_at            TEXT    NOT NULL,
-               finished_at           TEXT    NOT NULL,
-               status                TEXT    NOT NULL,
-               error                 TEXT,
-               exit_code             INTEGER,
-               stdout_bytes          INTEGER,
-               stderr_tail           TEXT,
-               tool_name             TEXT,
-               row_count             INTEGER,
-               model                 TEXT,
-               turns                 INTEGER,
-               stop_reason           TEXT,
-               input_tokens          INTEGER,
-               output_tokens         INTEGER,
-               cache_read_tokens     INTEGER,
-               cache_creation_tokens INTEGER,
-               service_tier          TEXT,
-               final_output          TEXT,
-               FOREIGN KEY (run_id) REFERENCES _pipeline_log(run_id) ON DELETE CASCADE
-             );
-           """),
-         :ok <-
-           Sqlite3.execute(
-             db,
-             "CREATE INDEX IF NOT EXISTS _pipeline_step_log_run_id ON _pipeline_step_log(run_id)"
-           ) do
-      :ok
-    end
-  end
-
-  defp applied_versions(db) do
-    {:ok, stmt} = Sqlite3.prepare(db, "SELECT version FROM _sark_migrations ORDER BY version")
-    rows = fetch_all(db, stmt, [])
-    :ok = Sqlite3.release(db, stmt)
-    rows |> Enum.map(fn [v] -> v end) |> MapSet.new()
-  end
-
-  defp fetch_all(db, stmt, acc) do
-    case Sqlite3.step(db, stmt) do
-      {:row, row} -> fetch_all(db, stmt, [row | acc])
-      :done -> Enum.reverse(acc)
-    end
-  end
-
-  defp validate_applied_is_prefix!(plugin_name, applied, file_versions) do
-    applied_list = applied |> MapSet.to_list() |> Enum.sort()
-
-    case applied_list do
-      [] ->
-        :ok
-
-      _ ->
-        max_applied = List.last(applied_list)
-        expected_prefix = Enum.take(file_versions, max_applied)
-
-        if applied_list != expected_prefix do
-          raise "plugin #{plugin_name}: applied migrations #{inspect(applied_list)} are not " <>
-                  "a prefix of file migrations #{inspect(file_versions)} — schema drift, refusing to boot"
-        end
-
-        missing_files = expected_prefix -- file_versions
-
-        if missing_files != [] do
-          raise "plugin #{plugin_name}: applied migrations #{inspect(missing_files)} " <>
-                  "have no corresponding file (deleted?), refusing to boot"
-        end
-    end
-  end
-
-  defp apply_one!(db, plugin_name, %{version: ver, path: path, sql: sql}) do
-    Logger.info("plugin #{plugin_name} — applying migration #{ver} (#{Path.basename(path)})")
-
-    case run_in_txn(db, sql) do
-      :ok ->
-        ts = DateTime.utc_now() |> DateTime.to_iso8601()
-
-        case Sqlite3.execute(
-               db,
-               "INSERT INTO _sark_migrations (version, applied_at) VALUES (#{ver}, '#{ts}')"
-             ) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            raise "plugin #{plugin_name}: failed to record migration #{ver}: #{inspect(reason)}"
-        end
-
-      {:error, reason} ->
-        raise "plugin #{plugin_name}: migration #{ver} (#{Path.basename(path)}) failed: " <>
-                inspect(reason)
-    end
-  end
-
-  defp run_in_txn(db, sql) do
-    with :ok <- Sqlite3.execute(db, "BEGIN"),
-         :ok <- Sqlite3.execute(db, sql) do
-      Sqlite3.execute(db, "COMMIT")
-    else
-      {:error, _} = err ->
-        _ = Sqlite3.execute(db, "ROLLBACK")
-        err
     end
   end
 end

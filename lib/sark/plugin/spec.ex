@@ -30,7 +30,12 @@ defmodule Sark.Plugin.Spec do
     pipelines: []
   ]
 
-  @type migration :: %{version: pos_integer, path: String.t(), sql: String.t()}
+  @type migration :: %{
+          version: pos_integer,
+          name: String.t(),
+          path: String.t(),
+          sql: String.t()
+        }
 
   @type t :: %__MODULE__{
           name: String.t(),
