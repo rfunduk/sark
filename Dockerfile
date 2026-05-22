@@ -27,6 +27,7 @@ COPY config config
 RUN mix deps.compile
 
 COPY lib lib
+COPY priv priv
 
 ARG VERSION=0.0.0-dev
 ENV VERSION=${VERSION}

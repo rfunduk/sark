@@ -418,14 +418,19 @@ defmodule Sark.Pipeline.Runner do
       :hide,
       :stderr_to_stdout,
       {:cd, workdir},
-      {:args, ["/bin/sh", "-c", shell_cmd]},
+      # -w: setsid parent waits for child to exit (keeps parent alive
+      # so we can read its /proc/<pid>/task/<pid>/children to find
+      # the post-setsid() child PID, which is the session leader and
+      # the actual PGID).
+      {:args, ["-w", "/bin/sh", "-c", shell_cmd]},
       {:env, env_to_charlist_pairs(env)}
     ]
 
     port = Port.open({:spawn_executable, String.to_charlist(setsid)}, port_opts)
-    {:os_pid, pgid} = Port.info(port, :os_pid)
+    {:os_pid, setsid_pid} = Port.info(port, :os_pid)
+    pgid = read_setsid_child_pid(setsid_pid)
 
-    cleaner = start_pgid_cleaner(self(), pgid)
+    cleaner = start_pgid_cleaner(self(), setsid_pid, pgid)
 
     try do
       collect_port_output(port, "")
@@ -434,10 +439,38 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
+  # Poll /proc/<setsid_pid>/task/<setsid_pid>/children until the
+  # post-setsid() child appears. Returns child PID (== PGID since it
+  # called setsid()), or nil if it never materialises (degrades the
+  # cleaner to single-PID kill of setsid_pid only).
+  defp read_setsid_child_pid(setsid_pid, attempts \\ 0)
+  defp read_setsid_child_pid(_setsid_pid, attempts) when attempts > 25, do: nil
+
+  defp read_setsid_child_pid(setsid_pid, attempts) do
+    path = "/proc/#{setsid_pid}/task/#{setsid_pid}/children"
+
+    case File.read(path) do
+      {:ok, contents} ->
+        case contents |> String.trim() |> String.split() do
+          [first | _] ->
+            String.to_integer(first)
+
+          [] ->
+            Process.sleep(20)
+            read_setsid_child_pid(setsid_pid, attempts + 1)
+        end
+
+      {:error, _} ->
+        Process.sleep(20)
+        read_setsid_child_pid(setsid_pid, attempts + 1)
+    end
+  end
+
   # Sidecar: monitors the runner. On abnormal :DOWN it SIGTERMs the
-  # process group then SIGKILLs after a grace period. On :done message
-  # (clean step completion) it exits without signalling.
-  defp start_pgid_cleaner(runner_pid, pgid) do
+  # session-leader process group (and the setsid wrapper) then
+  # SIGKILLs after a grace period. On :done message (clean step
+  # completion) exits without signalling.
+  defp start_pgid_cleaner(runner_pid, setsid_pid, pgid) do
     spawn(fn ->
       ref = Process.monitor(runner_pid)
 
@@ -447,11 +480,25 @@ defmodule Sark.Pipeline.Runner do
           :ok
 
         {:DOWN, ^ref, :process, _, _} ->
-          :os.cmd(~c"kill -TERM -" ++ Integer.to_charlist(pgid))
+          pgid_kill(pgid, "TERM")
+          :os.cmd(~c"kill -TERM " ++ Integer.to_charlist(setsid_pid))
           Process.sleep(100)
-          :os.cmd(~c"kill -KILL -" ++ Integer.to_charlist(pgid))
+          pgid_kill(pgid, "KILL")
+          :os.cmd(~c"kill -KILL " ++ Integer.to_charlist(setsid_pid))
       end
     end)
+  end
+
+  defp pgid_kill(nil, _signal), do: :ok
+
+  defp pgid_kill(pgid, signal) when is_integer(pgid) do
+    :os.cmd(
+      ~c"kill -" ++
+        String.to_charlist(signal) ++
+        ~c" -" ++ Integer.to_charlist(pgid)
+    )
+
+    :ok
   end
 
   defp collect_port_output(port, acc) do
