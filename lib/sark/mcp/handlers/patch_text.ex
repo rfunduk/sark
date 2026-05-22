@@ -30,14 +30,14 @@ defmodule Sark.MCP.Handlers.PatchText do
 
   @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
 
-  @spec call(String.t(), map, term) :: {:reply, map, term}
-  def call(plugin, params, session) do
+  @spec call(String.t(), map, term, keyword) :: {:reply, map, term}
+  def call(plugin, params, session, opts \\ []) do
     Telemetry.with_logging("#{plugin}.sark_patch", params, fn ->
-      do_call(plugin, params, session)
+      do_call(plugin, params, session, opts)
     end)
   end
 
-  defp do_call(plugin, params, session) do
+  defp do_call(plugin, params, session, opts) do
     params = params || %{}
 
     with {:ok, table} <- ident(params, "table"),
@@ -47,7 +47,7 @@ defmodule Sark.MCP.Handlers.PatchText do
          {:ok, new} <- fetch_text(params, "new"),
          :ok <- non_empty(old, "old"),
          :ok <- allowed?(plugin, table, col),
-         {:ok, result} <- patch(plugin, table, col, id, old, new) do
+         {:ok, result} <- patch(plugin, table, col, id, old, new, opts) do
       EventBus.broadcast_write(plugin, :sark_patch, params, result)
       {:reply, Tool.text(result), session}
     else
@@ -55,22 +55,11 @@ defmodule Sark.MCP.Handlers.PatchText do
     end
   end
 
-  defp patch(plugin, table, col, id, old, new) do
+  defp patch(plugin, table, col, id, old, new, opts) do
     select_sql = "SELECT #{col} AS v FROM #{table} WHERE id = ?"
     update_sql = "UPDATE #{table} SET #{col} = ? WHERE id = ?"
 
-    case DB.txn(plugin, fn conn ->
-           with {:ok, %Result{rows: rows}} <- Exqlite.query(conn, select_sql, [id]),
-                {:ok, current} <- one_value(rows),
-                {:ok, current_text} <- as_text(current),
-                {:ok, count} <- count_occurrences(current_text, old),
-                replaced = String.replace(current_text, old, new),
-                {:ok, _} <- Exqlite.query(conn, update_sql, [replaced, id]) do
-             count
-           else
-             {:error, e} -> DBConnection.rollback(conn, e)
-           end
-         end) do
+    case run_patch(plugin, select_sql, update_sql, id, old, new, opts) do
       {:ok, count} when is_integer(count) ->
         {:ok, %{ok: true, table: table, col: col, id: id, replacements: count}}
 
@@ -92,6 +81,41 @@ defmodule Sark.MCP.Handlers.PatchText do
 
       {:error, other} ->
         {:error, "internal: #{inspect(other)}"}
+    end
+  end
+
+  # Caller supplied a writer conn (transactional pipeline) → run on it,
+  # no nested txn (would deadlock on the 1-conn writer pool). Errors
+  # bubble up so the outer runner can rollback. Otherwise open our own
+  # one-shot DB.txn — the inner work returns {:ok, n} | {:error, _} so
+  # the wrapper can route into DBConnection.rollback as needed.
+  defp run_patch(plugin, select_sql, update_sql, id, old, new, opts) do
+    case Keyword.get(opts, :conn) do
+      nil ->
+        DB.txn(plugin, fn conn ->
+          case do_patch(conn, select_sql, update_sql, id, old, new) do
+            {:ok, n} -> n
+            {:error, e} -> DBConnection.rollback(conn, e)
+          end
+        end)
+        |> case do
+          {:ok, n} when is_integer(n) -> {:ok, n}
+          {:error, _} = err -> err
+        end
+
+      conn ->
+        do_patch(conn, select_sql, update_sql, id, old, new)
+    end
+  end
+
+  defp do_patch(conn, select_sql, update_sql, id, old, new) do
+    with {:ok, %Result{rows: rows}} <- Exqlite.query(conn, select_sql, [id]),
+         {:ok, current} <- one_value(rows),
+         {:ok, current_text} <- as_text(current),
+         {:ok, count} <- count_occurrences(current_text, old),
+         replaced = String.replace(current_text, old, new),
+         {:ok, _} <- Exqlite.query(conn, update_sql, [replaced, id]) do
+      {:ok, count}
     end
   end
 

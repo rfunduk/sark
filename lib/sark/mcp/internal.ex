@@ -22,43 +22,57 @@ defmodule Sark.MCP.Internal do
   alias Sark.MCP.Registry
   alias Sark.Plugin.Spec
 
-  @builtin_always ~w(sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now)
+  @builtin_always ~w(sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune)
   @builtin_allow_sql ~w(sark_catalog sark_sql)
 
-  @spec call_tool(String.t(), String.t(), map) :: {:ok, String.t()} | {:error, String.t()}
-  def call_tool(plugin, tool_name, params)
-      when is_binary(plugin) and is_binary(tool_name) and is_map(params) do
+  @spec call_tool(String.t(), String.t(), map, keyword) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def call_tool(plugin, tool_name, params, opts \\ [])
+      when is_binary(plugin) and is_binary(tool_name) and is_map(params) and is_list(opts) do
     plugin
-    |> dispatch(tool_name, params)
+    |> dispatch(tool_name, params, opts)
     |> unwrap()
   end
 
-  defp dispatch(plugin, "sark_catalog", params),
-    do: Handlers.Catalog.call(plugin, params, nil)
+  # All built-ins thread `opts` (which may carry `conn:` from a
+  # transactional pipeline) through their handler. Read builtins route
+  # DB.read on the conn; write builtins (`sark_patch`,
+  # `sark_pipelines_log_prune`) skip their own DB.txn and run on the
+  # caller's conn. `run_now` ignores conn (it spawns a separate run
+  # with its own conn lifecycle) but parser-level rejection prevents
+  # it from being called from pipelines anyway.
+  defp dispatch(plugin, "sark_catalog", params, opts),
+    do: Handlers.Catalog.call(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_sql", params),
-    do: Handlers.SQL.call(plugin, params, nil)
+  defp dispatch(plugin, "sark_sql", params, opts),
+    do: Handlers.SQL.call(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_patch", params),
-    do: Handlers.PatchText.call(plugin, params, nil)
+  defp dispatch(plugin, "sark_patch", params, opts),
+    do: Handlers.PatchText.call(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_pipelines_list", params),
-    do: Handlers.Pipelines.list(plugin, params, nil)
+  defp dispatch(plugin, "sark_pipelines_list", params, opts),
+    do: Handlers.Pipelines.list(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_pipelines_log", params),
-    do: Handlers.Pipelines.log(plugin, params, nil)
+  defp dispatch(plugin, "sark_pipelines_log", params, opts),
+    do: Handlers.Pipelines.log(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_pipelines_recent", params),
-    do: Handlers.Pipelines.recent(plugin, params, nil)
+  defp dispatch(plugin, "sark_pipelines_recent", params, opts),
+    do: Handlers.Pipelines.recent(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_pipelines_costs", params),
-    do: Handlers.Pipelines.costs(plugin, params, nil)
+  defp dispatch(plugin, "sark_pipelines_costs", params, opts),
+    do: Handlers.Pipelines.costs(plugin, params, nil, opts)
 
-  defp dispatch(plugin, "sark_pipelines_run_now", params),
-    do: Handlers.Pipelines.run_now(plugin, params, nil)
+  defp dispatch(plugin, "sark_pipelines_run_now", params, opts),
+    do: Handlers.Pipelines.run_now(plugin, params, nil, opts)
 
-  defp dispatch(plugin, tool_name, params) do
-    Handlers.Tool.call(plugin, String.to_atom(tool_name), params, nil)
+  defp dispatch(plugin, "sark_pipelines_cancel", params, opts),
+    do: Handlers.Pipelines.cancel(plugin, params, nil, opts)
+
+  defp dispatch(plugin, "sark_pipelines_log_prune", params, opts),
+    do: Handlers.Pipelines.prune(plugin, params, nil, opts)
+
+  defp dispatch(plugin, tool_name, params, opts) do
+    Handlers.Tool.call(plugin, String.to_atom(tool_name), params, nil, opts)
   end
 
   defp unwrap({:reply, %{content: content, isError: true}, _session}),

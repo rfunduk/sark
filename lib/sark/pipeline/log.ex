@@ -51,8 +51,8 @@ defmodule Sark.Pipeline.Log do
   Inserting up front lets per-step rows reference `run_id` via FK and
   also exposes in-flight runs to observability tools.
   """
-  @spec start_run(String.t(), map) :: :ok | {:error, term}
-  def start_run(plugin, %{} = entry) when is_binary(plugin) do
+  @spec start_run(String.t(), map, keyword) :: :ok | {:error, term}
+  def start_run(plugin, %{} = entry, opts \\ []) when is_binary(plugin) do
     binds = [
       entry.run_id,
       Atom.to_string(entry.pipeline),
@@ -63,7 +63,7 @@ defmodule Sark.Pipeline.Log do
       Atom.to_string(entry.triggered_by)
     ]
 
-    case DB.write(plugin, @insert_run_sql, binds) do
+    case write(plugin, @insert_run_sql, binds, opts) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
     end
@@ -73,13 +73,13 @@ defmodule Sark.Pipeline.Log do
   Update the terminal state of an in-flight run row.
   `status` is one of `:success` / `:failed` / `:cancelled`.
   """
-  @spec finish_run(String.t(), String.t(), atom, String.t(), String.t() | nil) ::
+  @spec finish_run(String.t(), String.t(), atom, String.t(), String.t() | nil, keyword) ::
           :ok | {:error, term}
-  def finish_run(plugin, run_id, status, finished_at, error)
+  def finish_run(plugin, run_id, status, finished_at, error, opts \\ [])
       when is_binary(plugin) and is_binary(run_id) and is_atom(status) and is_binary(finished_at) do
     binds = [finished_at, Atom.to_string(status), error, run_id]
 
-    case DB.write(plugin, @update_run_sql, binds) do
+    case write(plugin, @update_run_sql, binds, opts) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
     end
@@ -104,8 +104,8 @@ defmodule Sark.Pipeline.Log do
        ?, ?)
   |
 
-  @spec record_step(String.t(), map) :: :ok | {:error, term}
-  def record_step(plugin, %{} = e) when is_binary(plugin) do
+  @spec record_step(String.t(), map, keyword) :: :ok | {:error, term}
+  def record_step(plugin, %{} = e, opts \\ []) when is_binary(plugin) do
     binds = [
       e.run_id,
       e.step_index,
@@ -130,9 +130,19 @@ defmodule Sark.Pipeline.Log do
       e[:final_output]
     ]
 
-    case DB.write(plugin, @insert_step_sql, binds) do
+    case write(plugin, @insert_step_sql, binds, opts) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
+    end
+  end
+
+  # When `conn:` is in opts (transactional pipeline), write via that
+  # held writer connection so the log row participates in the same txn
+  # as the data. Otherwise route through the writer pool as normal.
+  defp write(plugin, sql, binds, opts) do
+    case Keyword.get(opts, :conn) do
+      nil -> DB.write(plugin, sql, binds)
+      conn -> Exqlite.query(conn, sql, binds)
     end
   end
 

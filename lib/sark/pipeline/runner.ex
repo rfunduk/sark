@@ -34,6 +34,7 @@ defmodule Sark.Pipeline.Runner do
 
   alias Sark.LLM.Response
   alias Sark.MCP.Internal
+  alias Sark.Pipeline.Cancel
   alias Sark.Plugin.DB
   alias Sark.Plugin.Pipeline
   alias Sark.Plugin.Spec
@@ -100,43 +101,130 @@ defmodule Sark.Pipeline.Runner do
 
     on_event.({:run_start, %{run_id: run_id, pipeline: pipeline.name}})
 
-    :ok =
-      Log.start_run(plugin, %{
-        run_id: run_id,
-        pipeline: pipeline.name,
-        started_at: started_at,
-        triggered_by: triggered_by
-      })
-
     workdir = ensure_workdir!(plugin, pipeline, run_id)
     env = sourced_env(pipeline.env)
 
-    state = %{
+    base_state = %{
       plugin: plugin,
       pipeline: pipeline,
       spec: spec,
       run_id: run_id,
+      triggered_by: triggered_by,
       llm: llm,
       max_tokens: max_tokens,
       on_event: on_event,
       workdir: workdir,
       env: env,
-      started_at: started_at
+      started_at: started_at,
+      conn: nil
     }
 
-    case run_steps(state) do
-      :ok ->
-        :ok = Log.finish_run(plugin, run_id, :success, now_iso8601(), nil)
-        cleanup_workdir(workdir)
+    try do
+      execute_pipeline(base_state)
+    after
+      Cancel.clear(run_id)
+    end
+  end
+
+  # ── transactional vs non-transactional dispatch ────────────────────────────
+
+  # Non-transactional path: start_run + finish_run pool-checkout their
+  # own conn; run_steps writes step rows the same way.
+  defp execute_pipeline(%{pipeline: %Pipeline{transactional: false}} = state) do
+    :ok = log_start(state, [])
+    result = run_steps(state)
+    finalize(state, result, [])
+  end
+
+  # Transactional path: open one writer txn for the entire run. start_run,
+  # finish_run, and every step's log row go through the held conn. On
+  # error/cancel the whole txn rolls back — log rows for the run vanish
+  # along with any data writes. That's the intentional design: a
+  # transactional pipeline that fails leaves no trace, mirroring the
+  # all-or-nothing semantics callers asked for.
+  #
+  # Per-step Task.async timeouts are disabled inside a transaction
+  # because the writer conn is bound to this process and can't be used
+  # from a spawned Task. Shell step timeouts still work — they don't
+  # touch the DB.
+  defp execute_pipeline(%{plugin: plugin, on_event: on_event, run_id: run_id} = state) do
+    result =
+      DB.txn(
+        plugin,
+        fn conn ->
+          s = %{state | conn: conn}
+          :ok = log_start(s, conn: conn)
+
+          case run_steps(s) do
+            :ok ->
+              :ok = log_finish(s, :success, nil, conn: conn)
+              :ok
+
+            {:cancelled, _} = c ->
+              DBConnection.rollback(conn, c)
+
+            {:error, _} = e ->
+              DBConnection.rollback(conn, e)
+          end
+        end,
+        mode: :immediate
+      )
+
+    case result do
+      {:ok, :ok} ->
+        cleanup_workdir(state.workdir)
         on_event.({:run_ok, %{run_id: run_id}})
         {:ok, %{run_id: run_id}}
 
-      {:error, msg} ->
-        :ok = Log.finish_run(plugin, run_id, :failed, now_iso8601(), msg)
-        # workdir preserved on failure for debug
+      {:error, {:cancelled, msg}} ->
+        on_event.({:run_fail, %{run_id: run_id, error: msg}})
+        {:error, msg}
+
+      {:error, {:error, msg}} ->
+        on_event.({:run_fail, %{run_id: run_id, error: msg}})
+        {:error, msg}
+
+      {:error, other} ->
+        msg = "txn: #{inspect(other)}"
         on_event.({:run_fail, %{run_id: run_id, error: msg}})
         {:error, msg}
     end
+  end
+
+  defp log_start(state, opts) do
+    Log.start_run(
+      state.plugin,
+      %{
+        run_id: state.run_id,
+        pipeline: state.pipeline.name,
+        started_at: state.started_at,
+        triggered_by: state.triggered_by
+      },
+      opts
+    )
+  end
+
+  defp log_finish(state, status, error, opts) do
+    Log.finish_run(state.plugin, state.run_id, status, now_iso8601(), error, opts)
+  end
+
+  defp finalize(%{on_event: on_event, run_id: run_id, workdir: workdir} = state, :ok, opts) do
+    :ok = log_finish(state, :success, nil, opts)
+    cleanup_workdir(workdir)
+    on_event.({:run_ok, %{run_id: run_id}})
+    {:ok, %{run_id: run_id}}
+  end
+
+  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:cancelled, msg}, opts) do
+    :ok = log_finish(state, :cancelled, msg, opts)
+    on_event.({:run_fail, %{run_id: run_id, error: msg}})
+    {:error, msg}
+  end
+
+  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:error, msg}, opts) do
+    :ok = log_finish(state, :failed, msg, opts)
+    on_event.({:run_fail, %{run_id: run_id, error: msg}})
+    {:error, msg}
   end
 
   # ── when gate ──────────────────────────────────────────────────────────────
@@ -157,39 +245,63 @@ defmodule Sark.Pipeline.Runner do
     state.pipeline.steps
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, ""}, fn {step, idx}, {:ok, stdin} ->
-      state.on_event.({:step_start, %{index: idx, kind: step.kind}})
-      started_at = now_iso8601()
-
-      case run_step(step, stdin, state) do
-        {:ok, stdout, extras} ->
-          :ok =
-            Log.record_step(
-              state.plugin,
-              base_step_entry(state.run_id, idx, step.kind, started_at, :success, nil)
-              |> Map.put(:stdout_bytes, byte_size(stdout))
-              |> Map.merge(extras)
-            )
-
-          state.on_event.({:step_ok, %{index: idx, kind: step.kind, bytes: byte_size(stdout)}})
-          {:cont, {:ok, stdout}}
-
-        {:error, msg, extras} ->
-          :ok =
-            Log.record_step(
-              state.plugin,
-              base_step_entry(state.run_id, idx, step.kind, started_at, :failed, msg)
-              |> Map.merge(extras)
-            )
-
-          state.on_event.({:step_fail, %{index: idx, kind: step.kind, error: msg}})
-          {:halt, {:error, "step #{idx} (#{step.kind}): #{msg}"}}
+      if Cancel.requested?(state.run_id) do
+        state.on_event.({:step_fail, %{index: idx, kind: step.kind, error: "cancelled"}})
+        {:halt, {:cancelled, "cancelled before step #{idx}"}}
+      else
+        run_one_step(step, idx, stdin, state)
       end
     end)
     |> case do
       {:ok, _final_stdout} -> :ok
+      {:cancelled, _} = c -> c
       {:error, _} = err -> err
     end
   end
+
+  defp run_one_step(step, idx, stdin, state) do
+    state.on_event.({:step_start, %{index: idx, kind: step.kind}})
+    started_at = now_iso8601()
+
+    log_opts = log_opts(state)
+
+    case run_step(step, stdin, state) do
+      {:ok, stdout, extras} ->
+        :ok =
+          Log.record_step(
+            state.plugin,
+            base_step_entry(state.run_id, idx, step.kind, started_at, :success, nil)
+            |> Map.put(:stdout_bytes, byte_size(stdout))
+            |> Map.merge(extras),
+            log_opts
+          )
+
+        state.on_event.({:step_ok, %{index: idx, kind: step.kind, bytes: byte_size(stdout)}})
+
+        # Post-step cancel peek: if cancelled while the step ran, halt
+        # before the next step (the step's own log row stays as success).
+        if Cancel.requested?(state.run_id) do
+          {:halt, {:cancelled, "cancelled after step #{idx}"}}
+        else
+          {:cont, {:ok, stdout}}
+        end
+
+      {:error, msg, extras} ->
+        :ok =
+          Log.record_step(
+            state.plugin,
+            base_step_entry(state.run_id, idx, step.kind, started_at, :failed, msg)
+            |> Map.merge(extras),
+            log_opts
+          )
+
+        state.on_event.({:step_fail, %{index: idx, kind: step.kind, error: msg}})
+        {:halt, {:error, "step #{idx} (#{step.kind}): #{msg}"}}
+    end
+  end
+
+  defp log_opts(%{conn: nil}), do: []
+  defp log_opts(%{conn: conn}), do: [conn: conn]
 
   defp base_step_entry(run_id, idx, kind, started_at, status, error) do
     %{
@@ -221,25 +333,38 @@ defmodule Sark.Pipeline.Runner do
   end
 
   defp run_step(%{kind: :load} = step, stdin, state) do
-    with_step_timeout(effective_timeout(step, state), fn -> load_body(step, stdin, state) end)
+    maybe_timeout(state, step, fn -> load_body(step, stdin, state) end)
   end
 
   defp run_step(%{kind: :tool, tool: name} = step, stdin, state) do
-    with_step_timeout(
-      effective_timeout(step, state),
-      fn -> tool_body(name, stdin, state) end,
+    maybe_timeout(
+      state,
+      step,
+      fn -> tool_body(step, name, stdin, state) end,
       %{tool_name: name}
     )
   end
 
   defp run_step(%{kind: :llm} = step, stdin, state) do
-    with_step_timeout(effective_timeout(step, state), fn -> llm_body(step, stdin, state) end)
+    maybe_timeout(state, step, fn -> llm_body(step, stdin, state) end)
+  end
+
+  # In transactional mode the writer conn is bound to this process,
+  # so a step body that touches the DB can't run in a Task. Fall back
+  # to inline execution — per-step timeouts are not enforced for
+  # load/tool/llm steps inside a transaction.
+  defp maybe_timeout(state, step, fun, extras \\ %{})
+  defp maybe_timeout(%{conn: conn}, _step, fun, _extras) when not is_nil(conn), do: fun.()
+
+  defp maybe_timeout(state, step, fun, extras) do
+    with_step_timeout(effective_timeout(step, state), fun, extras)
   end
 
   defp load_body(step, stdin, state) do
     with {:ok, params_map} <- decode_json_stdin(stdin, "load"),
          {:ok, binds} <- bind_load_params(step, params_map),
-         {:ok, _cols, rows} <- DB.read(state.plugin, step.compiled_sql, binds) do
+         {:ok, _cols, rows} <-
+           DB.read(state.plugin, step.compiled_sql, binds, read_opts(state)) do
       {:ok, Jason.encode!(rows), %{row_count: length(rows)}}
     else
       {:error, %Exqlite.Error{message: msg}} ->
@@ -253,10 +378,15 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
-  defp tool_body(name, stdin, state) do
+  defp tool_body(_step, name, stdin, state) do
     case decode_json_stdin(stdin, "tool") do
       {:ok, params} ->
-        case Internal.call_tool(state.plugin, name, ensure_string_keyed(params)) do
+        case Internal.call_tool(
+               state.plugin,
+               name,
+               ensure_string_keyed(params),
+               call_opts(state)
+             ) do
           {:ok, text} -> {:ok, text, %{tool_name: name}}
           {:error, msg} -> {:error, msg, %{tool_name: name}}
         end
@@ -265,6 +395,16 @@ defmodule Sark.Pipeline.Runner do
         {:error, msg, %{tool_name: name}}
     end
   end
+
+  # When a writer conn is held (transactional run), pass it to DB.read
+  # so canned loads see uncommitted writes from earlier steps.
+  defp read_opts(%{conn: nil}), do: []
+  defp read_opts(%{conn: conn}), do: [conn: conn]
+
+  # Same for tool calls — Internal.call_tool threads `conn:` into the
+  # tool execute path so plugin-declared writes share the txn.
+  defp call_opts(%{conn: nil}), do: []
+  defp call_opts(%{conn: conn}), do: [conn: conn]
 
   defp llm_body(step, stdin, state) do
     case decode_json_stdin(stdin, "llm") do
@@ -276,7 +416,6 @@ defmodule Sark.Pipeline.Runner do
   # Wrap a step body in a Task so we can apply a timeout. nil = no
   # ceiling (just run inline — avoids spawning a task for the common
   # case where authors don't set a timeout).
-  defp with_step_timeout(ms, fun, extras_on_timeout \\ %{})
   defp with_step_timeout(nil, fun, _extras), do: fun.()
 
   defp with_step_timeout(ms, fun, extras_on_timeout) when is_integer(ms) and ms > 0 do
@@ -408,6 +547,8 @@ defmodule Sark.Pipeline.Runner do
 
     loop_state = %{
       plugin: state.plugin,
+      run_id: state.run_id,
+      conn: state.conn,
       step: step,
       llm: state.llm,
       tools: tools,
@@ -438,6 +579,20 @@ defmodule Sark.Pipeline.Runner do
   end
 
   defp llm_loop(state, messages, turn) do
+    if Cancel.requested?(state.run_id) do
+      {:stop,
+       %{
+         reason: :cancelled,
+         turns: max(turn - 1, 0),
+         usage: state.usage,
+         text: state.last_text
+       }}
+    else
+      do_llm_loop(state, messages, turn)
+    end
+  end
+
+  defp do_llm_loop(state, messages, turn) do
     chat_opts = %{
       model: state.step.model,
       system: state.step.system,
@@ -472,7 +627,7 @@ defmodule Sark.Pipeline.Runner do
           tool_uses ->
             assistant_msg = %{role: :assistant, content: resp.content}
 
-            case dispatch_tool_calls(state.plugin, tool_uses, state.on_event) do
+            case dispatch_tool_calls(state.plugin, state.conn, tool_uses, state.on_event) do
               {:ok, result_blocks} ->
                 user_msg = %{role: :user, content: result_blocks}
                 next = messages ++ [assistant_msg, user_msg]
@@ -502,11 +657,13 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
-  defp dispatch_tool_calls(plugin, tool_uses, on_event) do
+  defp dispatch_tool_calls(plugin, conn, tool_uses, on_event) do
+    opts = if conn, do: [conn: conn], else: []
+
     Enum.reduce_while(tool_uses, {:ok, []}, fn tu, {:ok, acc} ->
       on_event.({:tool_call, %{id: tu.id, name: tu.name, input: tu.input}})
 
-      case Internal.call_tool(plugin, tu.name, tu.input || %{}) do
+      case Internal.call_tool(plugin, tu.name, tu.input || %{}, opts) do
         {:ok, text} ->
           on_event.({:tool_result, %{id: tu.id, ok: true, text: text}})
 
@@ -552,6 +709,7 @@ defmodule Sark.Pipeline.Runner do
   defp stop_reason_to_text(:max_tokens), do: "max_tokens"
   defp stop_reason_to_text(:stop_sequence), do: "stop_sequence"
   defp stop_reason_to_text(:max_turns_exceeded), do: "max_turns_exceeded"
+  defp stop_reason_to_text(:cancelled), do: "cancelled"
   defp stop_reason_to_text({:llm_error, _}), do: "error"
   defp stop_reason_to_text(other), do: inspect(other)
 

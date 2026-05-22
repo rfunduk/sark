@@ -32,8 +32,13 @@ defmodule Sark.Plugin.Pipeline do
       manual trigger only)
     * `when_sql`    — optional parameterless SELECT. Empty result → run
       is skipped entirely (no log row).
-    * `transactional` — bool, default false. **Not yet implemented in
-      v1** — set true → parse error at startup.
+    * `transactional` — bool, default false. When true, the runner
+      opens one writer-pool transaction at run start; `tool:` (writes)
+      and `load:` steps share it; failure rolls back the whole run.
+      Built-in `sark_*` tools are out-of-band — they pool-check-out
+      their own connection and won't see (or commit into) the pipeline
+      txn; `sark_patch` / `sark_pipelines_log_prune` would deadlock and
+      should not be called from transactional pipelines.
     * `env`         — list of env-var **names** to propagate from sark's
       own environment into shell steps. Names not present in sark's env
       are passed as empty strings.
@@ -111,10 +116,6 @@ defmodule Sark.Plugin.Pipeline do
     schedule = parse_schedule!(Map.get(entry, "schedule"), where)
     when_sql = parse_optional_sql!(Map.get(entry, "when"), "when", where)
     transactional = parse_bool!(Map.get(entry, "transactional", false), "transactional", where)
-
-    if transactional do
-      bad!(where, "`transactional: true` is not yet implemented in v1")
-    end
 
     env = parse_env!(Map.get(entry, "env", []), where)
     workdir = parse_optional_string!(Map.get(entry, "workdir"), "workdir", where)
@@ -247,9 +248,25 @@ defmodule Sark.Plugin.Pipeline do
 
   defp parse_tool_body!(map, where) do
     name = fetch_string!(map, "name", where)
+    reject_pipeline_incompatible_tool!(name, where)
     timeout_ms = parse_step_timeout!(Map.get(map, "timeout"), where)
     reject_extra_keys!(map, ~w(name timeout), where)
     %{kind: :tool, tool: name, timeout_ms: timeout_ms}
+  end
+
+  # Built-ins that can't sensibly be called from inside a pipeline.
+  # Pipelines are linear (no branching) so self-cancellation /
+  # recursive triggers are nonsense; reject at parse time so authors
+  # find out before a run dies.
+  @pipeline_incompatible_tools ~w(sark_pipelines_run_now sark_pipelines_cancel)
+
+  defp reject_pipeline_incompatible_tool!(name, where) do
+    if name in @pipeline_incompatible_tools do
+      bad!(
+        where,
+        "tool `#{name}` cannot be called from inside a pipeline (pipelines have no branching — self-cancel / recursive trigger is nonsense)"
+      )
+    end
   end
 
   defp parse_step_timeout!(nil, _where), do: nil
@@ -362,8 +379,12 @@ defmodule Sark.Plugin.Pipeline do
 
   defp parse_tools!(list, where) when is_list(list) do
     Enum.map(list, fn
-      t when is_binary(t) and t != "" -> t
-      other -> bad!(where, "llm.tools entries must be non-empty strings, got #{inspect(other)}")
+      t when is_binary(t) and t != "" ->
+        reject_pipeline_incompatible_tool!(t, where)
+        t
+
+      other ->
+        bad!(where, "llm.tools entries must be non-empty strings, got #{inspect(other)}")
     end)
   end
 

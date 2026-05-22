@@ -288,6 +288,207 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
     end
   end
 
+  describe "sark_pipelines_cancel" do
+    alias Sark.Pipeline.Cancel
+
+    test "sets cancel flag for an in-flight run", %{spec: spec} do
+      {:ok, rid} = Sark.Pipeline.Lock.acquire(spec.name, :inventory_ingest)
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_cancel", %{
+                 "pipeline" => "inventory_ingest"
+               })
+
+      assert %{"ok" => true, "run_id" => ^rid} = Jason.decode!(json)
+      assert Cancel.requested?(rid)
+
+      Cancel.clear(rid)
+      Sark.Pipeline.Lock.release(spec.name, :inventory_ingest)
+    end
+
+    test "accepts explicit run_id without requiring it to be in-flight", %{spec: spec} do
+      rid = "explicit-rid"
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_cancel", %{
+                 "pipeline" => "inventory_ingest",
+                 "run_id" => rid
+               })
+
+      assert %{"ok" => true, "run_id" => ^rid} = Jason.decode!(json)
+      assert Cancel.requested?(rid)
+
+      Cancel.clear(rid)
+    end
+
+    test "errors when no in-flight run + no explicit run_id", %{spec: spec} do
+      assert {:error, msg} =
+               Internal.call_tool(spec.name, "sark_pipelines_cancel", %{
+                 "pipeline" => "inventory_ingest"
+               })
+
+      assert msg =~ "no in-flight"
+    end
+
+    test "validation: missing pipeline param", %{spec: spec} do
+      assert {:error, msg} =
+               Internal.call_tool(spec.name, "sark_pipelines_cancel", %{})
+
+      assert msg =~ "validation"
+    end
+  end
+
+  describe "sark_pipelines_log_prune" do
+    defp insert_run!(spec, run_id, pipeline, finished_at, step_count \\ 0) do
+      {:ok, _} =
+        DB.write(
+          spec.name,
+          "INSERT INTO _pipeline_log (run_id, pipeline, started_at, finished_at, status, triggered_by) VALUES (?, ?, ?, ?, ?, ?)",
+          [run_id, pipeline, finished_at, finished_at, "success", "manual"]
+        )
+
+      for i <- 0..(step_count - 1)//1 do
+        {:ok, _} =
+          DB.write(
+            spec.name,
+            "INSERT INTO _pipeline_step_log (run_id, step_index, step_type, started_at, finished_at, status) VALUES (?, ?, ?, ?, ?, ?)",
+            [run_id, i, "shell", finished_at, finished_at, "success"]
+          )
+      end
+    end
+
+    defp run_count(spec), do: count(spec, "_pipeline_log")
+    defp step_count(spec), do: count(spec, "_pipeline_step_log")
+
+    defp count(spec, table) do
+      {:ok, _, [%{"n" => n}]} = DB.read(spec.name, "SELECT COUNT(*) AS n FROM #{table}", [])
+      n
+    end
+
+    defp iso_n_days_ago(n) do
+      DateTime.utc_now() |> DateTime.add(-n, :day) |> DateTime.to_iso8601()
+    end
+
+    test "deletes rows older than the cutoff across all pipelines", %{spec: spec} do
+      insert_run!(spec, "old1", "ingest", iso_n_days_ago(100), 2)
+      insert_run!(spec, "old2", "smoke", iso_n_days_ago(40), 1)
+      insert_run!(spec, "fresh", "ingest", iso_n_days_ago(5), 3)
+
+      assert run_count(spec) == 3
+      assert step_count(spec) == 6
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{
+                 "older_than" => "30d"
+               })
+
+      assert %{"deleted" => 2} = Jason.decode!(json)
+      assert run_count(spec) == 1
+      assert step_count(spec) == 3
+
+      {:ok, _, [%{"run_id" => surviving}]} =
+        DB.read(spec.name, "SELECT run_id FROM _pipeline_log", [])
+
+      assert surviving == "fresh"
+    end
+
+    test "filters by pipeline when provided", %{spec: spec} do
+      insert_run!(spec, "old_ingest", "ingest", iso_n_days_ago(60), 1)
+      insert_run!(spec, "old_smoke", "smoke", iso_n_days_ago(60), 1)
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{
+                 "older_than" => "30d",
+                 "pipeline" => "ingest"
+               })
+
+      assert %{"deleted" => 1} = Jason.decode!(json)
+      assert run_count(spec) == 1
+
+      {:ok, _, [%{"pipeline" => survivor}]} =
+        DB.read(spec.name, "SELECT pipeline FROM _pipeline_log", [])
+
+      assert survivor == "smoke"
+    end
+
+    test "deletes step rows for pruned runs (explicit cascade)", %{spec: spec} do
+      insert_run!(spec, "old1", "ingest", iso_n_days_ago(60), 4)
+      insert_run!(spec, "fresh1", "ingest", iso_n_days_ago(1), 2)
+
+      assert step_count(spec) == 6
+
+      assert {:ok, _} =
+               Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{
+                 "older_than" => "30d"
+               })
+
+      assert step_count(spec) == 2
+
+      {:ok, _, rows} = DB.read(spec.name, "SELECT run_id FROM _pipeline_step_log", [])
+      assert Enum.all?(rows, &(&1["run_id"] == "fresh1"))
+    end
+
+    test "supports h/m/s/d/w/y units", %{spec: spec} do
+      insert_run!(spec, "two_h_ago", "ingest", iso_iso_hours_ago(2), 0)
+      insert_run!(spec, "one_min_ago", "ingest", iso_minutes_ago(1), 0)
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{"older_than" => "1h"})
+
+      assert %{"deleted" => 1} = Jason.decode!(json)
+    end
+
+    test "returns 0 deleted when nothing matches", %{spec: spec} do
+      insert_run!(spec, "fresh", "ingest", iso_n_days_ago(1), 0)
+
+      assert {:ok, json} =
+               Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{"older_than" => "90d"})
+
+      assert %{"deleted" => 0} = Jason.decode!(json)
+      assert run_count(spec) == 1
+    end
+
+    test "validation: missing older_than", %{spec: spec} do
+      assert {:error, msg} = Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{})
+      assert msg =~ "older_than"
+      assert msg =~ "required"
+    end
+
+    test "validation: malformed duration", %{spec: spec} do
+      assert {:error, msg} =
+               Internal.call_tool(spec.name, "sark_pipelines_log_prune", %{"older_than" => "soon"})
+
+      assert msg =~ "older_than"
+    end
+
+    defp iso_iso_hours_ago(h),
+      do: DateTime.utc_now() |> DateTime.add(-h * 3600, :second) |> DateTime.to_iso8601()
+
+    defp iso_minutes_ago(m),
+      do: DateTime.utc_now() |> DateTime.add(-m * 60, :second) |> DateTime.to_iso8601()
+  end
+
+  describe "parse_duration/1" do
+    test "parses common units" do
+      assert Sark.MCP.Handlers.Pipelines.parse_duration("30s") == {:ok, 30}
+      assert Sark.MCP.Handlers.Pipelines.parse_duration("90m") == {:ok, 5_400}
+      assert Sark.MCP.Handlers.Pipelines.parse_duration("6h") == {:ok, 21_600}
+      assert Sark.MCP.Handlers.Pipelines.parse_duration("30d") == {:ok, 2_592_000}
+      assert Sark.MCP.Handlers.Pipelines.parse_duration("2w") == {:ok, 1_209_600}
+      assert Sark.MCP.Handlers.Pipelines.parse_duration("1y") == {:ok, 31_536_000}
+    end
+
+    test "case-insensitive unit + tolerates whitespace" do
+      assert {:ok, 86_400} = Sark.MCP.Handlers.Pipelines.parse_duration(" 1D ")
+    end
+
+    test "rejects garbage" do
+      assert {:error, _} = Sark.MCP.Handlers.Pipelines.parse_duration("forever")
+      assert {:error, _} = Sark.MCP.Handlers.Pipelines.parse_duration("10")
+      assert {:error, _} = Sark.MCP.Handlers.Pipelines.parse_duration("d10")
+    end
+  end
+
   describe "reserved names" do
     test "raises when a tool name collides with a reserved sark_pipelines_* built-in" do
       spec = %Sark.Plugin.Spec{

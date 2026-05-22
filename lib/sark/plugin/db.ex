@@ -67,10 +67,17 @@ defmodule Sark.Plugin.DB do
   SELECT order) alongside rows as a list of maps keyed by column name.
   Callers that render output need the column list to preserve the
   agent-supplied SELECT order; map iteration alone won't.
+
+  Pass `conn:` in `opts` to run on a specific DBConnection instead of
+  the read pool — used by transactional pipelines that need reads to
+  see uncommitted writes against the held writer connection.
   """
-  @spec read(plugin_name, iodata, [term]) :: {:ok, [String.t()], [map]} | {:error, term}
-  def read(name, sql, params \\ []) do
-    case Exqlite.query(reader_name(name), sql, params) do
+  @spec read(plugin_name, iodata, [term], keyword) ::
+          {:ok, [String.t()], [map]} | {:error, term}
+  def read(name, sql, params \\ [], opts \\ []) do
+    target = Keyword.get(opts, :conn) || reader_name(name)
+
+    case Exqlite.query(target, sql, params) do
       {:ok, %Result{} = r} -> {:ok, columns(r), rows_to_maps(r)}
       {:error, _} = e -> e
     end

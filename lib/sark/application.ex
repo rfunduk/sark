@@ -45,7 +45,8 @@ defmodule Sark.Application do
       {Phoenix.PubSub, name: Sark.PubSub},
       {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Sark.PubSub]},
       {Task.Supervisor, name: Sark.Pipeline.TaskSup},
-      Sark.Pipeline.Lock
+      Sark.Pipeline.Lock,
+      Sark.Pipeline.Cancel
     ]
   end
 

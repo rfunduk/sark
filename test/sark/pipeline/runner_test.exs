@@ -33,6 +33,14 @@ defmodule Sark.Pipeline.RunnerTest do
     Pipeline.parse!(name, Map.merge(%{"description" => "test"}, Map.new(opts)))
   end
 
+  # Emit a JSON object on stdout for the next step's stdin. Replaces the
+  # old `tool: { params: ... }` static-args feature.
+  defp emit_json(map) do
+    json = Jason.encode!(map)
+    escaped = String.replace(json, "'", "'\\''")
+    %{"shell" => "printf '%s' '#{escaped}'"}
+  end
+
   defp run_id, do: :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
 
   defp run!(pipeline, spec, opts \\ []) do
@@ -536,6 +544,341 @@ defmodule Sark.Pipeline.RunnerTest do
       rid = run_id()
       assert {:ok, _} = run!(pipeline, spec, run_id: rid)
       assert [_] = fetch_run_row(spec, rid)
+    end
+  end
+
+  describe "cancel" do
+    alias Sark.Pipeline.Cancel
+
+    test "cancel requested before run starts → status cancelled, no steps", %{spec: spec} do
+      rid = run_id()
+      Cancel.request(rid)
+
+      pipeline =
+        build_pipeline("pre_cancel", %{
+          "steps" => [
+            %{"shell" => "echo first"},
+            %{"shell" => "echo second"}
+          ]
+        })
+
+      assert {:error, msg} = run!(pipeline, spec, run_id: rid)
+      assert msg =~ "cancelled"
+
+      [row] = fetch_run_row(spec, rid)
+      assert row["status"] == "cancelled"
+
+      # Step 0 never executed — no step rows.
+      assert fetch_step_rows(spec, rid) == []
+    end
+
+    test "cancel requested mid-run → first step completes, second skipped", %{spec: spec} do
+      rid = run_id()
+
+      pipeline =
+        build_pipeline("mid_cancel", %{
+          "steps" => [
+            # Slow enough that we can set cancel while it's running.
+            %{"shell" => "sleep 0.3"},
+            %{"shell" => "echo never"}
+          ]
+        })
+
+      task = Task.async(fn -> run!(pipeline, spec, run_id: rid) end)
+
+      # Give the runner time to enter step 0 (past the pre-step peek),
+      # then request cancel. Step 0 finishes naturally; the post-step
+      # peek catches the flag.
+      Process.sleep(100)
+      Cancel.request(rid)
+
+      assert {:error, msg} = Task.await(task, 5_000)
+      assert msg =~ "cancelled"
+
+      [row] = fetch_run_row(spec, rid)
+      assert row["status"] == "cancelled"
+
+      [s0] = fetch_step_rows(spec, rid)
+      assert s0["step_index"] == 0
+      assert s0["status"] == "success"
+    end
+
+    test "cancel flag is cleared after terminal state", %{spec: spec} do
+      rid = run_id()
+      Cancel.request(rid)
+
+      pipeline =
+        build_pipeline("clear_after", %{
+          "steps" => [%{"shell" => "echo hi"}]
+        })
+
+      _ = run!(pipeline, spec, run_id: rid)
+      refute Cancel.requested?(rid)
+    end
+
+    test "cancel flag cleared on success too", %{spec: spec} do
+      rid = run_id()
+
+      pipeline =
+        build_pipeline("clean_success", %{
+          "steps" => [%{"shell" => "echo ok"}]
+        })
+
+      assert {:ok, _} = run!(pipeline, spec, run_id: rid)
+      refute Cancel.requested?(rid)
+    end
+  end
+
+  describe "transactional" do
+    test "commits writes on success", %{spec: spec} do
+      pipeline =
+        build_pipeline("txn_ok", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_a", "value" => "v_a"}),
+            %{"tool" => "put"},
+            emit_json(%{"key" => "txn_b", "value" => "v_b"}),
+            %{"tool" => "put"}
+          ]
+        })
+
+      assert {:ok, _} = run!(pipeline, spec)
+
+      {:ok, _, rows} =
+        DB.read(spec.name, "SELECT key FROM kv WHERE key IN (?, ?) ORDER BY key", [
+          "txn_a",
+          "txn_b"
+        ])
+
+      assert Enum.map(rows, & &1["key"]) == ["txn_a", "txn_b"]
+    end
+
+    test "rolls back all writes on failure", %{spec: spec} do
+      pipeline =
+        build_pipeline("txn_fail", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_x", "value" => "wrote"}),
+            %{"tool" => "put"},
+            # Validation failure — `put` requires both key and value.
+            emit_json(%{"key" => "txn_y"}),
+            %{"tool" => "put"}
+          ]
+        })
+
+      assert {:error, msg} = run!(pipeline, spec)
+      assert msg =~ "validation"
+
+      {:ok, _, []} =
+        DB.read(spec.name, "SELECT key FROM kv WHERE key IN (?, ?)", ["txn_x", "txn_y"])
+    end
+
+    test "load step inside txn sees uncommitted writes from earlier steps", %{spec: spec} do
+      pipeline =
+        build_pipeline("txn_read_own_writes", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_visible", "value" => "yes"}),
+            %{"tool" => "put"},
+            # Reset stdin to an empty object for the param-less load.
+            emit_json(%{}),
+            %{"load" => "SELECT value FROM kv WHERE key = 'txn_visible'"}
+          ]
+        })
+
+      rid = run_id()
+      assert {:ok, _} = run!(pipeline, spec, run_id: rid)
+
+      step_rows = fetch_step_rows(spec, rid)
+      last = List.last(step_rows)
+      assert last["step_type"] == "load"
+      assert last["row_count"] == 1
+    end
+
+    test "rollback also rolls back the run log row's terminal status", %{spec: spec} do
+      pipeline =
+        build_pipeline("txn_log_state", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_log", "value" => "v"}),
+            %{"tool" => "put"},
+            %{"shell" => "false"}
+          ]
+        })
+
+      rid = run_id()
+      assert {:error, _} = run!(pipeline, spec, run_id: rid)
+
+      # The DELETE from the rollback removes the run log row entirely
+      # (Log.start_run wrote it inside the txn). Pipeline failure
+      # observability for transactional runs is a known limitation —
+      # the run vanishes when its txn rolls back.
+      {:ok, _, []} =
+        DB.read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", [rid])
+
+      # Most importantly, no kv side effects.
+      {:ok, _, []} =
+        DB.read(spec.name, "SELECT * FROM kv WHERE key = ?", ["txn_log"])
+    end
+
+    test "cancel during transactional run rolls back writes", %{spec: spec} do
+      alias Sark.Pipeline.Cancel
+
+      rid = run_id()
+
+      pipeline =
+        build_pipeline("txn_cancel", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_cancel_key", "value" => "wrote"}),
+            %{"tool" => "put"},
+            %{"shell" => "sleep 0.3"},
+            emit_json(%{"key" => "txn_cancel_key2", "value" => "never"}),
+            %{"tool" => "put"}
+          ]
+        })
+
+      task = Task.async(fn -> run!(pipeline, spec, run_id: rid) end)
+      Process.sleep(150)
+      Cancel.request(rid)
+
+      assert {:error, msg} = Task.await(task, 5_000)
+      assert msg =~ "cancelled"
+
+      {:ok, _, []} =
+        DB.read(spec.name, "SELECT * FROM kv WHERE key LIKE ?", ["txn_cancel%"])
+    end
+
+    test "sark_sql builtin inside txn sees uncommitted writes", %{spec: spec} do
+      pipeline =
+        build_pipeline("txn_sark_sql", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_via_sql", "value" => "yes"}),
+            %{"tool" => "put"},
+            emit_json(%{"sql" => "SELECT value FROM kv WHERE key = 'txn_via_sql'"}),
+            %{"tool" => "sark_sql"}
+          ]
+        })
+
+      rid = run_id()
+      assert {:ok, _} = run!(pipeline, spec, run_id: rid)
+
+      step_rows = fetch_step_rows(spec, rid)
+      last = List.last(step_rows)
+      assert last["tool_name"] == "sark_sql"
+      assert last["status"] == "success"
+    end
+
+    test "sark_catalog builtin inside txn does not deadlock", %{spec: spec} do
+      pipeline =
+        build_pipeline("txn_catalog", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_cat", "value" => "v"}),
+            %{"tool" => "put"},
+            emit_json(%{}),
+            %{"tool" => "sark_catalog"}
+          ]
+        })
+
+      rid = run_id()
+      assert {:ok, _} = run!(pipeline, spec, run_id: rid)
+
+      step_rows = fetch_step_rows(spec, rid)
+      last = List.last(step_rows)
+      assert last["status"] == "success"
+    end
+
+    test "sark_patch builtin inside txn shares conn (no deadlock, rolls back on later failure)",
+         %{spec: spec} do
+      # Seed a row to patch.
+      {:ok, _} =
+        DB.write(spec.name, "INSERT INTO notes (id, body) VALUES (?, ?)", [1, "original text"])
+
+      pipeline =
+        build_pipeline("txn_patch_rollback", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{
+              "table" => "notes",
+              "id" => 1,
+              "col" => "body",
+              "old" => "original",
+              "new" => "patched"
+            }),
+            %{"tool" => "sark_patch"},
+            # Force rollback.
+            %{"shell" => "false"}
+          ]
+        })
+
+      assert {:error, _} = run!(pipeline, spec)
+
+      # Patch was applied inside the txn but rolled back along with
+      # everything else — value reverts to the original.
+      {:ok, _, [%{"body" => body}]} =
+        DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [1])
+
+      assert body == "original text"
+    end
+
+    test "sark_patch builtin inside txn commits on success", %{spec: spec} do
+      {:ok, _} =
+        DB.write(spec.name, "INSERT INTO notes (id, body) VALUES (?, ?)", [2, "alpha here"])
+
+      pipeline =
+        build_pipeline("txn_patch_ok", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{
+              "table" => "notes",
+              "id" => 2,
+              "col" => "body",
+              "old" => "alpha",
+              "new" => "beta"
+            }),
+            %{"tool" => "sark_patch"}
+          ]
+        })
+
+      assert {:ok, _} = run!(pipeline, spec)
+
+      {:ok, _, [%{"body" => body}]} =
+        DB.read(spec.name, "SELECT body FROM notes WHERE id = ?", [2])
+
+      assert body == "beta here"
+    end
+
+    test "sark_pipelines_log_prune builtin inside txn does not deadlock", %{spec: spec} do
+      # Seed an old run that we'll prune.
+      {:ok, _} =
+        DB.write(
+          spec.name,
+          "INSERT INTO _pipeline_log (run_id, pipeline, started_at, finished_at, status, triggered_by) VALUES (?, ?, ?, ?, ?, ?)",
+          [
+            "old_for_prune",
+            "smoke",
+            "2020-01-01T00:00:00Z",
+            "2020-01-01T00:00:00Z",
+            "success",
+            "manual"
+          ]
+        )
+
+      pipeline =
+        build_pipeline("txn_prune", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"older_than" => "1d"}),
+            %{"tool" => "sark_pipelines_log_prune"}
+          ]
+        })
+
+      assert {:ok, _} = run!(pipeline, spec)
+
+      {:ok, _, []} =
+        DB.read(spec.name, "SELECT * FROM _pipeline_log WHERE run_id = ?", ["old_for_prune"])
     end
   end
 

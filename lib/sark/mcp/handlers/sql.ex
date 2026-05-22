@@ -13,14 +13,14 @@ defmodule Sark.MCP.Handlers.SQL do
 
   @leading_re ~r/^\s*(?:--[^\n]*\n|\/\*.*?\*\/|\s)*+(\w+)/ms
 
-  @spec call(String.t(), map, term) :: {:reply, map, term}
-  def call(plugin, params, session) do
+  @spec call(String.t(), map, term, keyword) :: {:reply, map, term}
+  def call(plugin, params, session, opts \\ []) do
     Telemetry.with_logging("#{plugin}.sark_sql", params, fn ->
-      do_call(plugin, params, session)
+      do_call(plugin, params, session, opts)
     end)
   end
 
-  defp do_call(plugin, params, session) do
+  defp do_call(plugin, params, session, opts) do
     sql = params && Map.get(params, "sql")
 
     cond do
@@ -31,7 +31,7 @@ defmodule Sark.MCP.Handlers.SQL do
         reply_error("validation: only SELECT/WITH/PRAGMA queries are permitted", session)
 
       true ->
-        case DB.read(plugin, sql, []) do
+        case DB.read(plugin, sql, [], opts) do
           {:ok, _cols, []} ->
             {:reply, Reply.text("(no rows)"), session}
 

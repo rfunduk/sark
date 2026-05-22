@@ -21,19 +21,20 @@ defmodule Sark.MCP.Handlers.Tool do
   alias Sark.Plugin.Tool
   alias Sark.Render
 
-  @spec call(String.t(), atom, map, term) :: {:reply, map, term}
-  def call(plugin, tool_name, raw_params, session) do
+  @spec call(String.t(), atom, map, term, keyword) :: {:reply, map, term}
+  def call(plugin, tool_name, raw_params, session, opts \\ []) do
     Telemetry.with_logging("#{plugin}.#{tool_name}", raw_params, fn ->
-      do_call(plugin, tool_name, raw_params, session)
+      do_call(plugin, tool_name, raw_params, session, opts)
     end)
   end
 
-  defp do_call(plugin, tool_name, raw_params, session) do
+  defp do_call(plugin, tool_name, raw_params, session, opts) do
     raw_params = raw_params || %{}
+    conn = Keyword.get(opts, :conn)
 
     with {:ok, %Tool{} = q} <- Registry.get(plugin, tool_name),
          {:ok, coerced} <- Tool.coerce_params(q, raw_params),
-         {:ok, cols, value} <- execute(plugin, q, coerced, raw_params) do
+         {:ok, cols, value} <- execute(plugin, q, coerced, raw_params, conn) do
       reply_text(Render.render(value, q.format, q.returns, cols), session)
     else
       :error ->
@@ -114,9 +115,9 @@ defmodule Sark.MCP.Handlers.Tool do
     end)
   end
 
-  defp execute(plugin, %Tool{write: false} = q, coerced, _raw_params) do
+  defp execute(plugin, %Tool{write: false} = q, coerced, _raw_params, conn) do
     runner = fn sql, binds ->
-      case DB.read(plugin, sql, binds) do
+      case read_via(plugin, conn, sql, binds) do
         {:ok, _cols, rows} -> {:ok, rows}
         {:error, _} = e -> e
       end
@@ -124,7 +125,7 @@ defmodule Sark.MCP.Handlers.Tool do
 
     with :ok <- check_rejects(q, coerced, runner),
          binds = bind(q.statements, coerced),
-         {:ok, cols, rows} <- run_reads(plugin, q.statements, binds),
+         {:ok, cols, rows} <- run_reads(plugin, conn, q.statements, binds),
          {:ok, value} <- coerce(rows, q.returns) do
       {:ok, cols, value}
     else
@@ -139,7 +140,33 @@ defmodule Sark.MCP.Handlers.Tool do
     end
   end
 
-  defp execute(plugin, %Tool{write: true} = q, coerced, raw_params) do
+  # Transactional pipeline path: caller already holds a writer conn in a
+  # BEGIN IMMEDIATE txn — skip our own DB.txn and run statements directly
+  # on the provided conn. Failures bubble up to the runner which calls
+  # DBConnection.rollback on the outer transaction.
+  defp execute(plugin, %Tool{write: true} = q, coerced, raw_params, conn) when not is_nil(conn) do
+    runner = fn sql, binds ->
+      case Exqlite.query(conn, sql, binds) do
+        {:ok, %Result{rows: nil}} -> {:ok, []}
+        {:ok, %Result{rows: rows}} -> {:ok, rows}
+        {:error, _} = e -> e
+      end
+    end
+
+    with :ok <- check_rejects(q, coerced, runner),
+         binds = bind(q.statements, coerced),
+         {:ok, %Result{} = r} <- run_writes(conn, q, binds),
+         {:ok, value} <- coerce_result(r, q.returns) do
+      EventBus.broadcast_write(plugin, q.name, raw_params, value)
+      {:ok, DB.columns(r), value}
+    else
+      {:error, {:rejected, _}} = rej -> rej
+      {:error, :scalar_no_rows} = e -> e
+      {:error, e} -> classify(e)
+    end
+  end
+
+  defp execute(plugin, %Tool{write: true} = q, coerced, raw_params, nil) do
     txn_result =
       DB.txn(
         plugin,
@@ -190,13 +217,18 @@ defmodule Sark.MCP.Handlers.Tool do
     end
   end
 
-  # Run all read statements on the read pool. Earlier statements are
-  # executed for side effects (rare for reads — PRAGMAs, temp views,
-  # etc.); the last statement's rows are what gets returned.
-  defp run_reads(plugin, statements, binds) do
+  defp read_via(plugin, nil, sql, binds), do: DB.read(plugin, sql, binds)
+  defp read_via(_plugin, conn, sql, binds), do: DB.read(nil, sql, binds, conn: conn)
+
+  # Run all read statements. `conn` nil → read pool (default); non-nil →
+  # the caller's transactional conn (so reads see uncommitted writes).
+  # Earlier statements are executed for side effects (rare for reads —
+  # PRAGMAs, temp views, etc.); the last statement's rows are what gets
+  # returned.
+  defp run_reads(plugin, conn, statements, binds) do
     Enum.zip(statements, binds)
     |> Enum.reduce_while({:ok, [], []}, fn {stmt, bind}, _acc ->
-      case DB.read(plugin, stmt.compiled_sql, bind) do
+      case read_via(plugin, conn, stmt.compiled_sql, bind) do
         {:ok, cols, rows} -> {:cont, {:ok, cols, rows}}
         {:error, e} -> {:halt, {:error, e}}
       end

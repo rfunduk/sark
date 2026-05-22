@@ -18,14 +18,14 @@ defmodule Sark.MCP.Handlers.Catalog do
   alias Sark.Plugin.DB
   alias Sark.Plugin.Tool
 
-  @spec call(String.t(), map, term) :: {:reply, map, term}
-  def call(plugin, params, session) do
+  @spec call(String.t(), map, term, keyword) :: {:reply, map, term}
+  def call(plugin, params, session, opts \\ []) do
     Telemetry.with_logging("#{plugin}.sark_catalog", params, fn ->
-      do_call(plugin, params, session)
+      do_call(plugin, params, session, opts)
     end)
   end
 
-  defp do_call(plugin, _params, session) do
+  defp do_call(plugin, _params, session, opts) do
     case lookup_spec(plugin) do
       nil ->
         {:reply, Reply.error("no such plugin: #{plugin}"), session}
@@ -38,7 +38,7 @@ defmodule Sark.MCP.Handlers.Catalog do
 
         doc = %{
           name: spec.name,
-          schema: live_schema(plugin),
+          schema: live_schema(plugin, opts),
           tools: Enum.map(tools, &tool_to_map/1)
         }
 
@@ -46,7 +46,7 @@ defmodule Sark.MCP.Handlers.Catalog do
     end
   end
 
-  defp live_schema(plugin) do
+  defp live_schema(plugin, opts) do
     sql = """
     SELECT type, name, sql
     FROM sqlite_master
@@ -61,7 +61,7 @@ defmodule Sark.MCP.Handlers.Catalog do
              END, name
     """
 
-    case DB.read(plugin, sql, []) do
+    case DB.read(plugin, sql, [], opts) do
       {:ok, _cols, rows} ->
         Enum.map(rows, fn %{"type" => type, "name" => name, "sql" => ddl} ->
           %{type: type, name: name, sql: ddl}

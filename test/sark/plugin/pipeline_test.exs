@@ -90,14 +90,15 @@ defmodule Sark.Plugin.PipelineTest do
       end
     end
 
-    test "transactional: true raises (not yet implemented)" do
-      assert_raise ArgumentError, ~r/transactional.*not yet implemented/, fn ->
+    test "transactional: true accepted" do
+      p =
         Pipeline.parse!("p", %{
           "description" => "x",
           "transactional" => true,
           "steps" => [%{"shell" => "echo hi"}]
         })
-      end
+
+      assert p.transactional == true
     end
 
     test "env: parses list of valid env-var names" do
@@ -313,6 +314,88 @@ defmodule Sark.Plugin.PipelineTest do
           "description" => "x",
           "steps" => [%{"shell" => %{"cmd" => "echo", "timeout" => -1}}]
         })
+      end
+    end
+  end
+
+  describe "pipeline-incompatible builtins" do
+    test "rejects sark_pipelines_run_now in tool: step" do
+      assert_raise ArgumentError,
+                   ~r/sark_pipelines_run_now.*cannot be called from inside a pipeline/,
+                   fn ->
+                     Pipeline.parse!("p", %{
+                       "description" => "x",
+                       "steps" => [%{"tool" => "sark_pipelines_run_now"}]
+                     })
+                   end
+    end
+
+    test "rejects sark_pipelines_cancel in tool: step" do
+      assert_raise ArgumentError,
+                   ~r/sark_pipelines_cancel.*cannot be called from inside a pipeline/,
+                   fn ->
+                     Pipeline.parse!("p", %{
+                       "description" => "x",
+                       "steps" => [
+                         %{
+                           "tool" => %{
+                             "name" => "sark_pipelines_cancel",
+                             "params" => %{"pipeline" => "x"}
+                           }
+                         }
+                       ]
+                     })
+                   end
+    end
+
+    test "rejects sark_pipelines_run_now in llm.tools allowlist" do
+      assert_raise ArgumentError,
+                   ~r/sark_pipelines_run_now.*cannot be called from inside a pipeline/,
+                   fn ->
+                     Pipeline.parse!("p", %{
+                       "description" => "x",
+                       "steps" => [
+                         %{
+                           "llm" => %{
+                             "model" => "m",
+                             "prompt" => "p",
+                             "tools" => ["sark_pipelines_run_now"]
+                           }
+                         }
+                       ]
+                     })
+                   end
+    end
+
+    test "rejects sark_pipelines_cancel in llm.tools allowlist" do
+      assert_raise ArgumentError,
+                   ~r/sark_pipelines_cancel.*cannot be called from inside a pipeline/,
+                   fn ->
+                     Pipeline.parse!("p", %{
+                       "description" => "x",
+                       "steps" => [
+                         %{
+                           "llm" => %{
+                             "model" => "m",
+                             "prompt" => "p",
+                             "tools" => ["sark_pipelines_cancel"]
+                           }
+                         }
+                       ]
+                     })
+                   end
+    end
+
+    test "other sark_* builtins still allowed (sark_sql, sark_patch, sark_pipelines_log_prune)" do
+      for tool <-
+            ~w(sark_sql sark_catalog sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_log_prune) do
+        p =
+          Pipeline.parse!("p", %{
+            "description" => "x",
+            "steps" => [%{"tool" => tool}]
+          })
+
+        assert [%{kind: :tool, tool: ^tool}] = p.steps
       end
     end
   end

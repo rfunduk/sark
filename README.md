@@ -500,6 +500,7 @@ pipelines:
       SELECT 1 WHERE EXISTS (SELECT 1 FROM ingest_queue)
     env: [GITHUB_TOKEN]                                # env var names propagated from sark's env.
     timeout: 600000                                    # optional. Pipeline-level ceiling, ms.
+    transactional: false                               # optional. true = whole run in one txn.
     steps:
       - shell: git clone --depth=1 git@github.com:org/automation-mono .
       - shell: python parse_hosts.py                   # outputs {"hosts": [...]}
@@ -525,9 +526,13 @@ steps:
 
 Per-step `timeout:` overrides the pipeline-level one; both default to no ceiling.
 
-### A Note on `shell:`
+### Transactional runs
 
-You will find the published Sark docker image quite lean, so you might be expecting to `shell: jq -r ...` or `shell: gh pr list ...`. To do this, you should derive your own image from the base:
+Set `transactional: true` to wrap the entire run in a single transaction. WIP
+
+### Notes on `shell:`
+
+You will find the published Sark docker image quite lean, so you might be expecting to `shell: jq -r ...` or `shell: gh pr list ...`. To do this, you could ship Debian bookworm compatible binaries with your plugin, or derive your own image from the base:
 
 ```
 FROM ghcr.io/rfunduk/sark:latest
@@ -537,8 +542,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 USER sark
 ```
-
-Alternatively, you could ship Debian bookworm compatible binaries with your plugin!
 
 ### Pipe convention
 
