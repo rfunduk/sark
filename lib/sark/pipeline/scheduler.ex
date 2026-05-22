@@ -26,8 +26,8 @@ defmodule Sark.Pipeline.Scheduler do
   alias Sark.Plugin.Pipeline
   alias Sark.Plugin.Spec
   alias Sark.Pipeline.Lock
-  alias Sark.Pipeline.Runner
   alias Sark.Pipeline.State
+  alias Sark.Pipeline.Watcher
 
   @tick_interval_ms 60_000
 
@@ -120,7 +120,7 @@ defmodule Sark.Pipeline.Scheduler do
           Logger.info("scheduler #{plugin}.#{pipeline.name} — firing run #{run_id}")
 
           try do
-            Runner.run(
+            Watcher.run(
               plugin: plugin,
               pipeline: pipeline,
               spec: spec,

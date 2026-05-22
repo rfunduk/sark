@@ -4,7 +4,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
   alias Sark.MCP.Internal
   alias Sark.MCP.Registry, as: SarkRegistry
   alias Sark.Pipeline.Lock
-  alias Sark.Pipeline.Runner
+  alias Sark.Pipeline.Watcher
   alias Sark.Plugin
   alias Sark.Plugin.DB
   alias Sark.Plugin.Loader
@@ -35,7 +35,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
     rid = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
 
     {:ok, _} =
-      Runner.run(
+      Watcher.run(
         plugin: spec.name,
         pipeline: pipeline,
         spec: spec,
@@ -306,22 +306,7 @@ defmodule Sark.MCP.Handlers.PipelinesTest do
       Sark.Pipeline.Lock.release(spec.name, :inventory_ingest)
     end
 
-    test "accepts explicit run_id without requiring it to be in-flight", %{spec: spec} do
-      rid = "explicit-rid"
-
-      assert {:ok, json} =
-               Internal.call_tool(spec.name, "sark_pipelines_cancel", %{
-                 "pipeline" => "inventory_ingest",
-                 "run_id" => rid
-               })
-
-      assert %{"ok" => true, "run_id" => ^rid} = Jason.decode!(json)
-      assert Cancel.requested?(rid)
-
-      Cancel.clear(rid)
-    end
-
-    test "errors when no in-flight run + no explicit run_id", %{spec: spec} do
+    test "errors when no in-flight run", %{spec: spec} do
       assert {:error, msg} =
                Internal.call_tool(spec.name, "sark_pipelines_cancel", %{
                  "pipeline" => "inventory_ingest"

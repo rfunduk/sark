@@ -524,11 +524,19 @@ steps:
   - llm:   { model: ..., prompt: ..., tools: [...], timeout: 120000 }
 ```
 
-Per-step `timeout:` overrides the pipeline-level one; both default to no ceiling.
+Per-step `timeout:` bounds one step; `timeout:` on the pipeline bounds the whole run. Both default to no ceiling.
+
+### Cancellation
+
+Three triggers — pipeline-level timeout, per-step timeout, and `sark_pipelines_cancel`. Effects:
+
+- Plugin data writes inside a `transactional: true` run roll back.
+- In-flight LLM HTTP turns killed.
+- Shell child gets SIGTERM on Port close. With `setsid` present (Linux), the whole shell process group is signalled (SIGTERM → 100ms grace → SIGKILL); grandchildren go too. On macOS dev w/o `setsid` (`brew install util-linux` if you need it), only the direct shell child is signalled — grandchildren may orphan.
 
 ### Transactional runs
 
-Set `transactional: true` to wrap the entire run in a single transaction. WIP
+Set `transactional: true` to wrap the run's plugin-data writes in a single transaction. Log writes target a separate per-plugin sark DB and stand regardless. A failure or kill rolls back all data writes; the terminal log row records the outcome.
 
 ### Notes on `shell:`
 
@@ -575,7 +583,7 @@ A per-pipeline lock arbitrates between the scheduler, `Sark.CLI.run_pipeline`, a
 
 ### Telemetry
 
-Every run leaves a durable audit trail — per-run header + per-step rows capturing start/end timestamps, status (success / failed / cancelled), trigger (schedule / manual), per-step exit codes (shell), row counts (load / tool), LLM token usage (model, turns, stop reason, input/output/cache tokens, service tier), and the final assistant text. Inspect via the built-in `sark_pipelines_*` tools (see below).
+Every run leaves a durable audit trail — per-run header + per-step rows capturing start/end timestamps, terminal status (`success` / `failed` / `cancelled` / `timed_out` / `crashed`), trigger (schedule / manual), per-step exit codes (shell), row counts (load / tool), LLM token usage (model, turns, stop reason, input/output/cache tokens, service tier), and the final assistant text. Inspect via the built-in `sark_pipelines_*` tools (see below).
 
 Skipped runs (gated out by `when:`) don't write rows.
 
@@ -599,7 +607,7 @@ Every plugin gets these without declaring them.
 - **`sark_pipelines_recent(pipeline?, limit?)`** — recent runs across all pipelines or one. Default limit 20.
 - **`sark_pipelines_costs(pipeline?, since?)`** — token rollup grouped by pipeline + model (for `llm:` steps). Your skill multiplies by its own price table if desired.
 - **`sark_pipelines_run_now(pipeline)`** — fire-and-forget manual trigger.
-- **`sark_pipelines_cancel(pipeline, run_id?)`** — best-effort cancel of an in-flight run. Runner peeks between steps; the current step finishes naturally before the run halts.
+- **`sark_pipelines_cancel(pipeline)`** — cancel the in-flight run.
 - **`sark_pipelines_log_prune(pipeline?, older_than)`** — delete run + step rows older than a duration (e.g. `30d`, `6h`). Plugin authors wire their own cleanup pipeline; no built-in retention.
 - **`sark_pipelines_disable(pipeline)`** / **`sark_pipelines_enable(pipeline)`** — toggle scheduled execution. Disabled = scheduler silently skips at tick time; manual triggers still fire.
 

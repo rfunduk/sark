@@ -3,7 +3,7 @@ defmodule Sark.Pipeline.RunnerTest do
 
   alias Sark.LLM.Stub
   alias Sark.MCP.Registry, as: SarkRegistry
-  alias Sark.Pipeline.Runner
+  alias Sark.Pipeline.Watcher
   alias Sark.Plugin
   alias Sark.Plugin.DB
   alias Sark.Plugin.Loader
@@ -44,7 +44,7 @@ defmodule Sark.Pipeline.RunnerTest do
   defp run_id, do: :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
 
   defp run!(pipeline, spec, opts \\ []) do
-    Runner.run(
+    Watcher.run(
       [
         plugin: spec.name,
         pipeline: pipeline,
@@ -140,7 +140,7 @@ defmodule Sark.Pipeline.RunnerTest do
 
     test "per-step timeout overrides pipeline-level", %{spec: spec} do
       # Pipeline timeout is generous (5s); the step's own timeout is
-      # the shorter ceiling.
+      # the shorter ceiling. Step timer fires before pipeline timer.
       pipeline =
         build_pipeline("step_to", %{
           "timeout" => 5_000,
@@ -148,7 +148,8 @@ defmodule Sark.Pipeline.RunnerTest do
         })
 
       assert {:error, msg} = run!(pipeline, spec)
-      assert msg =~ "timeout after 100ms"
+      assert msg =~ "step 0"
+      assert msg =~ "timeout"
     end
 
     test "env var listed in env: propagates from sark's environment", %{spec: spec} do
@@ -493,8 +494,10 @@ defmodule Sark.Pipeline.RunnerTest do
       assert rendered == "Hi Ryan, count=7"
     end
 
-    test "unknown tool in llm.tools raises at runtime", %{spec: spec} do
-      # No script needed — we should fail before any chat call.
+    test "unknown tool in llm.tools surfaces as crashed run", %{spec: spec} do
+      # No script needed — we should fail before any chat call. The
+      # ArgumentError raised inside the runner Task surfaces via the
+      # watcher as a `crashed:` error.
       {:ok, _} = Stub.start_link([])
 
       pipeline =
@@ -511,9 +514,9 @@ defmodule Sark.Pipeline.RunnerTest do
           ]
         })
 
-      assert_raise ArgumentError, ~r/unknown tool/, fn ->
-        run!(pipeline, spec)
-      end
+      assert {:error, msg} = run!(pipeline, spec)
+      assert msg =~ "crashed"
+      assert msg =~ "unknown tool"
     end
   end
 
@@ -550,15 +553,15 @@ defmodule Sark.Pipeline.RunnerTest do
   describe "cancel" do
     alias Sark.Pipeline.Cancel
 
-    test "cancel requested before run starts → status cancelled, no steps", %{spec: spec} do
+    test "cancel pre-set → first slow step is killed mid-flight", %{spec: spec} do
       rid = run_id()
       Cancel.request(rid)
 
       pipeline =
         build_pipeline("pre_cancel", %{
           "steps" => [
-            %{"shell" => "echo first"},
-            %{"shell" => "echo second"}
+            %{"shell" => "sleep 2"},
+            %{"shell" => "echo never"}
           ]
         })
 
@@ -568,27 +571,23 @@ defmodule Sark.Pipeline.RunnerTest do
       [row] = fetch_run_row(spec, rid)
       assert row["status"] == "cancelled"
 
-      # Step 0 never executed — no step rows.
+      # Watcher brutal-kills mid-step → step's record_step never sent.
       assert fetch_step_rows(spec, rid) == []
     end
 
-    test "cancel requested mid-run → first step completes, second skipped", %{spec: spec} do
+    test "cancel mid-run → runner brutal-killed, status cancelled", %{spec: spec} do
       rid = run_id()
 
       pipeline =
         build_pipeline("mid_cancel", %{
           "steps" => [
-            # Slow enough that we can set cancel while it's running.
-            %{"shell" => "sleep 0.3"},
+            %{"shell" => "sleep 2"},
             %{"shell" => "echo never"}
           ]
         })
 
       task = Task.async(fn -> run!(pipeline, spec, run_id: rid) end)
 
-      # Give the runner time to enter step 0 (past the pre-step peek),
-      # then request cancel. Step 0 finishes naturally; the post-step
-      # peek catches the flag.
       Process.sleep(100)
       Cancel.request(rid)
 
@@ -597,10 +596,6 @@ defmodule Sark.Pipeline.RunnerTest do
 
       [row] = fetch_run_row(spec, rid)
       assert row["status"] == "cancelled"
-
-      [s0] = fetch_step_rows(spec, rid)
-      assert s0["step_index"] == 0
-      assert s0["status"] == "success"
     end
 
     test "cancel flag is cleared after terminal state", %{spec: spec} do
@@ -942,6 +937,96 @@ defmodule Sark.Pipeline.RunnerTest do
       [s0] = fetch_step_rows(spec, rid)
       assert s0["tool_name"] == nil
       assert s0["row_count"] == nil
+    end
+  end
+
+  describe "kill semantics" do
+    alias Sark.Pipeline.Cancel
+
+    test "pipeline timeout → terminal status timed_out", %{spec: spec} do
+      pipeline =
+        build_pipeline("p_timeout", %{
+          "timeout" => 100,
+          "steps" => [%{"shell" => "sleep 5"}]
+        })
+
+      rid = run_id()
+      assert {:error, msg} = run!(pipeline, spec, run_id: rid)
+      assert msg =~ "pipeline timeout"
+
+      [row] = fetch_run_row(spec, rid)
+      assert row["status"] == "timed_out"
+    end
+
+    test "step timeout under transactional rolls back data, log row stands", %{spec: spec} do
+      # Step 0 writes via put tool, step 1 sleeps then writes — but
+      # step 1's timeout fires first. Whole txn rolls back.
+      pipeline =
+        build_pipeline("txn_step_to", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "should_rollback", "value" => "v"}),
+            %{"tool" => "put"},
+            %{"shell" => %{"cmd" => "sleep 5", "timeout" => 100}}
+          ]
+        })
+
+      rid = run_id()
+      assert {:error, msg} = run!(pipeline, spec, run_id: rid)
+      assert msg =~ "step 2"
+      assert msg =~ "timeout"
+
+      [row] = fetch_run_row(spec, rid)
+      assert row["status"] == "timed_out"
+
+      # Data txn rolled back — write from step 1 is gone.
+      {:ok, _, rows} = DB.read(spec.name, "SELECT key FROM kv WHERE key = ?", ["should_rollback"])
+      assert rows == []
+    end
+
+    test "cancel mid-step under transactional → status cancelled, data rolled back", %{spec: spec} do
+      rid = run_id()
+
+      pipeline =
+        build_pipeline("txn_cancel", %{
+          "transactional" => true,
+          "steps" => [
+            emit_json(%{"key" => "txn_cancel_key", "value" => "v"}),
+            %{"tool" => "put"},
+            %{"shell" => "sleep 3"}
+          ]
+        })
+
+      task = Task.async(fn -> run!(pipeline, spec, run_id: rid) end)
+
+      Process.sleep(150)
+      Cancel.request(rid)
+
+      assert {:error, msg} = Task.await(task, 5_000)
+      assert msg =~ "cancelled"
+
+      [row] = fetch_run_row(spec, rid)
+      assert row["status"] == "cancelled"
+
+      {:ok, _, rows} = DB.read(spec.name, "SELECT key FROM kv WHERE key = ?", ["txn_cancel_key"])
+      assert rows == []
+    end
+
+    test "log row durable even when runner is brutal-killed mid-step", %{spec: spec} do
+      pipeline =
+        build_pipeline("durable_log", %{
+          "timeout" => 100,
+          "steps" => [%{"shell" => "sleep 5"}]
+        })
+
+      rid = run_id()
+      assert {:error, _} = run!(pipeline, spec, run_id: rid)
+
+      # Synchronous finish_run from watcher means terminal row is
+      # visible immediately after run!/2 returns.
+      [row] = fetch_run_row(spec, rid)
+      assert row["status"] == "timed_out"
+      assert row["finished_at"] != row["started_at"]
     end
   end
 end

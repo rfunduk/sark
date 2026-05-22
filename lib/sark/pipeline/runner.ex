@@ -1,22 +1,31 @@
 defmodule Sark.Pipeline.Runner do
   @moduledoc """
   Drives one pipeline to terminal state — schedules steps, captures
-  their stdout, threads it as stdin to the next, writes `_pipeline_log`
-  + `_pipeline_step_log` rows, cleans up the workdir.
+  their stdout, threads it as stdin to the next, writes
+  `_pipeline_log` + `_pipeline_step_log` rows via `LogWriter`, cleans
+  up the workdir.
+
+  Intended to be invoked under `Sark.Pipeline.Watcher` (which spawns
+  this as a `Task` and applies uniform kill semantics — pipeline
+  timeout / cancel / step timeout all converge on
+  `Task.shutdown(:brutal_kill)`). Runner has no knowledge of cancel
+  or whole-pipeline timeout: those live in the watcher. Runner only
+  knows per-step `timeout:` and translates it to a self-exit
+  (`{:step_timeout, idx}`) via a sibling killer process.
 
   Order of operations:
 
-    1. `when:` gate — if defined, run a SELECT on the read pool. Empty
-       result set → return `{:ok, :skipped}` (no log row, mirrors the
-       legacy worker behaviour).
-    2. Prepare workdir at `/tmp/sark/{plugin}/{pipeline}/{run_id}/`
+    1. `when:` gate — if defined, run a SELECT on the read pool.
+       Empty result set → `{:ok, :skipped}` with no log row.
+    2. Emit a `start_run` cast to LogWriter (terminal `finish_run`
+       comes from the watcher).
+    3. Prepare workdir at `/tmp/sark/{plugin}/{pipeline}/{run_id}/`
        (or the pipeline's `workdir:` override).
-    3. For each step in order, execute and capture output. Output of
-       step N becomes stdin of step N+1. First step receives no stdin.
-    4. On any step failure, abort — remaining steps are skipped, the
-       run is marked failed, and a step log row records the failure.
-    5. Log terminal state, then clean up the workdir on success
-       (kept on failure for debug).
+    4. For each step, execute and capture output. Output of step N
+       becomes stdin of step N+1; first step receives no stdin.
+    5. On any step failure, abort — remaining steps are skipped, and
+       a step log row records the failure.
+    6. Cleanup workdir on success (kept on failure for debug).
 
   Pipe convention:
     * `shell:` → emits raw bytes; consumes raw bytes
@@ -26,19 +35,23 @@ defmodule Sark.Pipeline.Runner do
   Steps that consume JSON on stdin (`load:` / `tool:` / `llm:`) parse
   it once; non-JSON input errors with a clear step-level message.
 
-  The runner streams progress to `on_event` so the mix task can print
-  transcripts in real time without coupling the runner to IO.
+  Returns one of:
+
+    * `{:ok, %{run_id: id}}`   — every step completed
+    * `{:ok, :skipped}`        — `when:` gate empty (no log row)
+    * `{:error, msg}`          — step failure, when-gate error, txn
+                                 rollback. `_pipeline_log` row still
+                                 needs `finish_run` from the watcher.
   """
 
   require Logger
 
   alias Sark.LLM.Response
   alias Sark.MCP.Internal
-  alias Sark.Pipeline.Cancel
   alias Sark.Plugin.DB
   alias Sark.Plugin.Pipeline
   alias Sark.Plugin.Spec
-  alias Sark.Pipeline.Log
+  alias Sark.Pipeline.LogWriter
   alias Sark.Pipeline.Template
 
   @type triggered_by :: :schedule | :manual
@@ -88,8 +101,12 @@ defmodule Sark.Pipeline.Runner do
         {:ok, :skipped}
 
       {:error, reason} ->
-        record_failed_run(plugin, run_id, pipeline, triggered_by, "when_gate: #{inspect(reason)}")
-        {:error, {:when_failed, reason}}
+        # Emit a start_run cast so the watcher's finish_run UPDATE has
+        # a row to target. Then return the failure.
+        :ok = emit_start_run(plugin, pipeline, run_id, triggered_by)
+        msg = "when_gate: #{inspect(reason)}"
+        on_event.({:run_fail, %{run_id: run_id, error: msg}})
+        {:error, msg}
 
       {:run, _} ->
         do_run(plugin, pipeline, spec, run_id, llm, triggered_by, on_event, max_tokens)
@@ -97,8 +114,6 @@ defmodule Sark.Pipeline.Runner do
   end
 
   defp do_run(plugin, pipeline, spec, run_id, llm, triggered_by, on_event, max_tokens) do
-    started_at = now_iso8601()
-
     on_event.({:run_start, %{run_id: run_id, pipeline: pipeline.name}})
 
     workdir = ensure_workdir!(plugin, pipeline, run_id)
@@ -115,39 +130,23 @@ defmodule Sark.Pipeline.Runner do
       on_event: on_event,
       workdir: workdir,
       env: env,
-      started_at: started_at,
       conn: nil
     }
 
-    try do
-      execute_pipeline(base_state)
-    after
-      Cancel.clear(run_id)
-    end
+    :ok = emit_start_run(plugin, pipeline, run_id, triggered_by)
+    execute_pipeline(base_state)
   end
 
   # ── transactional vs non-transactional dispatch ────────────────────────────
 
-  # Non-transactional path: start_run + finish_run pool-checkout their
-  # own conn; run_steps writes step rows the same way.
   defp execute_pipeline(%{pipeline: %Pipeline{transactional: false}} = state) do
-    :ok = log_start(state)
-    result = run_steps(state)
-    finalize(state, result)
+    finalize(state, run_steps(state))
   end
 
   # Transactional path: open one writer txn on the plugin's data DB for
   # the run's data writes. Log writes target the plugin's sark DB on a
-  # separate conn — independent of the data txn, so a failure that
-  # rolls back data still leaves a terminal log row.
-  #
-  # Per-step Task.async timeouts are disabled inside a transaction
-  # because the data-writer conn is bound to this process and can't be
-  # used from a spawned Task. Shell step timeouts still work — they
-  # don't touch the DB.
-  defp execute_pipeline(%{plugin: plugin, on_event: on_event, run_id: run_id} = state) do
-    :ok = log_start(state)
-
+  # separate writer (owned by LogWriter), independent of the data txn.
+  defp execute_pipeline(%{plugin: plugin} = state) do
     result =
       DB.txn(
         plugin,
@@ -155,14 +154,8 @@ defmodule Sark.Pipeline.Runner do
           s = %{state | conn: conn}
 
           case run_steps(s) do
-            :ok ->
-              :ok
-
-            {:cancelled, _} = c ->
-              DBConnection.rollback(conn, c)
-
-            {:error, _} = e ->
-              DBConnection.rollback(conn, e)
+            :ok -> :ok
+            {:error, _} = e -> DBConnection.rollback(conn, e)
           end
         end,
         mode: :immediate
@@ -170,57 +163,32 @@ defmodule Sark.Pipeline.Runner do
 
     case result do
       {:ok, :ok} ->
-        :ok = log_finish(state, :success, nil)
-        cleanup_workdir(state.workdir)
-        on_event.({:run_ok, %{run_id: run_id}})
-        {:ok, %{run_id: run_id}}
-
-      {:error, {:cancelled, msg}} ->
-        :ok = log_finish(state, :cancelled, msg)
-        on_event.({:run_fail, %{run_id: run_id, error: msg}})
-        {:error, msg}
+        finalize(state, :ok)
 
       {:error, {:error, msg}} ->
-        :ok = log_finish(state, :failed, msg)
-        on_event.({:run_fail, %{run_id: run_id, error: msg}})
-        {:error, msg}
+        finalize(state, {:error, msg})
 
       {:error, other} ->
-        msg = "txn: #{inspect(other)}"
-        :ok = log_finish(state, :failed, msg)
-        on_event.({:run_fail, %{run_id: run_id, error: msg}})
-        {:error, msg}
+        finalize(state, {:error, "txn: #{inspect(other)}"})
     end
   end
 
-  defp log_start(state) do
-    Log.start_run(state.plugin, %{
-      run_id: state.run_id,
-      pipeline: state.pipeline.name,
-      started_at: state.started_at,
-      triggered_by: state.triggered_by
+  defp emit_start_run(plugin, %Pipeline{} = pipeline, run_id, triggered_by) do
+    LogWriter.start_run(plugin, %{
+      run_id: run_id,
+      pipeline: pipeline.name,
+      started_at: now_iso8601(),
+      triggered_by: triggered_by
     })
   end
 
-  defp log_finish(state, status, error) do
-    Log.finish_run(state.plugin, state.run_id, status, now_iso8601(), error)
-  end
-
-  defp finalize(%{on_event: on_event, run_id: run_id, workdir: workdir} = state, :ok) do
-    :ok = log_finish(state, :success, nil)
+  defp finalize(%{on_event: on_event, run_id: run_id, workdir: workdir}, :ok) do
     cleanup_workdir(workdir)
     on_event.({:run_ok, %{run_id: run_id}})
     {:ok, %{run_id: run_id}}
   end
 
-  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:cancelled, msg}) do
-    :ok = log_finish(state, :cancelled, msg)
-    on_event.({:run_fail, %{run_id: run_id, error: msg}})
-    {:error, msg}
-  end
-
-  defp finalize(%{on_event: on_event, run_id: run_id} = state, {:error, msg}) do
-    :ok = log_finish(state, :failed, msg)
+  defp finalize(%{on_event: on_event, run_id: run_id}, {:error, msg}) do
     on_event.({:run_fail, %{run_id: run_id, error: msg}})
     {:error, msg}
   end
@@ -243,16 +211,10 @@ defmodule Sark.Pipeline.Runner do
     state.pipeline.steps
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, ""}, fn {step, idx}, {:ok, stdin} ->
-      if Cancel.requested?(state.run_id) do
-        state.on_event.({:step_fail, %{index: idx, kind: step.kind, error: "cancelled"}})
-        {:halt, {:cancelled, "cancelled before step #{idx}"}}
-      else
-        run_one_step(step, idx, stdin, state)
-      end
+      run_one_step(step, idx, stdin, state)
     end)
     |> case do
       {:ok, _final_stdout} -> :ok
-      {:cancelled, _} = c -> c
       {:error, _} = err -> err
     end
   end
@@ -261,10 +223,10 @@ defmodule Sark.Pipeline.Runner do
     state.on_event.({:step_start, %{index: idx, kind: step.kind}})
     started_at = now_iso8601()
 
-    case run_step(step, stdin, state) do
+    case run_step(step, idx, stdin, state) do
       {:ok, stdout, extras} ->
         :ok =
-          Log.record_step(
+          LogWriter.record_step(
             state.plugin,
             base_step_entry(state.run_id, idx, step.kind, started_at, :success, nil)
             |> Map.put(:stdout_bytes, byte_size(stdout))
@@ -272,18 +234,11 @@ defmodule Sark.Pipeline.Runner do
           )
 
         state.on_event.({:step_ok, %{index: idx, kind: step.kind, bytes: byte_size(stdout)}})
-
-        # Post-step cancel peek: if cancelled while the step ran, halt
-        # before the next step (the step's own log row stays as success).
-        if Cancel.requested?(state.run_id) do
-          {:halt, {:cancelled, "cancelled after step #{idx}"}}
-        else
-          {:cont, {:ok, stdout}}
-        end
+        {:cont, {:ok, stdout}}
 
       {:error, msg, extras} ->
         :ok =
-          Log.record_step(
+          LogWriter.record_step(
             state.plugin,
             base_step_entry(state.run_id, idx, step.kind, started_at, :failed, msg)
             |> Map.merge(extras)
@@ -308,13 +263,10 @@ defmodule Sark.Pipeline.Runner do
 
   # ── per-step dispatch ──────────────────────────────────────────────────────
 
-  # Per-step `timeout:` takes precedence over the pipeline-level
-  # `timeout:`. nil = no ceiling.
-  defp effective_timeout(step, state),
-    do: step[:timeout_ms] || state.pipeline.timeout_ms
+  defp run_step(%{kind: :shell, cmd: cmd} = step, idx, stdin, state) do
+    fun = fn -> shell_exec(cmd, stdin, state.workdir, state.env) end
 
-  defp run_step(%{kind: :shell, cmd: cmd} = step, stdin, state) do
-    case shell_exec(cmd, stdin, state.workdir, state.env, effective_timeout(step, state)) do
+    case with_step_timer(step, idx, fun) do
       {:ok, stdout, exit_code} ->
         {:ok, stdout, %{exit_code: exit_code}}
 
@@ -323,32 +275,45 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
-  defp run_step(%{kind: :load} = step, stdin, state) do
-    maybe_timeout(state, step, fn -> load_body(step, stdin, state) end)
+  defp run_step(%{kind: :load} = step, idx, stdin, state) do
+    with_step_timer(step, idx, fn -> load_body(step, stdin, state) end)
   end
 
-  defp run_step(%{kind: :tool, tool: name} = step, stdin, state) do
-    maybe_timeout(
-      state,
-      step,
-      fn -> tool_body(step, name, stdin, state) end,
-      %{tool_name: name}
-    )
+  defp run_step(%{kind: :tool, tool: name} = step, idx, stdin, state) do
+    with_step_timer(step, idx, fn -> tool_body(step, name, stdin, state) end)
   end
 
-  defp run_step(%{kind: :llm} = step, stdin, state) do
-    maybe_timeout(state, step, fn -> llm_body(step, stdin, state) end)
+  defp run_step(%{kind: :llm} = step, idx, stdin, state) do
+    with_step_timer(step, idx, fn -> llm_body(step, stdin, state) end)
   end
 
-  # In transactional mode the writer conn is bound to this process,
-  # so a step body that touches the DB can't run in a Task. Fall back
-  # to inline execution — per-step timeouts are not enforced for
-  # load/tool/llm steps inside a transaction.
-  defp maybe_timeout(state, step, fun, extras \\ %{})
-  defp maybe_timeout(%{conn: conn}, _step, fun, _extras) when not is_nil(conn), do: fun.()
+  # Per-step timeout: spawn a killer process that exits the runner
+  # process with `{:step_timeout, idx}` when the deadline elapses.
+  # On step success the runner sends `:cancel` to the killer so it
+  # exits cleanly. If the killer fires first, the watcher above the
+  # runner sees `Task.yield` return `{:exit, {:step_timeout, idx}}`.
+  #
+  # spawn_link: killer dies if runner dies (and vice versa for any
+  # crash of killer — but killer is trivial; won't crash).
+  defp with_step_timer(%{timeout_ms: nil}, _idx, fun), do: fun.()
 
-  defp maybe_timeout(state, step, fun, extras) do
-    with_step_timeout(effective_timeout(step, state), fun, extras)
+  defp with_step_timer(%{timeout_ms: ms}, idx, fun) when is_integer(ms) and ms > 0 do
+    parent = self()
+
+    killer =
+      spawn_link(fn ->
+        receive do
+          :cancel -> :ok
+        after
+          ms -> Process.exit(parent, {:step_timeout, idx})
+        end
+      end)
+
+    try do
+      fun.()
+    after
+      send(killer, :cancel)
+    end
   end
 
   defp load_body(step, stdin, state) do
@@ -387,13 +352,9 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
-  # When a writer conn is held (transactional run), pass it to DB.read
-  # so canned loads see uncommitted writes from earlier steps.
   defp read_opts(%{conn: nil}), do: []
   defp read_opts(%{conn: conn}), do: [conn: conn]
 
-  # Same for tool calls — Internal.call_tool threads `conn:` into the
-  # tool execute path so plugin-declared writes share the txn.
   defp call_opts(%{conn: nil}), do: []
   defp call_opts(%{conn: conn}), do: [conn: conn]
 
@@ -404,75 +365,133 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
-  # Wrap a step body in a Task so we can apply a timeout. nil = no
-  # ceiling (just run inline — avoids spawning a task for the common
-  # case where authors don't set a timeout).
-  defp with_step_timeout(nil, fun, _extras), do: fun.()
-
-  defp with_step_timeout(ms, fun, extras_on_timeout) when is_integer(ms) and ms > 0 do
-    task = Task.async(fun)
-
-    case Task.yield(task, ms) do
-      {:ok, result} ->
-        result
-
-      nil ->
-        Task.shutdown(task, :brutal_kill)
-        {:error, "timeout after #{ms}ms", extras_on_timeout}
-    end
-  end
-
   # ── shell execution ────────────────────────────────────────────────────────
 
-  # Uses System.cmd with stdin piped via a temp file inside the workdir.
-  # Avoids the Erlang Port "can't half-close stdin" problem; the temp file
-  # is wiped along with the workdir on success.
-  defp shell_exec(cmd, stdin, workdir, env, timeout_ms) do
+  # Runs `/bin/sh -c <cmd>` with stdin piped via a temp file. Two modes:
+  #
+  #  * **setsid present** (Linux prod): wrap via `setsid` so the shell
+  #    becomes a session leader (PGID == PID). A sidecar process
+  #    monitors the runner; if the runner dies abnormally (timeout,
+  #    cancel, crash), the sidecar sends SIGTERM then SIGKILL to the
+  #    whole process group, taking down any backgrounded children.
+  #  * **setsid absent** (macOS dev): direct `/bin/sh` invocation.
+  #    BEAM closes the Port on Task death → SIGTERM to the direct
+  #    shell child only. Grandchildren may orphan; document in the
+  #    pipelines section of the README.
+  #
+  # Runs inline (no internal timeout). Per-step timeout is handled by
+  # `with_step_timer/3` which exits the runner with `{:step_timeout, idx}`.
+  defp shell_exec(cmd, stdin, workdir, env) do
     stdin_path = Path.join(workdir, ".sark_stdin")
     File.write!(stdin_path, stdin)
-
     shell_cmd = ~s|(#{cmd}) < #{escape_sh(stdin_path)}|
 
-    task =
-      Task.async(fn ->
-        try do
-          System.cmd("/bin/sh", ["-c", shell_cmd],
-            cd: workdir,
-            env: env_to_pairs(env),
-            stderr_to_stdout: true
-          )
-        catch
-          kind, reason -> {:exec_error, kind, reason}
-        end
-      end)
-
-    case yield_with_timeout(task, timeout_ms) do
-      {:done, {stdout, 0}} ->
-        {:ok, stdout, 0}
-
-      {:done, {stdout, code}} when is_integer(code) ->
-        {:error, "exit code #{code}", code, tail(stdout, 4_096)}
-
-      {:done, {:exec_error, kind, reason}} ->
-        {:error, "exec error: #{inspect({kind, reason})}", nil, ""}
-
-      :timeout ->
-        Task.shutdown(task, :brutal_kill)
-        {:error, "timeout after #{timeout_ms}ms", nil, ""}
+    case setsid_path() do
+      nil -> shell_exec_simple(shell_cmd, workdir, env)
+      setsid -> shell_exec_setsid(setsid, shell_cmd, workdir, env)
     end
   end
 
-  defp yield_with_timeout(task, nil), do: {:done, Task.await(task, :infinity)}
+  defp shell_exec_simple(shell_cmd, workdir, env) do
+    try do
+      {stdout, code} =
+        System.cmd("/bin/sh", ["-c", shell_cmd],
+          cd: workdir,
+          env: env_to_pairs(env),
+          stderr_to_stdout: true
+        )
 
-  defp yield_with_timeout(task, ms) when is_integer(ms) and ms > 0 do
-    case Task.yield(task, ms) do
-      {:ok, result} -> {:done, result}
-      nil -> :timeout
+      case code do
+        0 -> {:ok, stdout, 0}
+        _ -> {:error, "exit code #{code}", code, tail(stdout, 4_096)}
+      end
+    catch
+      kind, reason ->
+        {:error, "exec error: #{inspect({kind, reason})}", nil, ""}
+    end
+  end
+
+  defp shell_exec_setsid(setsid, shell_cmd, workdir, env) do
+    port_opts = [
+      :binary,
+      :exit_status,
+      :hide,
+      :stderr_to_stdout,
+      {:cd, workdir},
+      {:args, ["/bin/sh", "-c", shell_cmd]},
+      {:env, env_to_charlist_pairs(env)}
+    ]
+
+    port = Port.open({:spawn_executable, String.to_charlist(setsid)}, port_opts)
+    {:os_pid, pgid} = Port.info(port, :os_pid)
+
+    cleaner = start_pgid_cleaner(self(), pgid)
+
+    try do
+      collect_port_output(port, "")
+    after
+      send(cleaner, :done)
+    end
+  end
+
+  # Sidecar: monitors the runner. On abnormal :DOWN it SIGTERMs the
+  # process group then SIGKILLs after a grace period. On :done message
+  # (clean step completion) it exits without signalling.
+  defp start_pgid_cleaner(runner_pid, pgid) do
+    spawn(fn ->
+      ref = Process.monitor(runner_pid)
+
+      receive do
+        :done ->
+          Process.demonitor(ref, [:flush])
+          :ok
+
+        {:DOWN, ^ref, :process, _, _} ->
+          :os.cmd(~c"kill -TERM -" ++ Integer.to_charlist(pgid))
+          Process.sleep(100)
+          :os.cmd(~c"kill -KILL -" ++ Integer.to_charlist(pgid))
+      end
+    end)
+  end
+
+  defp collect_port_output(port, acc) do
+    receive do
+      {^port, {:data, chunk}} ->
+        collect_port_output(port, acc <> chunk)
+
+      {^port, {:exit_status, 0}} ->
+        {:ok, acc, 0}
+
+      {^port, {:exit_status, code}} ->
+        {:error, "exit code #{code}", code, tail(acc, 4_096)}
+    end
+  end
+
+  @setsid_key {__MODULE__, :setsid_path}
+
+  # Cached lookup of the `setsid` binary. Returns the path string on
+  # systems that have it (Linux prod) or nil (macOS dev w/o
+  # util-linux).
+  defp setsid_path do
+    case :persistent_term.get(@setsid_key, :unset) do
+      :unset ->
+        path = System.find_executable("setsid")
+        :persistent_term.put(@setsid_key, path)
+        path
+
+      cached ->
+        cached
     end
   end
 
   defp env_to_pairs(env_map) do
     Enum.map(env_map, fn {k, v} -> {k, v} end)
+  end
+
+  defp env_to_charlist_pairs(env_map) do
+    Enum.map(env_map, fn {k, v} ->
+      {String.to_charlist(k), String.to_charlist(v)}
+    end)
   end
 
   defp escape_sh(path), do: "'" <> String.replace(path, "'", "'\\''") <> "'"
@@ -482,9 +501,6 @@ defmodule Sark.Pipeline.Runner do
 
   # ── load + tool helpers ────────────────────────────────────────────────────
 
-  # Empty stdin → empty context map. Otherwise decode JSON. Strings on
-  # stdin that aren't a JSON object/array (e.g. shell output that wasn't
-  # piped through jq) error with a clear message at this boundary.
   defp decode_json_stdin("", _kind), do: {:ok, %{}}
   defp decode_json_stdin(nil, _kind), do: {:ok, %{}}
 
@@ -570,20 +586,6 @@ defmodule Sark.Pipeline.Runner do
   end
 
   defp llm_loop(state, messages, turn) do
-    if Cancel.requested?(state.run_id) do
-      {:stop,
-       %{
-         reason: :cancelled,
-         turns: max(turn - 1, 0),
-         usage: state.usage,
-         text: state.last_text
-       }}
-    else
-      do_llm_loop(state, messages, turn)
-    end
-  end
-
-  defp do_llm_loop(state, messages, turn) do
     chat_opts = %{
       model: state.step.model,
       system: state.step.system,
@@ -700,7 +702,6 @@ defmodule Sark.Pipeline.Runner do
   defp stop_reason_to_text(:max_tokens), do: "max_tokens"
   defp stop_reason_to_text(:stop_sequence), do: "stop_sequence"
   defp stop_reason_to_text(:max_turns_exceeded), do: "max_turns_exceeded"
-  defp stop_reason_to_text(:cancelled), do: "cancelled"
   defp stop_reason_to_text({:llm_error, _}), do: "error"
   defp stop_reason_to_text(other), do: inspect(other)
 
@@ -734,22 +735,6 @@ defmodule Sark.Pipeline.Runner do
     Enum.into(names, %{}, fn name ->
       {name, System.get_env(name) || ""}
     end)
-  end
-
-  # ── misc ───────────────────────────────────────────────────────────────────
-
-  defp record_failed_run(plugin, run_id, pipeline, triggered_by, msg) do
-    now = now_iso8601()
-
-    :ok =
-      Log.start_run(plugin, %{
-        run_id: run_id,
-        pipeline: pipeline.name,
-        started_at: now,
-        triggered_by: triggered_by
-      })
-
-    Log.finish_run(plugin, run_id, :failed, now, msg)
   end
 
   defp nil_if_blank(nil), do: nil

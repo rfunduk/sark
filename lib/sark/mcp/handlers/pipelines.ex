@@ -331,17 +331,16 @@ defmodule Sark.MCP.Handlers.Pipelines do
 
   # ── cancel ────────────────────────────────────────────────────────────────
 
-  # Best-effort cancel. Looks up an in-flight run for the named pipeline
-  # via Sark.Pipeline.Lock and sets a cancel flag in Sark.Pipeline.Cancel.
-  # The runner peeks the flag between steps and bails before the next
-  # one. Current step finishes naturally.
+  # Best-effort cancel. Per-pipeline lock means at most one in-flight
+  # run; resolves it via `Sark.Pipeline.Lock` and sets a cancel flag.
+  # Watcher polls the flag every 250ms and brutal-kills the runner.
   defp do_cancel(plugin, params, session) do
     case fetch_string(params, "pipeline") do
       {:error, msg} ->
         reply_error(msg, session)
 
       {:ok, pipeline_name} ->
-        case resolve_cancel_run_id(plugin, pipeline_name, Map.get(params, "run_id")) do
+        case resolve_in_flight_run_id(plugin, pipeline_name) do
           {:ok, run_id} ->
             :ok = Sark.Pipeline.Cancel.request(run_id)
             reply_json(%{ok: true, run_id: run_id}, session)
@@ -352,7 +351,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
     end
   end
 
-  defp resolve_cancel_run_id(plugin, pipeline_name, nil) do
+  defp resolve_in_flight_run_id(plugin, pipeline_name) do
     pipeline_atom = String.to_atom(pipeline_name)
 
     case Enum.find(Sark.Pipeline.Lock.in_flight(), fn {p, n, _} ->
@@ -362,9 +361,6 @@ defmodule Sark.MCP.Handlers.Pipelines do
       nil -> {:error, "no in-flight run for pipeline `#{pipeline_name}`"}
     end
   end
-
-  defp resolve_cancel_run_id(_plugin, _pipeline_name, run_id) when is_binary(run_id),
-    do: {:ok, run_id}
 
   # ── enable / disable ──────────────────────────────────────────────────────
 
@@ -528,16 +524,12 @@ defmodule Sark.MCP.Handlers.Pipelines do
       %{
         name: "sark_pipelines_cancel",
         description:
-          "Best-effort cancel of an in-flight pipeline run. The runner peeks between steps; the current step finishes naturally before the run halts. `run_id` optional — defaults to the in-flight run for `pipeline`. Returns `{ok: true, run_id}`.",
+          "Best-effort cancel of the in-flight run for `pipeline`. Sets a flag; the watcher polls every 250ms and brutal-kills the runner on hit. Errors if no run is in flight. Returns `{ok: true, run_id}`.",
         input_schema: %{
           type: "object",
           required: ["pipeline"],
           properties: %{
-            "pipeline" => %{type: "string", description: "Pipeline name."},
-            "run_id" => %{
-              type: "string",
-              description: "Run id. Omit for the in-flight run."
-            }
+            "pipeline" => %{type: "string", description: "Pipeline name."}
           }
         }
       },

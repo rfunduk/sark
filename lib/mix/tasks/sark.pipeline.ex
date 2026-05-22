@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Sark.Pipeline do
   use Mix.Task
 
   alias Sark.Pipeline.Lock
-  alias Sark.Pipeline.Runner
+  alias Sark.Pipeline.Watcher
 
   @requirements ["app.config"]
 
@@ -66,7 +66,7 @@ defmodule Mix.Tasks.Sark.Pipeline do
 
     result =
       try do
-        Runner.run(
+        Watcher.run(
           plugin: spec.name,
           pipeline: pipeline,
           spec: spec,

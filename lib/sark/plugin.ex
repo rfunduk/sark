@@ -48,10 +48,11 @@ defmodule Sark.Plugin do
     Logger.info("plugin #{spec.name} ready — db=#{db_path}")
 
     pool_children = DB.pool_children(spec.name, db_path)
+    log_writer_child = [{Sark.Pipeline.LogWriter, plugin: spec.name}]
     scheduler_child = [{Sark.Pipeline.Scheduler, spec: spec}]
 
     Supervisor.init(
-      pool_children ++ scheduler_child,
+      pool_children ++ log_writer_child ++ scheduler_child,
       strategy: :rest_for_one
     )
   end

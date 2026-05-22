@@ -47,7 +47,7 @@ defmodule Sark.CLI do
             Sark.Pipeline.TaskSup,
             fn ->
               try do
-                Sark.Pipeline.Runner.run(
+                Sark.Pipeline.Watcher.run(
                   plugin: spec.name,
                   pipeline: pipeline,
                   spec: spec,
