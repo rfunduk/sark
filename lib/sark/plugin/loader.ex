@@ -44,7 +44,8 @@ defmodule Sark.Plugin.Loader do
       tools: tools,
       pipelines: pipelines,
       allow_sql: Map.get(opts, :allow_sql, false),
-      patchable: Map.get(opts, :patchable, %{})
+      patchable: Map.get(opts, :patchable, %{}),
+      embed: Map.get(opts, :embed, %{})
     }
   end
 end

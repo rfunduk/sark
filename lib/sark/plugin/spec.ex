@@ -26,6 +26,7 @@ defmodule Sark.Plugin.Spec do
     :migrations,
     allow_sql: false,
     patchable: %{},
+    embed: %{},
     tools: [],
     pipelines: []
   ]
@@ -43,6 +44,7 @@ defmodule Sark.Plugin.Spec do
           migrations: [migration],
           allow_sql: boolean(),
           patchable: %{optional(String.t()) => [String.t()]},
+          embed: %{optional(String.t()) => Sark.Plugin.Embed.t()},
           tools: [Sark.Plugin.Tool.t()],
           pipelines: [Sark.Plugin.Pipeline.t()]
         }

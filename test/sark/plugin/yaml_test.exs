@@ -41,7 +41,7 @@ defmodule Sark.Plugin.YAMLTest do
 
   test "absent plugin.yml → empty everything + default opts", %{tmp_dir: dir} do
     plugin = write(Path.join(dir, "p"), %{})
-    assert YAML.load(plugin) == {[], [], %{allow_sql: false, patchable: %{}}}
+    assert YAML.load(plugin) == {[], [], %{allow_sql: false, patchable: %{}, embed: %{}}}
   end
 
   test "loads inline tools + pipelines", %{tmp_dir: dir} do
@@ -53,7 +53,7 @@ defmodule Sark.Plugin.YAMLTest do
     {tools, pipelines, opts} = YAML.load(plugin)
     assert [%{name: :a}] = tools
     assert [%Pipeline{name: :smoke, steps: [%{kind: :shell}]}] = pipelines
-    assert opts == %{allow_sql: false, patchable: %{}}
+    assert opts == %{allow_sql: false, patchable: %{}, embed: %{}}
   end
 
   describe "plugin-wide opts (entry only)" do
@@ -64,7 +64,7 @@ defmodule Sark.Plugin.YAMLTest do
         })
 
       {_, _, opts} = YAML.load(plugin)
-      assert opts == %{allow_sql: true, patchable: %{}}
+      assert opts == %{allow_sql: true, patchable: %{}, embed: %{}}
     end
 
     test "patchable maps table → cols", %{tmp_dir: dir} do
@@ -503,6 +503,113 @@ defmodule Sark.Plugin.YAMLTest do
         })
 
       assert_raise ArgumentError, ~r/fragment cycle/, fn -> YAML.load(plugin) end
+    end
+  end
+
+  describe "embed" do
+    test "embed defaults to empty map", %{tmp_dir: dir} do
+      plugin = write(Path.join(dir, "p"), %{"plugin.yml" => t_yaml("a")})
+      {_, _, opts} = YAML.load(plugin)
+      assert opts.embed == %{}
+    end
+
+    test "inline embed parses into table → spec map", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          embed:
+            nodes:
+              fields: [summary, body]
+              chunk: { size: 512, overlap: 64 }
+              where: "status != 'archived'"
+            docs:
+              fields: [content]
+              pk: uri
+          tools: {}
+          """
+        })
+
+      {_, _, opts} = YAML.load(plugin)
+
+      assert %{
+               "nodes" => %Sark.Plugin.Embed{
+                 fields: ["summary", "body"],
+                 pk: "id",
+                 chunk: %{size: 512, overlap: 64},
+                 where: "status != 'archived'"
+               },
+               "docs" => %Sark.Plugin.Embed{
+                 fields: ["content"],
+                 pk: "uri",
+                 chunk: nil,
+                 where: nil
+               }
+             } = opts.embed
+    end
+
+    test "embed merges across includes", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          include:
+            - more.yml
+          embed:
+            nodes:
+              fields: [body]
+          """,
+          "more.yml" => """
+          embed:
+            docs:
+              fields: [content]
+          """
+        })
+
+      {_, _, opts} = YAML.load(plugin)
+      assert Map.keys(opts.embed) |> Enum.sort() == ["docs", "nodes"]
+    end
+
+    test "duplicate embed.<table> across files raises", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          include:
+            - extra.yml
+          embed:
+            nodes:
+              fields: [body]
+          """,
+          "extra.yml" => """
+          embed:
+            nodes:
+              fields: [summary]
+          """
+        })
+
+      assert_raise RuntimeError, ~r/duplicate embed table `nodes`/, fn ->
+        YAML.load(plugin)
+      end
+    end
+
+    test "embed rejects non-map", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{"plugin.yml" => "embed: [nodes]\ntools: {}\n"})
+
+      assert_raise RuntimeError, ~r/embed must be a map/, fn -> YAML.load(plugin) end
+    end
+
+    test "embed propagates per-table validation errors", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          embed:
+            nodes:
+              chunk: { size: 1024, overlap: 128 }
+          """
+        })
+
+      assert_raise RuntimeError, ~r/embed\.nodes\.fields is required/, fn ->
+        YAML.load(plugin)
+      end
     end
   end
 end

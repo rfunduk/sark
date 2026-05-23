@@ -32,6 +32,7 @@ defmodule Sark.Plugin.YAML do
   plugin).
   """
 
+  alias Sark.Plugin.Embed
   alias Sark.Plugin.Pipeline
   alias Sark.Plugin.Tool
   alias Sark.Plugin.Tool.Fragments
@@ -40,7 +41,11 @@ defmodule Sark.Plugin.YAML do
   @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
   @entry_only_keys ~w(allow_sql include)
 
-  @type opts :: %{allow_sql: boolean(), patchable: %{optional(String.t()) => [String.t()]}}
+  @type opts :: %{
+          allow_sql: boolean(),
+          patchable: %{optional(String.t()) => [String.t()]},
+          embed: %{optional(String.t()) => Embed.t()}
+        }
 
   @spec load(Path.t()) :: {[Tool.t()], [Pipeline.t()], opts()}
   def load(plugin_dir) do
@@ -64,7 +69,7 @@ defmodule Sark.Plugin.YAML do
     end
   end
 
-  defp empty, do: {[], [], %{allow_sql: false, patchable: %{}}}
+  defp empty, do: {[], [], %{allow_sql: false, patchable: %{}, embed: %{}}}
 
   defp parse_root!(doc, plugin_dir, root_path) do
     docs = [{doc, root_path} | include_docs!(Map.get(doc, "include", []), plugin_dir, root_path)]
@@ -97,9 +102,15 @@ defmodule Sark.Plugin.YAML do
       |> Enum.map(fn {d, src} -> {parse_patchable!(Map.get(d, "patchable", %{}), src), src} end)
       |> merge_no_dupes!("patchable table")
 
+    embed =
+      docs
+      |> Enum.map(fn {d, src} -> {parse_embed!(Map.get(d, "embed", %{}), src), src} end)
+      |> merge_no_dupes!("embed table")
+
     opts = %{
       allow_sql: parse_allow_sql!(Map.get(doc, "allow_sql", false), root_path),
-      patchable: patchable
+      patchable: patchable,
+      embed: embed
     }
 
     {tools, pipelines, opts}
@@ -254,5 +265,15 @@ defmodule Sark.Plugin.YAML do
 
   defp parse_patchable!(other, path) do
     raise "plugin.yml at #{path}: patchable must be a map of table → list of columns, got #{inspect(other)}"
+  end
+
+  defp parse_embed!(nil, _source), do: %{}
+
+  defp parse_embed!(map, source) when is_map(map) do
+    Map.new(map, fn {table, raw} -> {table, Embed.parse!(table, raw, source)} end)
+  end
+
+  defp parse_embed!(other, source) do
+    raise "#{source}: embed must be a map of table → spec, got #{inspect(other)}"
   end
 end
