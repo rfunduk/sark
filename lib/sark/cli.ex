@@ -52,7 +52,7 @@ defmodule Sark.CLI do
                   pipeline: pipeline,
                   spec: spec,
                   run_id: run_id,
-                  llm: Sark.LLM.Anthropix,
+                  llm: Sark.LLM.Anthropic,
                   triggered_by: :manual
                 )
               after

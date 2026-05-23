@@ -6,8 +6,20 @@ listen: 0.0.0.0:8080
 data_dir: /storage/data
 log_level: info
 
-# Optional; only required if any plugin defines workers.
-anthropic_api_key: "${ANTHROPIC_API_KEY}"
+# LLM / Embed providers if using `llm:` pipeline steps, or `embed:`
+providers:
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+  ollama:
+    url: http://localhost:11434
+
+# Embedder spec. Required for `embed:`
+embedder:
+  provider: ollama
+  model: nomic-embed-text
+  dim: 768
+  defaults:
+    chunk: { size: 1024, overlap: 128 }
 
 # Bearer tokens. Each entry:
 #   { name: <label>, plugins: <scope>, token: <secret> }

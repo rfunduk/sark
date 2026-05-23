@@ -90,7 +90,7 @@ defmodule Sark.Pipeline.Runner do
     %Pipeline{} = pipeline = Keyword.fetch!(opts, :pipeline)
     %Spec{} = spec = Keyword.fetch!(opts, :spec)
     run_id = Keyword.fetch!(opts, :run_id)
-    llm = Keyword.get(opts, :llm, Sark.LLM.Anthropix)
+    llm = Keyword.get(opts, :llm, Sark.LLM.Anthropic)
     triggered_by = Keyword.get(opts, :triggered_by, :manual)
     on_event = Keyword.get(opts, :on_event, fn _ -> :ok end)
     max_tokens = Keyword.get(opts, :max_tokens, @default_max_tokens)

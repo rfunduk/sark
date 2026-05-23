@@ -1,9 +1,11 @@
-defmodule Sark.LLM.Anthropix do
+defmodule Sark.LLM.Anthropic do
   @moduledoc """
-  Anthropic API impl of `Sark.LLM` via the `anthropix` library.
+  Anthropic API impl of `Sark.LLM`. Talks to the Messages API via the
+  `anthropix` library — the library name is an impl detail; this
+  module is the public provider adapter.
 
-  API key sourced from sark's config (`anthropic_api_key`) unless an
-  explicit `:client` is passed in opts.
+  API key sourced from `providers.anthropic.api_key` in `config.yml`
+  unless an explicit `:client` is passed in opts.
 
   Caching: `cache_control: {type: ephemeral}` is attached to the system
   prompt and to the last tool definition. Tool list and system prompt
@@ -60,7 +62,7 @@ defmodule Sark.LLM.Anthropix do
           require Logger
 
           Logger.warning(
-            "anthropix retry #{attempt}/#{@max_attempts - 1} in #{ms}ms — #{inspect(reason)}"
+            "anthropic retry #{attempt}/#{@max_attempts - 1} in #{ms}ms — #{inspect(reason)}"
           )
 
           Process.sleep(ms)
@@ -216,12 +218,15 @@ defmodule Sark.LLM.Anthropix do
   end
 
   defp default_client do
-    case Sark.Boot.load_config!() do
-      %Sark.Config{anthropic_api_key: key} when is_binary(key) and key != "" ->
+    settings = Sark.Providers.fetch!(Sark.Boot.load_config!().providers, "anthropic")
+
+    case Map.get(settings, "api_key") do
+      key when is_binary(key) and key != "" ->
         Anthropix.init(key)
 
       _ ->
-        raise "anthropic_api_key not set in config.yml (use a literal value or `${VAR}` for env interpolation)"
+        raise "providers.anthropic.api_key not set in config.yml " <>
+                "(use a literal value or `${VAR}` for env interpolation)"
     end
   end
 

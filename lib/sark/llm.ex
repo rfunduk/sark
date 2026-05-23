@@ -10,7 +10,7 @@ defmodule Sark.LLM do
 
   Implementations:
 
-    * `Sark.LLM.Anthropix` — production impl, calls Anthropic API
+    * `Sark.LLM.Anthropic` — production impl, calls Anthropic API
     * `Sark.LLM.Stub` — test impl, replays a canned script of turns
   """
 

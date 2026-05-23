@@ -7,7 +7,17 @@ defmodule Sark.Config do
       listen: 127.0.0.1:8080
       data_dir: /var/sark/data
       log_level: info                # optional
-      anthropic_api_key: "${ANTHROPIC_API_KEY}"  # optional, ${VAR} interpolated
+      providers:                     # optional, only required if LLM/embedder used
+        anthropic:
+          api_key: "${ANTHROPIC_API_KEY}"
+        ollama:
+          url: http://localhost:11434
+      embedder:                      # optional, only required for RAG
+        provider: ollama
+        model: nomic-embed-text
+        dim: 768
+        defaults:
+          chunk: { size: 1024, overlap: 128 }
       tokens:
         - { name: ryan,   plugins: ["*"], token: sk-ryan }
         - { name: reader, plugins: [{kv: ["get", "list", "find"]}], token: sk-ro }
@@ -46,10 +56,11 @@ defmodule Sark.Config do
     :listen,
     :data_dir,
     :log_level,
-    :anthropic_api_key,
     :tokens,
     :plugins,
-    :source_path
+    :source_path,
+    providers: %Sark.Providers{},
+    embedder: nil
   ]
 
   @type listen :: {:inet.ip_address(), :inet.port_number()}
@@ -60,10 +71,11 @@ defmodule Sark.Config do
           listen: listen(),
           data_dir: String.t(),
           log_level: atom(),
-          anthropic_api_key: String.t() | nil,
           tokens: %{String.t() => token_entry()},
           plugins: %{String.t() => String.t()},
-          source_path: String.t()
+          source_path: String.t(),
+          providers: Sark.Providers.t(),
+          embedder: Sark.Embedder.Config.t() | nil
         }
 
   @env_var_re ~r/\$\{([A-Z_][A-Z0-9_]*)\}/
@@ -90,15 +102,18 @@ defmodule Sark.Config do
 
     plugins = parse_plugins(fetch!(raw, "plugins"), config_dir)
     tokens = parse_tokens(fetch!(raw, "tokens"), plugins)
+    providers = Sark.Providers.parse(Map.get(raw, "providers"))
+    embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
 
     %__MODULE__{
       listen: listen,
       data_dir: data_dir,
       log_level: parse_log_level(Map.get(raw, "log_level", "info")),
-      anthropic_api_key: Map.get(raw, "anthropic_api_key"),
       tokens: tokens,
       plugins: plugins,
-      source_path: abs
+      source_path: abs,
+      providers: providers,
+      embedder: embedder
     }
   end
 
