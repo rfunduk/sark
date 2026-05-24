@@ -6,7 +6,7 @@ defmodule Sark.MCP.Handlers.SQL do
   with a friendlier error.
   """
 
-  require Phantom.Tool, as: Reply
+  alias Phantom.Tool, as: Reply
 
   alias Sark.MCP.Telemetry
   alias Sark.Plugin.DB

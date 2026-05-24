@@ -61,21 +61,34 @@ defmodule Sark.Plugin.DB do
   order: sark writer + reader first, then data writer + reader. Sark
   DB starts first so its tables exist before the data pools come up
   and start serving queries that may reference framework state.
-  """
-  @spec pool_children(plugin_name, Path.t()) :: [Supervisor.child_spec()]
-  def pool_children(name, data_db_path) do
-    sark_path = sark_db_path(data_db_path)
 
-    pool_pair(name, :sark, sark_path) ++ pool_pair(name, :data, data_db_path)
+  Opts:
+
+    * `:data_load_extensions` — list of paths to SQLite loadable
+      extensions to load on every data-pool conn (writer + reader).
+      Used to wire `sqlite-vec` (vec0) into plugins that declare
+      `embed:`. Sark-pool conns never load extensions — they hold
+      framework state only.
+  """
+  @spec pool_children(plugin_name, Path.t(), keyword) :: [Supervisor.child_spec()]
+  def pool_children(name, data_db_path, opts \\ []) do
+    sark_path = sark_db_path(data_db_path)
+    data_extensions = Keyword.get(opts, :data_load_extensions, [])
+
+    pool_pair(name, :sark, sark_path, []) ++
+      pool_pair(name, :data, data_db_path, data_extensions)
   end
 
-  defp pool_pair(name, kind, db_path) do
+  defp pool_pair(name, kind, db_path, extensions) do
     base = [
       database: db_path,
       journal_mode: :wal,
       busy_timeout: 5_000,
       cache_size: -64_000
     ]
+
+    base =
+      if extensions == [], do: base, else: base ++ [load_extensions: extensions]
 
     writer_opts =
       base ++

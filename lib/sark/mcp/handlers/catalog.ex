@@ -11,7 +11,7 @@ defmodule Sark.MCP.Handlers.Catalog do
   Only registered when the plugin's `plugin.yml` sets `allow_sql: true`.
   """
 
-  require Phantom.Tool, as: Reply
+  alias Phantom.Tool, as: Reply
 
   alias Sark.MCP.Registry
   alias Sark.MCP.Telemetry

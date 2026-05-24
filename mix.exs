@@ -31,7 +31,8 @@ defmodule Sark.MixProject do
       {:bbmustache, "~> 1.12"},
       {:phoenix_pubsub, "~> 2.1"},
       {:anthropix, "~> 0.6"},
-      {:crontab, "~> 1.2"}
+      {:crontab, "~> 1.2"},
+      {:sqlite_vec, "~> 0.1"}
     ]
   end
 

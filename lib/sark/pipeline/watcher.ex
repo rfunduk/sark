@@ -29,8 +29,6 @@ defmodule Sark.Pipeline.Watcher do
   alias Sark.Pipeline.LogWriter
   alias Sark.Pipeline.Runner
 
-  require Logger
-
   @yield_tick_ms 250
 
   @spec run(keyword) :: {:ok, %{run_id: String.t()}} | {:ok, :skipped} | {:error, term}

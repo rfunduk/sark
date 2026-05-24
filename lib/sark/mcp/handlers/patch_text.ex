@@ -20,7 +20,7 @@ defmodule Sark.MCP.Handlers.PatchText do
   agent passes a bad name it surfaces as a structured error.
   """
 
-  require Phantom.Tool, as: Tool
+  alias Phantom.Tool
 
   alias Exqlite.Result
   alias Sark.MCP.EventBus

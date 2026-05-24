@@ -68,7 +68,7 @@ defmodule Sark.Plugin.Tool.SQL do
   defp consume_line_comment(input) do
     case :binary.match(input, "\n") do
       {pos, 1} ->
-        <<consumed::binary-size(pos), nl, rest::binary>> = input
+        <<consumed::binary-size(^pos), nl, rest::binary>> = input
         {rest, [consumed, nl]}
 
       :nomatch ->

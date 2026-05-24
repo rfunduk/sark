@@ -31,7 +31,7 @@ defmodule Sark.MCP.Handlers.Pipelines do
   message instead of stacking duplicate runs.
   """
 
-  require Phantom.Tool, as: Reply
+  alias Phantom.Tool, as: Reply
 
   alias Sark.MCP.Registry
   alias Sark.MCP.Telemetry

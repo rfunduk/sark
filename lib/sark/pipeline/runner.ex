@@ -599,8 +599,6 @@ defmodule Sark.Pipeline.Runner do
     end)
   end
 
-  defp ensure_string_keyed(other), do: other
-
   defp inspect_short(v), do: v |> inspect() |> String.slice(0, 60)
 
   # ── llm step ───────────────────────────────────────────────────────────────

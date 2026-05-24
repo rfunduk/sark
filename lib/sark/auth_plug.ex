@@ -33,7 +33,6 @@ defmodule Sark.AuthPlug do
 
   @behaviour Plug
   import Plug.Conn
-  require Logger
 
   alias Sark.AuthPlug.Scope
   alias Sark.AuthRegistry

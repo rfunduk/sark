@@ -11,7 +11,7 @@ defmodule Sark.MCP.Handlers.Tool do
   split into validation / constraint / internal classes.
   """
 
-  require Phantom.Tool, as: Reply
+  alias Phantom.Tool, as: Reply
 
   alias Exqlite.Result
   alias Sark.MCP.EventBus

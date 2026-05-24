@@ -19,6 +19,7 @@ defmodule Sark.Plugin do
 
   alias Sark.MCP.Registration
   alias Sark.Plugin.DB
+  alias Sark.Plugin.EmbedMigrator
   alias Sark.Plugin.Migrations
   alias Sark.Plugin.Spec
 
@@ -41,13 +42,15 @@ defmodule Sark.Plugin do
     db_path = Path.join(data_dir, "#{spec.name}.db")
     File.mkdir_p!(Path.dirname(db_path))
 
-    :ok = apply_internal_migrations!(spec.name, DB.sark_db_path(db_path))
+    :ok = apply_internal_sark_db_migrations!(spec.name, DB.sark_db_path(db_path))
     :ok = Migrations.apply!(spec.name, db_path, spec.migrations)
+    :ok = apply_internal_plugin_db_migrations!(spec.name, db_path)
+    :ok = maybe_apply_embed_migrations!(spec, db_path)
     Registration.register_plugin!(spec)
 
     Logger.info("plugin #{spec.name} ready — db=#{db_path}")
 
-    pool_children = DB.pool_children(spec.name, db_path)
+    pool_children = DB.pool_children(spec.name, db_path, pool_opts(spec))
     log_writer_child = [{Sark.Pipeline.LogWriter, plugin: spec.name}]
     scheduler_child = [{Sark.Pipeline.Scheduler, spec: spec}]
 
@@ -57,14 +60,13 @@ defmodule Sark.Plugin do
     )
   end
 
-  # Apply the sark-internal migration track against the plugin's sark
-  # DB. Migrations ship in `priv/internal_migrations/` and are
-  # version-locked to the sark release. Sark.Migrations.apply! opens
-  # the DB in readwrite mode, creating the file on first boot, sets
-  # WAL, ensures the tracker, then applies any pending migrations.
-  defp apply_internal_migrations!(plugin_name, sark_db_path) do
+  # Sark-managed migrations against the plugin's *sark DB* — pipeline
+  # log, scheduler state, etc. Lives in `priv/internal_migrations/`,
+  # version-locked to the sark release. Tracker: `_migrations` in the
+  # sark DB.
+  defp apply_internal_sark_db_migrations!(plugin_name, sark_db_path) do
     mig_dir = Path.join(:code.priv_dir(:sark), "internal_migrations")
-    label = "sark internal (#{plugin_name})"
+    label = "sark internal sark-db (#{plugin_name})"
 
     Sark.Migrations.apply!(
       source_label: label,
@@ -72,5 +74,40 @@ defmodule Sark.Plugin do
       migrations: Sark.Migrations.discover!(mig_dir, label),
       tracker_table: "_migrations"
     )
+  end
+
+  # Sark-managed migrations against the plugin's *plugin DB* — sark
+  # owns these tables but they sit alongside plugin data so triggers
+  # can write atomically with plugin writes (e.g. `_embed_queue`).
+  # Lives in `priv/plugin_migrations/`, version-locked to the sark
+  # release. Tracker: `_sark_internal_migrations` in the plugin DB
+  # (distinct from `_sark_migrations`, the plugin-author track).
+  defp apply_internal_plugin_db_migrations!(plugin_name, db_path) do
+    mig_dir = Path.join(:code.priv_dir(:sark), "plugin_migrations")
+    label = "sark internal plugin-db (#{plugin_name})"
+
+    Sark.Migrations.apply!(
+      source_label: label,
+      db_path: db_path,
+      migrations: Sark.Migrations.discover!(mig_dir, label),
+      tracker_table: "_sark_internal_migrations"
+    )
+  end
+
+  # No-op when the plugin doesn't declare `embed:`. Otherwise hands
+  # off to EmbedMigrator (which itself validates that an `embedder:`
+  # is configured and raises otherwise).
+  defp maybe_apply_embed_migrations!(%Spec{embed: embed}, _db_path) when map_size(embed) == 0,
+    do: :ok
+
+  defp maybe_apply_embed_migrations!(%Spec{name: name, embed: embed}, db_path) do
+    embedder = Sark.Boot.load_config!().embedder
+    EmbedMigrator.apply!(name, db_path, embed, embedder, SqliteVec.path())
+  end
+
+  defp pool_opts(%Spec{embed: embed}) when map_size(embed) == 0, do: []
+
+  defp pool_opts(%Spec{}) do
+    [data_load_extensions: [SqliteVec.path()]]
   end
 end
