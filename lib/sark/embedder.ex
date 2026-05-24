@@ -175,9 +175,17 @@ defmodule Sark.Embedder do
   @doc "Configured embedder spec, or raise if `embedder:` is absent."
   @spec fetch_spec!() :: spec()
   def fetch_spec! do
-    case Sark.Boot.load_config!() do
-      %Sark.Config{embedder: %Config{} = spec} -> spec
-      _ -> raise "embedder: not configured in config.yml"
+    # Application env override (tests) wins. Otherwise fall back to
+    # the loaded `Sark.Config`'s `embedder:` block.
+    case Application.get_env(:sark, :embedder_spec_override) do
+      %Config{} = spec ->
+        spec
+
+      nil ->
+        case Sark.Boot.load_config!() do
+          %Sark.Config{embedder: %Config{} = spec} -> spec
+          _ -> raise "embedder: not configured in config.yml"
+        end
     end
   end
 

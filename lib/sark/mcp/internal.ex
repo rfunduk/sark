@@ -77,6 +77,12 @@ defmodule Sark.MCP.Internal do
   defp dispatch(plugin, "sark_pipelines_enable", params, opts),
     do: Handlers.Pipelines.enable(plugin, params, nil, opts)
 
+  defp dispatch(plugin, "sark_embed_status", params, _opts),
+    do: Handlers.Embed.status(plugin, params, nil)
+
+  defp dispatch(plugin, "sark_embed_reindex", params, _opts),
+    do: Handlers.Embed.reindex(plugin, params, nil)
+
   defp dispatch(plugin, tool_name, params, opts) do
     Handlers.Tool.call(plugin, String.to_atom(tool_name), params, nil, opts)
   end

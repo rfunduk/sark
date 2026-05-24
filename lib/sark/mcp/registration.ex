@@ -23,30 +23,48 @@ defmodule Sark.MCP.Registration do
 
   alias Sark.MCP.Registry
   alias Sark.Plugin.Spec
+  alias Sark.Plugin.SyntheticTools
   alias Sark.Plugin.Tool
 
-  @reserved_names ~w(sark_catalog sark_sql sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune sark_pipelines_disable sark_pipelines_enable)a
+  # The whole `sark_` prefix is sark-managed. Anything sark adds later
+  # (new built-ins, new synthesised tools) is automatically protected
+  # from plugin-author collision. No legitimate plugin tool should
+  # ever use this prefix.
+  @reserved_prefix "sark_"
 
   @spec register_plugin!(Spec.t()) :: :ok
   def register_plugin!(%Spec{} = spec) do
     check_reserved_names!(spec)
-    Registry.ensure_table()
-    Registry.delete_plugin(spec.name)
-    Registry.put_spec(spec)
 
-    Enum.each(spec.tools, fn q ->
-      Registry.put(spec.name, q.name, q)
+    # Synthesise sark-managed tools (e.g. `sark_vec_<X>` per embed
+    # table) and merge into the registered tool set. They look like
+    # any other tool to the rest of the pipeline.
+    synthetic = SyntheticTools.for_spec(spec)
+    effective_spec = %{spec | tools: spec.tools ++ synthetic}
+
+    Registry.ensure_table()
+    Registry.delete_plugin(effective_spec.name)
+    Registry.put_spec(effective_spec)
+
+    Enum.each(effective_spec.tools, fn q ->
+      Registry.put(effective_spec.name, q.name, q)
     end)
 
-    handler = generate_handler!(spec)
-    router = generate_router!(spec)
+    handler = generate_handler!(effective_spec)
+    router = generate_router!(effective_spec)
 
     Phantom.Cache.register(router)
     reset_router_tools(router)
-    Phantom.Cache.add_tool(router, build_tool_specs(spec, handler))
+    Phantom.Cache.add_tool(router, build_tool_specs(effective_spec, handler))
 
     Logger.info(
-      "mcp registration — plugin=#{spec.name} tools=#{length(spec.tools)} +sark_catalog +sark_sql +sark_patch +sark_pipelines_*"
+      "mcp registration — plugin=#{effective_spec.name} " <>
+        "tools=#{length(effective_spec.tools)} " <>
+        "+sark_catalog +sark_sql +sark_patch +sark_pipelines_*" <>
+        if(map_size(effective_spec.embed) > 0,
+          do: " +sark_embed_* +sark_vec_<table>",
+          else: ""
+        )
     )
 
     :ok
@@ -78,13 +96,14 @@ defmodule Sark.MCP.Registration do
   # registration order.
   defp check_reserved_names!(%Spec{name: plugin, tools: tools}) do
     Enum.each(tools, fn q ->
-      if q.name in @reserved_names do
-        raise "plugin #{plugin}: tool name `#{q.name}` is reserved (built-in tools: #{Enum.map_join(@reserved_names, ", ", &Atom.to_string/1)})"
+      if String.starts_with?(Atom.to_string(q.name), @reserved_prefix) do
+        raise "plugin #{plugin}: tool name `#{q.name}` is reserved — " <>
+                "`#{@reserved_prefix}` prefix is sark-managed (built-ins + synthesised tools)"
       end
     end)
   end
 
-  defp generate_handler!(%Spec{name: plugin, tools: tools}) do
+  defp generate_handler!(%Spec{name: plugin, tools: tools, embed: embed}) do
     module = handler_module(plugin)
 
     tool_funcs =
@@ -150,10 +169,31 @@ defmodule Sark.MCP.Registration do
         end
       end
 
+    embed_admin_funcs =
+      if map_size(embed) > 0 do
+        for {fname, handler_fn} <- [
+              sark_embed_status: :status,
+              sark_embed_reindex: :reindex
+            ] do
+          quote do
+            def unquote(fname)(params, session) do
+              Sark.MCP.Handlers.Embed.unquote(handler_fn)(
+                unquote(plugin),
+                params,
+                session
+              )
+            end
+          end
+        end
+      else
+        []
+      end
+
     body =
       quote do
         (unquote_splicing(
-           tool_funcs ++ [catalog_func, sql_func, patch_text_func] ++ pipelines_funcs
+           tool_funcs ++
+             [catalog_func, sql_func, patch_text_func] ++ pipelines_funcs ++ embed_admin_funcs
          ))
       end
 
@@ -230,7 +270,13 @@ defmodule Sark.MCP.Registration do
   end
 
   defp build_tool_specs(
-         %Spec{name: plugin, tools: tools, allow_sql: allow_sql, patchable: patchable},
+         %Spec{
+           name: plugin,
+           tools: tools,
+           allow_sql: allow_sql,
+           patchable: patchable,
+           embed: embed
+         },
          handler
        ) do
     tool_specs =
@@ -308,7 +354,23 @@ defmodule Sark.MCP.Registration do
         }
       end)
 
-    tool_specs ++ sql_specs ++ [patch_text_spec] ++ pipelines_specs
+    embed_admin_specs =
+      if map_size(embed) > 0 do
+        Enum.map(Sark.MCP.Handlers.Embed.tool_specs(), fn ts ->
+          %{
+            name: ts.name,
+            handler: handler,
+            function: String.to_atom(ts.name),
+            description: ts.description,
+            input_schema: ts.input_schema,
+            meta: %{file: __ENV__.file, line: __ENV__.line}
+          }
+        end)
+      else
+        []
+      end
+
+    tool_specs ++ sql_specs ++ [patch_text_spec] ++ pipelines_specs ++ embed_admin_specs
   end
 
   @doc false

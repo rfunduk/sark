@@ -539,4 +539,27 @@ defmodule Sark.MCP.RegistrationTest do
       Registration.register_plugin!(spec)
     end
   end
+
+  test "raises on any sark_-prefixed plugin tool (forward-proof on future built-ins)" do
+    spec = %Sark.Plugin.Spec{
+      name: "kv",
+      dir: @kv_fixture,
+      migrations: [],
+      tools: [
+        %Sark.Plugin.Tool{
+          name: :sark_brand_new_thing,
+          description: "x",
+          returns: :results,
+          write: false,
+          params: [],
+          format: :list,
+          statements: []
+        }
+      ]
+    }
+
+    assert_raise RuntimeError, ~r/`sark_` prefix is sark-managed/, fn ->
+      Registration.register_plugin!(spec)
+    end
+  end
 end
