@@ -53,11 +53,22 @@ defmodule Sark.Plugin do
     pool_children = DB.pool_children(spec.name, db_path, pool_opts(spec))
     log_writer_child = [{Sark.Pipeline.LogWriter, plugin: spec.name}]
     scheduler_child = [{Sark.Pipeline.Scheduler, spec: spec}]
+    embed_drain_child = embed_drain_child(spec)
 
     Supervisor.init(
-      pool_children ++ log_writer_child ++ scheduler_child,
+      pool_children ++ log_writer_child ++ scheduler_child ++ embed_drain_child,
       strategy: :rest_for_one
     )
+  end
+
+  defp embed_drain_child(%Spec{embed: embed}) when map_size(embed) == 0, do: []
+
+  defp embed_drain_child(%Spec{name: name, embed: embed}) do
+    embedder = Sark.Boot.load_config!().embedder
+
+    [
+      {Sark.Plugin.EmbedDrain, [plugin: name, embed: embed, embedder: embedder]}
+    ]
   end
 
   # Sark-managed migrations against the plugin's *sark DB* — pipeline

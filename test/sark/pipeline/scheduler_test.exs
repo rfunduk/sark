@@ -1,5 +1,5 @@
 defmodule Sark.Pipeline.SchedulerTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Sark.Pipeline.Lock
   alias Sark.Pipeline.Scheduler
@@ -11,13 +11,8 @@ defmodule Sark.Pipeline.SchedulerTest do
 
   @kv_fixture Path.expand("../../fixtures/plugins/kv", __DIR__)
 
-  setup do
-    Enum.each(Lock.in_flight(), fn {plugin, name, _id} ->
-      Lock.release(plugin, name)
-    end)
-
-    :ok
-  end
+  defp unique_name(prefix \\ "sched"),
+    do: "#{prefix}_#{System.unique_integer([:positive])}"
 
   describe "matches?/2" do
     test "cron expression that matches now → true" do
@@ -37,15 +32,12 @@ defmodule Sark.Pipeline.SchedulerTest do
 
   describe "tick + fire" do
     test "acquires lock and spawns task when cron matches" do
-      # Build a hand-rolled spec with one pipeline whose cron matches
-      # every minute. The spec doesn't need a real plugin DB for this
-      # narrow test because the runner is never called — we intercept
-      # by holding the lock first so the scheduler sees `:busy`.
+      name = unique_name("busy")
       pipeline = pipeline_with_cron("every_minute", "* * * * *")
 
       spec = %Spec{
-        name: "sched_test_busy",
-        dir: "/tmp/sched_test_busy",
+        name: name,
+        dir: "/tmp/#{name}",
         migrations: [],
         tools: [],
         pipelines: [pipeline]
@@ -67,11 +59,12 @@ defmodule Sark.Pipeline.SchedulerTest do
     end
 
     test "skips pipelines without a schedule (manual-only)" do
+      name = unique_name("manual")
       manual_pipeline = pipeline_with_cron("manual", nil)
 
       spec = %Spec{
-        name: "sched_test_manual",
-        dir: "/tmp/sched_test_manual",
+        name: name,
+        dir: "/tmp/#{name}",
         migrations: [],
         tools: [],
         pipelines: [manual_pipeline]
@@ -96,15 +89,9 @@ defmodule Sark.Pipeline.SchedulerTest do
     @describetag :tmp_dir
 
     setup %{tmp_dir: dir} do
-      Sark.MCP.Registry.ensure_table()
-      Sark.MCP.Registry.delete_plugin("kv")
-
-      router = Sark.MCP.Registration.router_module("kv")
-      :persistent_term.put({Phantom, router, :tools}, [])
-      :persistent_term.put({Phantom, router, :initialized}, false)
-
-      spec = Loader.load!("kv", @kv_fixture)
-      start_supervised!({Plugin, spec: spec, data_dir: dir})
+      name = unique_name("disabled")
+      spec = Loader.load!(name, @kv_fixture)
+      start_supervised!({Plugin, spec: spec, data_dir: dir}, id: spec.name)
 
       {:ok, spec: spec}
     end

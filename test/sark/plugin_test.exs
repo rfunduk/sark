@@ -1,5 +1,5 @@
 defmodule Sark.PluginTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Sark.Plugin
   alias Sark.Plugin.DB
@@ -9,18 +9,24 @@ defmodule Sark.PluginTest do
 
   @kv_fixture Path.expand("../fixtures/plugins/kv", __DIR__)
 
+  # Generate a unique plugin name per test so registered process names
+  # (pool writers, MCP router module, etc) don't collide when tests run
+  # async. Pool count grows linearly with tests in a session; in
+  # practice the suite is small enough not to matter.
+  defp unique_name, do: "kv_#{System.unique_integer([:positive])}"
+
   defp start_plugin!(spec, data_dir) do
-    pid = start_supervised!({Plugin, spec: spec, data_dir: data_dir})
-    pid
+    start_supervised!({Plugin, spec: spec, data_dir: data_dir}, id: spec.name)
   end
 
   test "boots kv plugin and round-trips a write/read", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
-    db_path = Path.join(dir, "kv.db")
+    db_path = Path.join(dir, "#{name}.db")
     assert File.exists?(db_path)
-    assert File.exists?(Path.join(dir, "kv.sark.db"))
+    assert File.exists?(Path.join(dir, "#{name}.sark.db"))
 
     {:ok, _} =
       DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["greeting", "hello"])
@@ -30,11 +36,12 @@ defmodule Sark.PluginTest do
   end
 
   test "schema apply is idempotent across restarts", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
 
     pid1 = start_plugin!(spec, dir)
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["a", "1"])
-    stop_supervised!(Plugin)
+    stop_supervised!(spec.name)
     refute Process.alive?(pid1)
 
     _pid2 = start_plugin!(spec, dir)
@@ -44,7 +51,8 @@ defmodule Sark.PluginTest do
   end
 
   test "reader pool refuses writes (query_only)", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
     assert {:error, %Exqlite.Error{message: msg}} =
@@ -58,7 +66,8 @@ defmodule Sark.PluginTest do
   end
 
   test "WAL mode is enabled on the file", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
     assert {:ok, ["journal_mode"], [%{"journal_mode" => "wal"}]} =
@@ -66,7 +75,8 @@ defmodule Sark.PluginTest do
   end
 
   test "auto-decodes json_object / json_group_array columns", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
     {:ok, _} = DB.write(spec.name, "INSERT INTO kv (key, value) VALUES (?, ?)", ["a", "1"])
@@ -85,7 +95,8 @@ defmodule Sark.PluginTest do
   end
 
   test "sark DB pools are reachable under their kind-tagged names", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
     # Verify both writer + reader pools for the sark DB are alive.
@@ -98,7 +109,8 @@ defmodule Sark.PluginTest do
 
   test "sark-internal migrations populate _pipeline_log + _pipeline_step_log in the sark DB",
        %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
     # Tracker reflects applied internal migrations.
@@ -112,7 +124,8 @@ defmodule Sark.PluginTest do
   end
 
   test "leaves non-JSON strings starting with [ or { untouched", %{tmp_dir: dir} do
-    spec = Loader.load!("kv", @kv_fixture)
+    name = unique_name()
+    spec = Loader.load!(name, @kv_fixture)
     start_plugin!(spec, dir)
 
     {:ok, _} =

@@ -1,5 +1,5 @@
 defmodule Sark.ConfigTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   @moduletag :tmp_dir
 
@@ -54,15 +54,18 @@ defmodule Sark.ConfigTest do
   end
 
   test "interpolates ${ENV} in string values", %{tmp_dir: dir} do
-    System.put_env("SARK_TEST_TOKEN", "sk-from-env")
-    on_exit(fn -> System.delete_env("SARK_TEST_TOKEN") end)
+    # Unique env var name keeps this test parallel-safe — concurrent
+    # async tests can't clobber each other's interpolation values.
+    var = "SARK_TEST_TOKEN_#{System.unique_integer([:positive])}"
+    System.put_env(var, "sk-from-env")
+    on_exit(fn -> System.delete_env(var) end)
 
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       tokens:
-        - { name: laptop, plugins: ["*"], token: "${SARK_TEST_TOKEN}" }
+        - { name: laptop, plugins: ["*"], token: "${#{var}}" }
       plugins: {}
       """)
 
