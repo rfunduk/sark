@@ -34,6 +34,7 @@ defmodule Sark.MCP.Handlers.Tool do
 
     with {:ok, %Tool{} = q} <- Registry.get(plugin, tool_name),
          {:ok, coerced} <- Tool.coerce_params(q, raw_params),
+         {:ok, coerced} <- inject_vec_embed(q, coerced),
          {:ok, cols, value} <- execute(plugin, q, coerced, raw_params, conn) do
       reply_text(Render.render(value, q.format, q.returns, cols), session)
     else
@@ -54,6 +55,33 @@ defmodule Sark.MCP.Handlers.Tool do
 
       {:error, :scalar_no_rows} ->
         reply_error("constraint: expected at least 1 row for scalar return", session)
+
+      {:error, {:embed_failed, reason}} ->
+        reply_error("internal: embed for query failed: #{inspect(reason)}", session)
+    end
+  end
+
+  # For each text param declaring an `embed: sibling` modifier,
+  # embed (cached) the agent's value and bind the resulting vector
+  # blob under `sibling`. The plugin author's SQL can then reference
+  # both `:q` (text) and `:q_vec` (blob) in any vec0 query they want.
+  defp inject_vec_embed(%Tool{} = q, coerced) do
+    case Tool.embed_pairs(q) do
+      [] ->
+        {:ok, coerced}
+
+      pairs ->
+        Enum.reduce_while(pairs, {:ok, coerced}, fn {src, sibling}, {:ok, acc} ->
+          text = Map.get(acc, src)
+
+          case Sark.Embedder.embed_query(text) do
+            {:ok, vec_bin} ->
+              {:cont, {:ok, Map.put(acc, sibling, {:blob, vec_bin})}}
+
+            {:error, reason} ->
+              {:halt, {:error, {:embed_failed, reason}}}
+          end
+        end)
     end
   end
 

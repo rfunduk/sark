@@ -130,6 +130,48 @@ defmodule Sark.Embedder do
     adapter.embed(texts, spec)
   end
 
+  @doc """
+  Embed a single query text, returning the SQLite-vec little-endian
+  float32 binary ready to bind into a `vec0` MATCH parameter. Hits
+  `Sark.Embedder.Cache` first; misses call the adapter and cache the
+  result. Used by query-time search; the drain doesn't go through
+  this path (it batches arbitrary chunk text, which doesn't repeat).
+  """
+  @spec embed_query(String.t()) :: {:ok, binary()} | {:error, term()}
+  def embed_query(text) when is_binary(text) do
+    spec = fetch_spec!()
+    embed_query(text, spec)
+  end
+
+  @doc false
+  @spec embed_query(String.t(), Config.t()) :: {:ok, binary()} | {:error, term()}
+  def embed_query(text, %Config{} = spec) do
+    case Sark.Embedder.Cache.lookup(spec.model, text) do
+      {:ok, vec_bin} ->
+        {:ok, vec_bin}
+
+      :miss ->
+        adapter = adapter_for!(spec.provider)
+
+        case adapter.embed([text], spec) do
+          {:ok, [floats | _]} ->
+            vec_bin =
+              floats
+              |> SqliteVec.Float32.new()
+              |> SqliteVec.Float32.to_binary()
+
+            :ok = Sark.Embedder.Cache.insert(spec.model, text, vec_bin)
+            {:ok, vec_bin}
+
+          {:ok, []} ->
+            {:error, :embedder_returned_no_vectors}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
   @doc "Configured embedder spec, or raise if `embedder:` is absent."
   @spec fetch_spec!() :: spec()
   def fetch_spec! do
@@ -140,9 +182,21 @@ defmodule Sark.Embedder do
   end
 
   @doc false
-  def adapter_for!("ollama"), do: Sark.Embedder.Ollama
-
   def adapter_for!(provider) do
+    # Application env override exists primarily for tests: register a
+    # stub adapter under a chosen provider name without rebuilding
+    # provider dispatch.
+    overrides = Application.get_env(:sark, :embedder_adapter_overrides, %{})
+
+    case Map.get(overrides, provider) do
+      nil -> default_adapter_for!(provider)
+      mod -> mod
+    end
+  end
+
+  defp default_adapter_for!("ollama"), do: Sark.Embedder.Ollama
+
+  defp default_adapter_for!(provider) do
     raise "embedder.provider `#{provider}` not supported yet " <>
             "(supported: ollama)"
   end

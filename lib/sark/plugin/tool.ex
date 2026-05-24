@@ -42,7 +42,8 @@ defmodule Sark.Plugin.Tool do
           required: boolean,
           default: term | :none,
           enum: [String.t()] | nil,
-          description: String.t() | nil
+          description: String.t() | nil,
+          embed: atom | nil
         }
 
   @type statement :: %{
@@ -97,13 +98,15 @@ defmodule Sark.Plugin.Tool do
     format = parse_format!(Map.get(entry, "format"), returns, write, where)
 
     declared = MapSet.new(params, & &1.name)
+    embed_siblings = embed_sibling_names!(params, declared, where)
+    declared_all = MapSet.union(declared, embed_siblings)
 
     statements =
       Enum.map(raw_sqls, fn raw ->
         {compiled, order} = SQL.compile(raw)
 
         Enum.each(order, fn p ->
-          unless MapSet.member?(declared, p) do
+          unless MapSet.member?(declared_all, p) do
             bad!(where, "SQL references :#{p} but it is not declared in params")
           end
         end)
@@ -111,7 +114,7 @@ defmodule Sark.Plugin.Tool do
         %{raw_sql: raw, compiled_sql: compiled, param_order: order}
       end)
 
-    reject = parse_rejects!(Map.get(entry, "reject"), declared, where)
+    reject = parse_rejects!(Map.get(entry, "reject"), declared_all, where)
 
     %__MODULE__{
       name: name,
@@ -124,6 +127,81 @@ defmodule Sark.Plugin.Tool do
       statements: statements,
       reject: reject
     }
+  end
+
+  @doc """
+  Names of all params that declare an `embed:` sibling bind. Used by
+  the dispatcher to know which params need to be embedded + bound
+  under their sibling name.
+  """
+  @spec embed_pairs(t) :: [{atom, atom}]
+  def embed_pairs(%__MODULE__{params: params}) do
+    for p <- params, p.embed != nil, do: {p.name, p.embed}
+  end
+
+  @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
+
+  defp parse_embed_modifier!(nil, _type, _where), do: nil
+
+  defp parse_embed_modifier!(name_str, type, where) when is_binary(name_str) do
+    if type != :text do
+      bad!(where, "embed: only valid on text params (got type #{type})")
+    end
+
+    unless Regex.match?(@ident_re, name_str) do
+      bad!(where, "embed: `#{name_str}` is not a valid SQL identifier")
+    end
+
+    String.to_atom(name_str)
+  end
+
+  defp parse_embed_modifier!(other, _type, where) do
+    bad!(where, "embed: must be a string identifier, got #{inspect(other)}")
+  end
+
+  # Validates each param's `embed:` modifier (only valid on text params,
+  # the sibling name must be a fresh identifier not used by any other
+  # param). Returns the MapSet of sibling names so the SQL bind-check
+  # in parse!/2 can permit references to them.
+  defp embed_sibling_names!(params, declared, where) do
+    Enum.reduce(params, MapSet.new(), fn p, acc ->
+      case Map.get(p, :embed) do
+        nil ->
+          acc
+
+        sibling ->
+          if p.type != :text do
+            bad!(
+              where,
+              "param `#{p.name}` cannot declare embed:#{sibling} — only text params may embed"
+            )
+          end
+
+          unless is_atom(sibling) do
+            bad!(where, "param `#{p.name}` embed: must be an identifier, got #{inspect(sibling)}")
+          end
+
+          unless Regex.match?(@ident_re, Atom.to_string(sibling)) do
+            bad!(
+              where,
+              "param `#{p.name}` embed:#{sibling} is not a valid SQL identifier"
+            )
+          end
+
+          if MapSet.member?(declared, sibling) do
+            bad!(
+              where,
+              "param `#{p.name}` embed:#{sibling} conflicts with an existing param name"
+            )
+          end
+
+          if MapSet.member?(acc, sibling) do
+            bad!(where, "two params declare the same embed sibling `#{sibling}`")
+          end
+
+          MapSet.put(acc, sibling)
+      end
+    end)
   end
 
   # `reject:` is an optional list of pre-flight checks. Each entry is a
@@ -263,13 +341,15 @@ defmodule Sark.Plugin.Tool do
     end
 
     description = Map.get(spec, "description")
+    embed = parse_embed_modifier!(Map.get(spec, "embed"), type, where)
 
     base = %{
       type: type,
       required: required,
       default: default,
       enum: enum,
-      description: description
+      description: description,
+      embed: embed
     }
 
     case type do

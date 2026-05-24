@@ -500,4 +500,133 @@ defmodule Sark.Plugin.ToolTest do
       assert Tool.to_json_schema(q).properties["active"] == %{type: "boolean"}
     end
   end
+
+  describe "embed: modifier on text params" do
+    defp search_entry(extra \\ %{}) do
+      Map.merge(
+        %{
+          "description" => "Semantic search.",
+          "returns" => "results",
+          "params" => %{
+            "q" => %{"type" => "text", "embed" => "q_vec"},
+            "limit" => %{"type" => "integer", "default" => 10, "required" => false}
+          },
+          "sql" =>
+            "SELECT m.row_pk, ve.distance FROM _embeddings_nodes ve " <>
+              "JOIN _embeddings_nodes_meta m ON m.id = ve.rowid " <>
+              "WHERE ve.embedding MATCH :q_vec AND k = :limit"
+        },
+        extra
+      )
+    end
+
+    test "parses an embed-modified text param" do
+      q = Tool.parse!("search_nodes", search_entry())
+
+      assert Tool.embed_pairs(q) == [{:q, :q_vec}]
+
+      q_param = Enum.find(q.params, &(&1.name == :q))
+      assert q_param.type == :text
+      assert q_param.embed == :q_vec
+
+      [stmt] = q.statements
+      # SQL stays exactly as the author wrote it; sark does not rewrite.
+      assert stmt.raw_sql == search_entry()["sql"]
+
+      # `:q_vec` shows up positionally in the compiled bind list even
+      # though it's not a declared param — it's an embed sibling.
+      assert stmt.param_order == [:q_vec, :limit]
+    end
+
+    test "JSON schema reports the param as a string (agent sees text)" do
+      q = Tool.parse!("search_nodes", search_entry())
+      assert q |> Tool.to_json_schema() |> get_in([:properties, "q"]) == %{type: "string"}
+    end
+
+    test "embed: rejected on non-text params" do
+      bad =
+        search_entry(%{
+          "params" => %{
+            "q" => %{"type" => "integer", "embed" => "q_vec"},
+            "limit" => %{"type" => "integer", "default" => 10, "required" => false}
+          }
+        })
+
+      assert_raise ArgumentError, ~r/embed: only valid on text params/, fn ->
+        Tool.parse!("s", bad)
+      end
+    end
+
+    test "embed: rejected when sibling name is not a valid identifier" do
+      bad =
+        search_entry(%{
+          "params" => %{
+            "q" => %{"type" => "text", "embed" => "bad name"},
+            "limit" => %{"type" => "integer", "default" => 10, "required" => false}
+          }
+        })
+
+      assert_raise ArgumentError, ~r/embed: `bad name` is not a valid SQL identifier/, fn ->
+        Tool.parse!("s", bad)
+      end
+    end
+
+    test "embed: rejected when sibling name collides with an existing param" do
+      bad =
+        search_entry(%{
+          "params" => %{
+            "q" => %{"type" => "text", "embed" => "limit"},
+            "limit" => %{"type" => "integer", "default" => 10, "required" => false}
+          }
+        })
+
+      assert_raise ArgumentError, ~r/conflicts with an existing param name/, fn ->
+        Tool.parse!("s", bad)
+      end
+    end
+
+    test "embed: rejected when two params declare the same sibling" do
+      bad =
+        search_entry(%{
+          "params" => %{
+            "q" => %{"type" => "text", "embed" => "v"},
+            "q2" => %{"type" => "text", "embed" => "v"},
+            "limit" => %{"type" => "integer", "default" => 10, "required" => false}
+          },
+          "sql" =>
+            "SELECT m.row_pk FROM _embeddings_nodes ve " <>
+              "JOIN _embeddings_nodes_meta m ON m.id = ve.rowid " <>
+              "WHERE ve.embedding MATCH :v AND k = :limit"
+        })
+
+      assert_raise ArgumentError, ~r/two params declare the same embed sibling `v`/, fn ->
+        Tool.parse!("s", bad)
+      end
+    end
+
+    test "SQL referencing an unknown bind still fails" do
+      bad =
+        search_entry(%{
+          "sql" =>
+            "SELECT m.row_pk FROM _embeddings_nodes ve " <>
+              "JOIN _embeddings_nodes_meta m ON m.id = ve.rowid " <>
+              "WHERE ve.embedding MATCH :q_vec AND k = :limit AND score > :threshold"
+        })
+
+      assert_raise ArgumentError, ~r/:threshold but it is not declared/, fn ->
+        Tool.parse!("s", bad)
+      end
+    end
+
+    test "tool without any embed: modifier has empty embed_pairs" do
+      q =
+        Tool.parse!("plain", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT 1"
+        })
+
+      assert Tool.embed_pairs(q) == []
+    end
+  end
 end
