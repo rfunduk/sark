@@ -105,6 +105,8 @@ defmodule Sark.Config do
     providers = Sark.Providers.parse(Map.get(raw, "providers"))
     embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
 
+    :ok = Sark.Embedder.validate_config!(embedder, providers)
+
     %__MODULE__{
       listen: listen,
       data_dir: data_dir,

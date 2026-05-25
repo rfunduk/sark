@@ -75,10 +75,49 @@ defmodule Sark.EmbedderTest do
       assert Sark.Embedder.adapter_for!("ollama") == Sark.Embedder.Ollama
     end
 
+    test "openai → Sark.Embedder.OpenAI" do
+      assert Sark.Embedder.adapter_for!("openai") == Sark.Embedder.OpenAI
+    end
+
     test "unknown provider raises" do
       assert_raise RuntimeError, ~r/not supported yet/, fn ->
         Sark.Embedder.adapter_for!("voyage")
       end
+    end
+  end
+
+  describe "validate_config!/2 (boot-time)" do
+    test "nil spec → :ok (embedder optional)" do
+      assert :ok = Sark.Embedder.validate_config!(nil, %Sark.Providers{})
+    end
+
+    test "ollama → :ok even without provider block (defaults to localhost)" do
+      spec = Config.parse(%{"provider" => "ollama", "model" => "m", "dim" => 768})
+      assert :ok = Sark.Embedder.validate_config!(spec, %Sark.Providers{})
+    end
+
+    test "openai without providers.openai → raises" do
+      spec = Config.parse(%{"provider" => "openai", "model" => "m", "dim" => 1536})
+
+      assert_raise RuntimeError, ~r/providers\.openai is not configured/, fn ->
+        Sark.Embedder.validate_config!(spec, %Sark.Providers{})
+      end
+    end
+
+    test "openai with empty providers.openai → raises about api_key" do
+      spec = Config.parse(%{"provider" => "openai", "model" => "m", "dim" => 1536})
+      providers = Sark.Providers.parse(%{"openai" => %{}})
+
+      assert_raise RuntimeError, ~r/providers\.openai\.api_key not set/, fn ->
+        Sark.Embedder.validate_config!(spec, providers)
+      end
+    end
+
+    test "openai with api_key → :ok" do
+      spec = Config.parse(%{"provider" => "openai", "model" => "m", "dim" => 1536})
+      providers = Sark.Providers.parse(%{"openai" => %{"api_key" => "sk-test"}})
+
+      assert :ok = Sark.Embedder.validate_config!(spec, providers)
     end
   end
 end

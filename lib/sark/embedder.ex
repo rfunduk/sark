@@ -102,6 +102,7 @@ defmodule Sark.Embedder do
   Implementations:
 
     * `Sark.Embedder.Ollama` — calls Ollama's `/api/embed`
+    * `Sark.Embedder.OpenAI` — calls OpenAI's `/embeddings`
   """
 
   alias Sark.Embedder.Config
@@ -118,6 +119,38 @@ defmodule Sark.Embedder do
   a list and call once-per-text internally.
   """
   @callback embed([String.t()], spec()) :: {:ok, [vector()]} | {:error, term()}
+
+  @doc """
+  Boot-time validation hook. Called once during `Sark.Config.load!`
+  with the configured embedder spec + the parsed providers block.
+  Adapters raise here on missing/invalid provider settings (e.g.
+  `openai` adapter raises if `providers.openai.api_key` absent).
+
+  Fails loud at boot rather than at first embed call — operators
+  running container deployments don't see source code, so errors
+  must surface immediately.
+  """
+  @callback validate_config!(spec(), Sark.Providers.t()) :: :ok
+
+  @optional_callbacks validate_config!: 2
+
+  @doc """
+  Dispatches boot-time validation to the adapter for the configured
+  provider. No-op if `embedder:` isn't set. Raises on misconfig.
+  """
+  @spec validate_config!(spec() | nil, Sark.Providers.t()) :: :ok
+  def validate_config!(nil, _providers), do: :ok
+
+  def validate_config!(%Config{provider: provider} = spec, %Sark.Providers{} = providers) do
+    adapter = adapter_for!(provider)
+    Code.ensure_loaded(adapter)
+
+    if function_exported?(adapter, :validate_config!, 2) do
+      adapter.validate_config!(spec, providers)
+    else
+      :ok
+    end
+  end
 
   @doc """
   Convenience: embed via the configured provider. Pulls the spec out
@@ -203,9 +236,10 @@ defmodule Sark.Embedder do
   end
 
   defp default_adapter_for!("ollama"), do: Sark.Embedder.Ollama
+  defp default_adapter_for!("openai"), do: Sark.Embedder.OpenAI
 
   defp default_adapter_for!(provider) do
     raise "embedder.provider `#{provider}` not supported yet " <>
-            "(supported: ollama)"
+            "(supported: ollama, openai)"
   end
 end
