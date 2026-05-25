@@ -148,6 +148,9 @@ include:
 patchable:
   <table>: [<column>, ...]
 
+embed:
+  <table>: { fields: [<column>, ...], ... }
+
 shared:
   <name>: ...
 
@@ -483,6 +486,76 @@ sark_patch(table='notes', id=1, col='body',
 `sark_patch` is identifier-validated (never arbitrary SQL) and locked down by default.
 
 
+## Embeddings (RAG)
+
+Opt-in semantic search per table. Plugin author declares which columns to embed; Sark handles vector storage, trigger-driven indexing, and a default search tool. Built on the [`sqlite-vec`](https://github.com/asg017/sqlite-vec) extension. Requires `embedder:` configured in `config.yml`.
+
+### Declaring `embed:`
+
+`plugin.yml` top-level:
+
+```yaml
+embed:
+  nodes:
+    fields: [summary, body]                # required. columns whose text gets embedded.
+    pk: id                                 # optional, default "id".
+    chunk: { size: 1024, overlap: 128 }    # optional. falls back to embedder.defaults.chunk.
+    where: "status != 'archived'"          # optional. only matching rows indexed.
+```
+
+Sark creates `_embeddings_<table>` + `_embeddings_<table>_meta`, and installs INSERT/UPDATE/DELETE triggers on the source table. The embedder is called asynchronously.
+
+Content-hash dedup means UPDATEs that don't change embedded fields don't re-bill the embedder.
+
+### `sark_vec_<table>`
+
+Auto-registered per `embed:` table. Every plugin that declares `embed:` gets one search tool per embedded table:
+
+```
+sark_vec_<table>(q: text, limit: integer = 10) →
+  [{<all source row columns>, chunk_preview, score}]
+```
+
+`q` is natural-language; Sark embeds it (LRU-cached) before search. `score` is vec0 distance — lower = closer. Multi-chunk rows dedup to best-chunk-per-row. `limit` caps the underlying KNN `k`; final row count may be smaller after dedup.
+
+### Custom search tools
+
+For joins, filters, or different aggregation, write your own tool. Mark a text param with `embed: <sibling>` to get a vector blob bound under the sibling name; reference both in raw SQL:
+
+```yaml
+tools:
+  search_nodes:
+    description: Search nodes, filtered by protocol.
+    params:
+      q:        { type: text, embed: q_vec }
+      limit:    { type: integer, default: 10 }
+      protocol: { type: text, required: false }
+    returns: results
+    sql: |
+      SELECT n.uri, n.summary, ve.distance AS score
+      FROM _embeddings_nodes ve
+      JOIN _embeddings_nodes_meta m ON m.id = ve.rowid
+      JOIN nodes n ON n.id = m.row_pk
+      WHERE ve.embedding MATCH :q_vec
+        AND k = :limit
+        AND (:protocol IS NULL OR n.protocol = :protocol)
+      ORDER BY ve.distance
+```
+
+`:q` holds the text, `:q_vec` holds the embedded blob. The `_embeddings_<table>` virtual table + `_embeddings_<table>_meta` are Sark-owned; vec0 `MATCH` + `k = ?` are sqlite-vec syntax.
+
+### Built-in admin tools
+
+Auto-registered when the plugin declares `embed:`.
+
+- **`sark_embed_status`** — JSON snapshot. Queue counts per status + per table, last `enqueued_at`, configured `(provider, model, dim)`.
+- **`sark_embed_reindex(table)`** — wipes `_embeddings_<table>` + meta + the queue entries for that table, then enqueues every matching source row for re-embed. Use after a model/dim change in `config.yml` or after a bulk import.
+
+### Constraints
+
+- One embedder (provider + model + dim) per Sark instance, configured under `embedder:` in `config.yml`. Changing `dim` or `model` requires `sark_embed_reindex(<table>)` on every embed-configured table.
+
+
 ## Pipelines
 
 A pipeline is a step-based background job owned by a plugin. Steps run in order; the stdout of step N becomes the stdin of step N+1. Pipelines are how a plugin grows ambient behavior: ingest from an external system, fold accumulated state into a summary, post a daily digest to Slack.
@@ -498,7 +571,7 @@ pipelines:
     schedule: "0 3 * * *"                              # optional. 5-field cron. nil = manual-only.
     when: |                                            # optional. Empty result → skip (no log row).
       SELECT 1 WHERE EXISTS (SELECT 1 FROM ingest_queue)
-    env: [GITHUB_TOKEN]                                # env var names propagated from sark's env.
+    env: [GITHUB_TOKEN]                                # env var names propagated from Sark's env.
     timeout: 600000                                    # optional. Pipeline-level ceiling, ms.
     transactional: false                               # optional. true = whole run in one txn.
     steps:
@@ -536,7 +609,7 @@ Three triggers — pipeline-level timeout, per-step timeout, and `sark_pipelines
 
 ### Transactional runs
 
-Set `transactional: true` to wrap the run's plugin-data writes in a single transaction. Log writes target a separate per-plugin sark DB and stand regardless. A failure or kill rolls back all data writes; the terminal log row records the outcome.
+Set `transactional: true` to wrap the run's plugin-data writes in a single transaction. Log writes target a separate per-plugin Sark DB and stand regardless. A failure or kill rolls back all data writes; the terminal log row records the outcome.
 
 ### Notes on `shell:`
 
