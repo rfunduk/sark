@@ -206,6 +206,58 @@ defmodule Sark.Plugin.EmbedDrainTest do
 
   # ── tests ────────────────────────────────────────────────────────────
 
+  describe "split_into_chunks/3 UTF-8 safety" do
+    test "short ASCII returns input unchanged" do
+      assert EmbedDrain.split_into_chunks("hello", 100, 10) == ["hello"]
+    end
+
+    test "splits ASCII on byte boundaries" do
+      chunks = EmbedDrain.split_into_chunks(String.duplicate("a", 25), 10, 2)
+      assert Enum.all?(chunks, &String.valid?/1)
+      assert IO.iodata_to_binary(chunks) |> byte_size() >= 25
+    end
+
+    test "never splits a multi-byte codepoint (em-dash, 3 bytes)" do
+      # em-dash "—" = 0xE2 0x80 0x94. Place it so a naive byte-split
+      # at size=11 would cut between bytes 1 and 2 of the codepoint.
+      text = String.duplicate("a", 10) <> "—" <> String.duplicate("b", 10)
+      chunks = EmbedDrain.split_into_chunks(text, 11, 2)
+
+      assert Enum.all?(chunks, &String.valid?/1),
+             "chunks contain invalid UTF-8: #{inspect(chunks)}"
+
+      # Concatenating the unique-prefix portion reconstructs the source.
+      assert chunks |> Enum.join() |> String.valid?()
+    end
+
+    test "handles 4-byte codepoint (emoji) at boundary" do
+      # 🔥 = 0xF0 0x9F 0x94 0xA5 (4 bytes)
+      text = String.duplicate("x", 8) <> "🔥🔥🔥" <> String.duplicate("y", 8)
+      chunks = EmbedDrain.split_into_chunks(text, 10, 2)
+      assert Enum.all?(chunks, &String.valid?/1), inspect(chunks)
+    end
+
+    test "handles consecutive multi-byte chars" do
+      text = String.duplicate("é", 50)
+      chunks = EmbedDrain.split_into_chunks(text, 13, 3)
+      assert Enum.all?(chunks, &String.valid?/1)
+    end
+
+    test "every chunk fits within size budget" do
+      text = String.duplicate("a", 5) <> "—" <> String.duplicate("b", 50)
+      size = 12
+      chunks = EmbedDrain.split_into_chunks(text, size, 2)
+      assert Enum.all?(chunks, fn c -> byte_size(c) <= size end)
+    end
+
+    test "covers entire input (no bytes lost between chunks)" do
+      text = String.duplicate("a", 10) <> "—" <> String.duplicate("b", 10)
+      # With overlap=0 (stride=size) reconstruction is exact.
+      chunks = EmbedDrain.split_into_chunks(text, 11, 0)
+      assert IO.iodata_to_binary(chunks) == text
+    end
+  end
+
   describe "INSERT path" do
     test "drain embeds an inserted row, writes meta + vec0, deletes queue row", %{tmp_dir: dir} do
       {_db_path, _embed} = standard_setup(dir)

@@ -269,19 +269,23 @@ defmodule Sark.Plugin.EmbedDrain do
   # Byte-based chunking with overlap. Simple + deterministic; not
   # token-aware. Embedder handles whatever we hand it; if size exceeds
   # the model's context the embedder errors and the row enters retry.
-  defp split_into_chunks(text, size, _overlap) when byte_size(text) <= size do
+  # Chunk boundaries snap back to UTF-8 codepoint starts so multi-byte
+  # characters aren't split — downstream embedders reject invalid UTF-8.
+  @doc false
+  def split_into_chunks(text, size, _overlap) when byte_size(text) <= size do
     [text]
   end
 
-  defp split_into_chunks(text, size, overlap) do
+  def split_into_chunks(text, size, overlap) do
     stride = max(size - overlap, 1)
     total = byte_size(text)
     do_split(text, size, stride, 0, total, [])
   end
 
   defp do_split(text, size, stride, start, total, acc) do
-    len = min(size, total - start)
-    chunk = binary_part(text, start, len)
+    start = snap_to_codepoint(text, start, total)
+    end_pos = snap_to_codepoint(text, min(start + size, total), total)
+    chunk = binary_part(text, start, end_pos - start)
     acc = [chunk | acc]
 
     # Once the current window already covers the end, halt. Avoids
@@ -291,6 +295,18 @@ defmodule Sark.Plugin.EmbedDrain do
       Enum.reverse(acc)
     else
       do_split(text, size, stride, start + stride, total, acc)
+    end
+  end
+
+  # Walk back to the nearest UTF-8 codepoint start. Continuation bytes
+  # match 0b10xxxxxx (0x80..0xBF); leading bytes do not.
+  defp snap_to_codepoint(_text, 0, _total), do: 0
+  defp snap_to_codepoint(_text, pos, total) when pos >= total, do: total
+
+  defp snap_to_codepoint(text, pos, total) do
+    case :binary.at(text, pos) do
+      b when b >= 0x80 and b < 0xC0 -> snap_to_codepoint(text, pos - 1, total)
+      _ -> pos
     end
   end
 
