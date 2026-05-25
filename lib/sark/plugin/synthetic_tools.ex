@@ -46,8 +46,8 @@ defmodule Sark.Plugin.SyntheticTools do
       WHERE ve.embedding MATCH :q_vec AND k = :limit
     )
     SELECT t.*,
-           r.chunk_text AS chunk_preview,
-           r.distance   AS score
+           r.chunk_text       AS chunk_preview,
+           (1.0 - r.distance) AS similarity
     FROM ranked r
     JOIN #{table} t ON t.#{pk} = r.row_pk
     WHERE r.rn = 1
@@ -58,8 +58,9 @@ defmodule Sark.Plugin.SyntheticTools do
       "description" =>
         "Semantic (vector) search over `#{table}`. Returns each matching " <>
           "source row with its best-scoring chunk as `chunk_preview` plus " <>
-          "the `score` (lower = closer match). `q` is the natural-language " <>
-          "query — sark embeds it before search.",
+          "a `similarity` score in [0, 1] (higher = closer match; cosine " <>
+          "similarity). `q` is the natural-language query — sark embeds " <>
+          "it before search.",
       "returns" => "results",
       # JSON is the right surface for an agent calling vector search —
       # the results are structured records (id, body, score, etc),

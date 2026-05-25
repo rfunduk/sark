@@ -169,7 +169,7 @@ defmodule Sark.MCP.Handlers.EmbedTest do
       [first | _] = rows
       assert first["body"] == "apple"
       assert first["chunk_preview"] == "apple"
-      assert_in_delta first["score"], 0.0, 0.0001
+      assert_in_delta first["similarity"], 1.0, 0.0001
     end
 
     test "limit caps the underlying KNN k", %{plugin: p} do
@@ -191,11 +191,11 @@ defmodule Sark.MCP.Handlers.EmbedTest do
 
       [row] = call_json!(p, "sark_vec_nodes", %{"q" => "apple", "limit" => 1})
 
-      # `id` from the nodes table, plus chunk_preview + score from sark.
+      # `id` from the nodes table, plus chunk_preview + similarity from sark.
       assert Map.has_key?(row, "id")
       assert Map.has_key?(row, "body")
       assert Map.has_key?(row, "chunk_preview")
-      assert Map.has_key?(row, "score")
+      assert Map.has_key?(row, "similarity")
     end
   end
 
@@ -231,6 +231,42 @@ defmodule Sark.MCP.Handlers.EmbedTest do
   # ── sark_embed_reindex ───────────────────────────────────────────────
 
   describe "sark_embed_reindex" do
+    test "drops + recreates vec0/meta so schema drift is healed", %{plugin: p} do
+      seed_and_drain(p, ["a"])
+
+      # Simulate prior-format vec0 table by inspecting the live CREATE
+      # statement after seed.
+      {:ok, _, [%{"sql" => sql_before}]} =
+        DB.read(
+          p,
+          "SELECT sql FROM sqlite_master WHERE name = '_embeddings_nodes'",
+          []
+        )
+
+      assert sql_before =~ "distance_metric=cosine"
+
+      # Reindex — vec0 should be recreated, statement still cosine.
+      _ = call_json!(p, "sark_embed_reindex", %{"table" => "nodes"})
+
+      {:ok, _, [%{"sql" => sql_after}]} =
+        DB.read(
+          p,
+          "SELECT sql FROM sqlite_master WHERE name = '_embeddings_nodes'",
+          []
+        )
+
+      assert sql_after =~ "distance_metric=cosine"
+      # Meta got the same treatment.
+      {:ok, _, [%{"sql" => meta_sql}]} =
+        DB.read(
+          p,
+          "SELECT sql FROM sqlite_master WHERE name = '_embeddings_nodes_meta'",
+          []
+        )
+
+      assert meta_sql =~ "row_pk"
+    end
+
     test "wipes embeddings + enqueues every matching source row", %{plugin: p} do
       seed_and_drain(p, ["a", "b", "c"])
 

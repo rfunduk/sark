@@ -181,12 +181,45 @@ defmodule Sark.Plugin.EmbedMigrator do
 
   # ── per-table tables ─────────────────────────────────────────────────
 
-  defp create_embeddings!(db, plugin_name, table, dim) do
-    sql =
-      "CREATE VIRTUAL TABLE IF NOT EXISTS _embeddings_#{table} " <>
-        "USING vec0(embedding float[#{dim}])"
+  @doc """
+  SQL for the vec0 virtual table holding embeddings for `table`.
+  `if_not_exists` defaults to true (boot-time idempotent shape) but
+  callers like `sark_embed_reindex` pass false so a stale-metric or
+  stale-dim table gets a real CREATE after a preceding DROP.
+  """
+  @spec vec0_create_sql(String.t(), pos_integer(), keyword) :: String.t()
+  def vec0_create_sql(table, dim, opts \\ []) do
+    ine = if Keyword.get(opts, :if_not_exists, true), do: "IF NOT EXISTS ", else: ""
 
-    case Sqlite3.execute(db, sql) do
+    "CREATE VIRTUAL TABLE #{ine}_embeddings_#{table} " <>
+      "USING vec0(embedding float[#{dim}] distance_metric=cosine)"
+  end
+
+  @doc "SQL statements for the per-table meta companion + its row_pk index."
+  @spec meta_create_sqls(String.t(), keyword) :: [String.t()]
+  def meta_create_sqls(table, opts \\ []) do
+    ine = if Keyword.get(opts, :if_not_exists, true), do: "IF NOT EXISTS ", else: ""
+
+    [
+      """
+      CREATE TABLE #{ine}_embeddings_#{table}_meta (
+        id            INTEGER PRIMARY KEY,
+        row_pk        TEXT    NOT NULL,
+        field         TEXT    NOT NULL,
+        chunk_index   INTEGER NOT NULL DEFAULT 0,
+        chunk_text    TEXT    NOT NULL,
+        content_hash  TEXT    NOT NULL,
+        config_hash   TEXT    NOT NULL,
+        embedded_at   TEXT    NOT NULL
+      )
+      """,
+      "CREATE INDEX #{ine}_embeddings_#{table}_meta_row " <>
+        "ON _embeddings_#{table}_meta(row_pk)"
+    ]
+  end
+
+  defp create_embeddings!(db, plugin_name, table, dim) do
+    case Sqlite3.execute(db, vec0_create_sql(table, dim)) do
       :ok ->
         :ok
 
@@ -196,27 +229,11 @@ defmodule Sark.Plugin.EmbedMigrator do
   end
 
   defp create_meta!(db, plugin_name, table) do
-    sql = """
-    CREATE TABLE IF NOT EXISTS _embeddings_#{table}_meta (
-      id            INTEGER PRIMARY KEY,
-      row_pk        TEXT    NOT NULL,
-      field         TEXT    NOT NULL,
-      chunk_index   INTEGER NOT NULL DEFAULT 0,
-      chunk_text    TEXT    NOT NULL,
-      content_hash  TEXT    NOT NULL,
-      config_hash   TEXT    NOT NULL,
-      embedded_at   TEXT    NOT NULL
-    )
-    """
+    [table_sql, index_sql] = meta_create_sqls(table)
 
-    case Sqlite3.execute(db, sql) do
+    case Sqlite3.execute(db, table_sql) do
       :ok ->
-        :ok =
-          Sqlite3.execute(
-            db,
-            "CREATE INDEX IF NOT EXISTS _embeddings_#{table}_meta_row " <>
-              "ON _embeddings_#{table}_meta(row_pk)"
-          )
+        :ok = Sqlite3.execute(db, index_sql)
 
         :ok
 

@@ -36,6 +36,7 @@ Or build from source if you have Elixir 1.19+:
 
 ```
 mix deps.get
+mix deps.compile
 SARK_CONFIG=config.dev.yml mix sark
 ```
 
@@ -513,10 +514,12 @@ Auto-registered per `embed:` table. Every plugin that declares `embed:` gets one
 
 ```
 sark_vec_<table>(q: text, limit: integer = 10) →
-  [{<all source row columns>, chunk_preview, score}]
+  [{<all source row columns>, chunk_preview, similarity}]
 ```
 
-`q` is natural-language; Sark embeds it (LRU-cached) before search. `score` is vec0 distance — lower = closer. Multi-chunk rows dedup to best-chunk-per-row. `limit` caps the underlying KNN `k`; final row count may be smaller after dedup.
+`q` is natural-language; Sark embeds it (LRU-cached) before search. `similarity` is in `[0, 1]` — 1.0 = identical meaning, 0.0 = unrelated (cosine similarity, derived from vec0's cosine distance). Multi-chunk rows dedup to best-chunk-per-row. `limit` caps the underlying KNN `k`; final row count may be smaller after dedup.
+
+> **First-cut tool, not destination.** `sark_vec_<table>` returns every column of the source row — fine for flat schemas (notes, snippets, single-blob plugins). For schemas with related tables, status filters, or where you only want a few columns surfaced, write a custom search tool (next section). Built-in stays as a smoke-test + escape hatch.
 
 ### Custom search tools
 
@@ -532,7 +535,7 @@ tools:
       protocol: { type: text, required: false }
     returns: results
     sql: |
-      SELECT n.uri, n.summary, ve.distance AS score
+      SELECT n.uri, n.summary, (1.0 - ve.distance) AS similarity
       FROM _embeddings_nodes ve
       JOIN _embeddings_nodes_meta m ON m.id = ve.rowid
       JOIN nodes n ON n.id = m.row_pk
@@ -549,7 +552,7 @@ tools:
 Auto-registered when the plugin declares `embed:`.
 
 - **`sark_embed_status`** — JSON snapshot. Queue counts per status + per table, last `enqueued_at`, configured `(provider, model, dim)`.
-- **`sark_embed_reindex(table)`** — wipes `_embeddings_<table>` + meta + the queue entries for that table, then enqueues every matching source row for re-embed. Use after a model/dim change in `config.yml` or after a bulk import.
+- **`sark_embed_reindex(table)`** — drops + recreates `_embeddings_<table>` + meta (heals any schema drift — metric, dim, future columns), clears the queue for that table, then enqueues every matching source row for re-embed. Use after a model/dim change in `config.yml`, after adding `embed:` to a previously-populated table, or after a bulk import.
 
 ### Constraints
 

@@ -157,11 +157,27 @@ defmodule Sark.MCP.Handlers.Embed do
   end
 
   defp do_reindex(plugin, %Embed{table: table, pk: pk, where: where}) do
-    # Wipe derived state for this table, then enqueue every matching
-    # source row. Drain rebuilds via the normal INSERT path.
+    # Drop + recreate the derived tables so any schema drift
+    # (distance_metric, dim, future columns) gets picked up — DELETE
+    # rows wouldn't change the vec0 declaration. Then enqueue every
+    # matching source row; drain rebuilds via the normal INSERT path.
+    dim = Sark.Embedder.fetch_spec!().dim
+
     case DB.txn(plugin, fn conn ->
-           Exqlite.query!(conn, "DELETE FROM _embeddings_#{table}_meta", [])
-           Exqlite.query!(conn, "DELETE FROM _embeddings_#{table}", [])
+           Exqlite.query!(conn, "DROP TABLE IF EXISTS _embeddings_#{table}_meta", [])
+           Exqlite.query!(conn, "DROP TABLE IF EXISTS _embeddings_#{table}", [])
+
+           Exqlite.query!(
+             conn,
+             Sark.Plugin.EmbedMigrator.vec0_create_sql(table, dim, if_not_exists: false),
+             []
+           )
+
+           Enum.each(
+             Sark.Plugin.EmbedMigrator.meta_create_sqls(table, if_not_exists: false),
+             fn sql -> Exqlite.query!(conn, sql, []) end
+           )
+
            Exqlite.query!(conn, "DELETE FROM _embed_queue WHERE table_name = ?", [table])
 
            enqueue_sql = """
