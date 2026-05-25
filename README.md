@@ -146,6 +146,11 @@ include:
   - otherfile.yml
   - stuff/*.yml
 
+db:                            # optional. SQLite pool + page-cache tuning.
+  readers: 4                   #   reader pool size (default 4)
+  cache_size: -16000           #   per-conn cache (neg = KiB, pos = pages; default -16000 ≈ 16MB)
+  mmap_size: 268435456         #   bytes mmap'd from DB file (default 256MB)
+
 patchable:
   <table>: [<column>, ...]
 
@@ -689,6 +694,34 @@ Every plugin gets these without declaring them.
 
 
 ## Misc
+
+### Nested `json_each`
+
+`json_extract(...)` returns TEXT without SQLite's JSON subtype tag. Feeding that result into a second `json_each` — e.g. fanning out an array nested inside each batch element — raises `malformed JSON`. Wrap with `json(...)` to re-tag:
+
+```sql
+FROM json_each(:batches) b,
+     json_each(json(json_extract(b.value, '$.dst_uris'))) d
+```
+
+Only matters for the nested case. A single `json_each(:param)` over an array param works fine, because the bound TEXT is parsed fresh.
+
+### Tuning SQLite for throughput (`db:`)
+
+Tune via the `db:` block in `plugin.yml` when a plugin sees high read concurrency or is memory-constrained. Defaults suit most plugins:
+
+```yaml
+db:
+  readers: 4                # reader pool size
+  cache_size: -16000        # per-conn page cache (neg = KiB, pos = pages)
+  mmap_size: 268435456      # bytes mmap'd from the DB file (256MB)
+```
+
+**`readers`** — number of reader connections per plugin DB. Up to N read queries run in parallel before incoming reads queue. Writer is fixed at 1 (SQLite serialises writes regardless). Bump for read-heavy plugins serving many concurrent MCP clients.
+
+**`cache_size`** — SQLite's per-connection page cache. Sign-encoded: negative N = |N| KiB, positive N = N pages. Earns its keep inside complex queries (joins, subqueries) where the same pages get touched many times. Each reader warms its own copy, so a too-large value just duplicates hot pages N times in heap.
+
+**`mmap_size`** — maps the DB file into the process's virtual address space, letting SQLite read pages directly out of OS-mapped memory. Shared across connections. Virtual address space only — set generously.
 
 ### Versioning a column
 

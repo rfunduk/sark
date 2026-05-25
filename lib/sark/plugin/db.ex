@@ -26,6 +26,8 @@ defmodule Sark.Plugin.DB do
 
   @writer_pool_size 1
   @reader_pool_size 4
+  @cache_size -16_000
+  @mmap_size 268_435_456
 
   @type plugin_name :: String.t()
   @type role :: :read | :write
@@ -69,22 +71,32 @@ defmodule Sark.Plugin.DB do
       Used to wire `sqlite-vec` (vec0) into plugins that declare
       `embed:`. Sark-pool conns never load extensions — they hold
       framework state only.
+    * `:readers` — reader pool size. Default `#{@reader_pool_size}`.
+    * `:cache_size` — SQLite `cache_size` PRAGMA (negative = KiB,
+      positive = pages). Default `#{@cache_size}` (~16MB per conn).
+    * `:mmap_size` — SQLite `mmap_size` PRAGMA in bytes. Zero-copy
+      shared OS page cache. Default `#{@mmap_size}` (256MB).
   """
   @spec pool_children(plugin_name, Path.t(), keyword) :: [Supervisor.child_spec()]
   def pool_children(name, data_db_path, opts \\ []) do
     sark_path = sark_db_path(data_db_path)
     data_extensions = Keyword.get(opts, :data_load_extensions, [])
 
-    pool_pair(name, :sark, sark_path, []) ++
-      pool_pair(name, :data, data_db_path, data_extensions)
+    pool_pair(name, :sark, sark_path, [], opts) ++
+      pool_pair(name, :data, data_db_path, data_extensions, opts)
   end
 
-  defp pool_pair(name, kind, db_path, extensions) do
+  defp pool_pair(name, kind, db_path, extensions, opts) do
+    readers = Keyword.get(opts, :readers, @reader_pool_size)
+    cache_size = Keyword.get(opts, :cache_size, @cache_size)
+    mmap_size = Keyword.get(opts, :mmap_size, @mmap_size)
+
     base = [
       database: db_path,
       journal_mode: :wal,
       busy_timeout: 5_000,
-      cache_size: -64_000
+      cache_size: cache_size,
+      custom_pragmas: [{:mmap_size, mmap_size}]
     ]
 
     base =
@@ -98,12 +110,11 @@ defmodule Sark.Plugin.DB do
         ]
 
     reader_opts =
-      base ++
-        [
-          name: reader_name(name, kind),
-          pool_size: @reader_pool_size,
-          custom_pragmas: [{:query_only, true}]
-        ]
+      Keyword.merge(base,
+        name: reader_name(name, kind),
+        pool_size: readers,
+        custom_pragmas: [{:mmap_size, mmap_size}, {:query_only, true}]
+      )
 
     [
       Supervisor.child_spec({Exqlite, writer_opts}, id: {:writer, name, kind}),

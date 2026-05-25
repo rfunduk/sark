@@ -39,12 +39,13 @@ defmodule Sark.Plugin.YAML do
 
   @entry "plugin.yml"
   @ident_re ~r/^[A-Za-z_][A-Za-z0-9_]*$/
-  @entry_only_keys ~w(allow_sql include)
+  @entry_only_keys ~w(allow_sql include db)
 
   @type opts :: %{
           allow_sql: boolean(),
           patchable: %{optional(String.t()) => [String.t()]},
-          embed: %{optional(String.t()) => Embed.t()}
+          embed: %{optional(String.t()) => Embed.t()},
+          db: %{optional(atom()) => integer()}
         }
 
   @spec load(Path.t()) :: {[Tool.t()], [Pipeline.t()], opts()}
@@ -69,7 +70,7 @@ defmodule Sark.Plugin.YAML do
     end
   end
 
-  defp empty, do: {[], [], %{allow_sql: false, patchable: %{}, embed: %{}}}
+  defp empty, do: {[], [], %{allow_sql: false, patchable: %{}, embed: %{}, db: %{}}}
 
   defp parse_root!(doc, plugin_dir, root_path) do
     docs = [{doc, root_path} | include_docs!(Map.get(doc, "include", []), plugin_dir, root_path)]
@@ -110,10 +111,43 @@ defmodule Sark.Plugin.YAML do
     opts = %{
       allow_sql: parse_allow_sql!(Map.get(doc, "allow_sql", false), root_path),
       patchable: patchable,
-      embed: embed
+      embed: embed,
+      db: parse_db!(Map.get(doc, "db", %{}), root_path)
     }
 
     {tools, pipelines, opts}
+  end
+
+  @db_keys ~w(readers cache_size mmap_size)
+
+  defp parse_db!(nil, _root_path), do: %{}
+  defp parse_db!(map, _root_path) when map == %{}, do: %{}
+
+  defp parse_db!(map, root_path) when is_map(map) do
+    bad_keys = Map.keys(map) -- @db_keys
+
+    if bad_keys != [] do
+      raise "plugin.yml at #{root_path}: db.#{Enum.join(bad_keys, ", db.")} " <>
+              "unknown — valid keys: #{Enum.join(@db_keys, ", ")}"
+    end
+
+    Enum.reduce(map, %{}, fn {k, v}, acc ->
+      Map.put(acc, validate_db_key!(k, v, root_path), v)
+    end)
+  end
+
+  defp parse_db!(other, root_path) do
+    raise "plugin.yml at #{root_path}: db must be a map, got #{inspect(other)}"
+  end
+
+  defp validate_db_key!("readers", v, _root_path) when is_integer(v) and v > 0, do: :readers
+  defp validate_db_key!("cache_size", v, _root_path) when is_integer(v), do: :cache_size
+
+  defp validate_db_key!("mmap_size", v, _root_path) when is_integer(v) and v >= 0,
+    do: :mmap_size
+
+  defp validate_db_key!(k, v, root_path) do
+    raise "plugin.yml at #{root_path}: db.#{k} invalid value #{inspect(v)}"
   end
 
   # --- include expansion -----------------------------------------------------

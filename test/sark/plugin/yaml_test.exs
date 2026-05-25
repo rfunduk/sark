@@ -41,7 +41,9 @@ defmodule Sark.Plugin.YAMLTest do
 
   test "absent plugin.yml → empty everything + default opts", %{tmp_dir: dir} do
     plugin = write(Path.join(dir, "p"), %{})
-    assert YAML.load(plugin) == {[], [], %{allow_sql: false, patchable: %{}, embed: %{}}}
+
+    assert YAML.load(plugin) ==
+             {[], [], %{allow_sql: false, patchable: %{}, embed: %{}, db: %{}}}
   end
 
   test "loads inline tools + pipelines", %{tmp_dir: dir} do
@@ -53,7 +55,7 @@ defmodule Sark.Plugin.YAMLTest do
     {tools, pipelines, opts} = YAML.load(plugin)
     assert [%{name: :a}] = tools
     assert [%Pipeline{name: :smoke, steps: [%{kind: :shell}]}] = pipelines
-    assert opts == %{allow_sql: false, patchable: %{}, embed: %{}}
+    assert opts == %{allow_sql: false, patchable: %{}, embed: %{}, db: %{}}
   end
 
   describe "plugin-wide opts (entry only)" do
@@ -64,7 +66,7 @@ defmodule Sark.Plugin.YAMLTest do
         })
 
       {_, _, opts} = YAML.load(plugin)
-      assert opts == %{allow_sql: true, patchable: %{}, embed: %{}}
+      assert opts == %{allow_sql: true, patchable: %{}, embed: %{}, db: %{}}
     end
 
     test "patchable maps table → cols", %{tmp_dir: dir} do
@@ -127,6 +129,50 @@ defmodule Sark.Plugin.YAMLTest do
         write(Path.join(dir, "p"), %{"plugin.yml" => "allow_sql: yes_please\ntools: {}\n"})
 
       assert_raise RuntimeError, ~r/allow_sql must be boolean/, fn -> YAML.load(plugin) end
+    end
+
+    test "db block parsed with atom keys", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          db:
+            readers: 8
+            cache_size: -32000
+            mmap_size: 536870912
+          tools: {}
+          """
+        })
+
+      {_, _, opts} = YAML.load(plugin)
+      assert opts.db == %{readers: 8, cache_size: -32_000, mmap_size: 536_870_912}
+    end
+
+    test "db defaults to empty map", %{tmp_dir: dir} do
+      plugin = write(Path.join(dir, "p"), %{"plugin.yml" => t_yaml("a")})
+      {_, _, opts} = YAML.load(plugin)
+      assert opts.db == %{}
+    end
+
+    test "db unknown key raises", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => "db:\n  page_size: 4096\ntools: {}\n"
+        })
+
+      assert_raise RuntimeError, ~r/db\.page_size unknown/, fn -> YAML.load(plugin) end
+    end
+
+    test "db readers must be positive", %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{"plugin.yml" => "db:\n  readers: 0\ntools: {}\n"})
+
+      assert_raise RuntimeError, ~r/db\.readers invalid/, fn -> YAML.load(plugin) end
+    end
+
+    test "db non-map raises", %{tmp_dir: dir} do
+      plugin = write(Path.join(dir, "p"), %{"plugin.yml" => "db: 5\ntools: {}\n"})
+
+      assert_raise RuntimeError, ~r/db must be a map/, fn -> YAML.load(plugin) end
     end
   end
 

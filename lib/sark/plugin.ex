@@ -116,9 +116,20 @@ defmodule Sark.Plugin do
     EmbedMigrator.apply!(name, db_path, embed, embedder, SqliteVec.path())
   end
 
-  defp pool_opts(%Spec{embed: embed}) when map_size(embed) == 0, do: []
+  defp pool_opts(%Spec{embed: embed, db: db}) when map_size(embed) == 0 do
+    db_opts(db)
+  end
 
-  defp pool_opts(%Spec{}) do
-    [data_load_extensions: [SqliteVec.path()]]
+  defp pool_opts(%Spec{db: db}) do
+    [data_load_extensions: [SqliteVec.path()]] ++ db_opts(db)
+  end
+
+  defp db_opts(db) when is_map(db) do
+    Enum.flat_map([:readers, :cache_size, :mmap_size], fn key ->
+      case Map.fetch(db, key) do
+        {:ok, v} -> [{key, v}]
+        :error -> []
+      end
+    end)
   end
 end

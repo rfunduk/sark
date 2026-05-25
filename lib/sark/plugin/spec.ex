@@ -28,7 +28,8 @@ defmodule Sark.Plugin.Spec do
     patchable: %{},
     embed: %{},
     tools: [],
-    pipelines: []
+    pipelines: [],
+    db: %{}
   ]
 
   @type migration :: %{
@@ -36,6 +37,12 @@ defmodule Sark.Plugin.Spec do
           name: String.t(),
           path: String.t(),
           sql: String.t()
+        }
+
+  @type db_opts :: %{
+          optional(:readers) => pos_integer(),
+          optional(:cache_size) => integer(),
+          optional(:mmap_size) => non_neg_integer()
         }
 
   @type t :: %__MODULE__{
@@ -46,6 +53,7 @@ defmodule Sark.Plugin.Spec do
           patchable: %{optional(String.t()) => [String.t()]},
           embed: %{optional(String.t()) => Sark.Plugin.Embed.t()},
           tools: [Sark.Plugin.Tool.t()],
-          pipelines: [Sark.Plugin.Pipeline.t()]
+          pipelines: [Sark.Plugin.Pipeline.t()],
+          db: db_opts()
         }
 end

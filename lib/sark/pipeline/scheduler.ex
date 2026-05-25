@@ -117,31 +117,50 @@ defmodule Sark.Pipeline.Scheduler do
       Task.Supervisor.start_child(
         Sark.Pipeline.TaskSup,
         fn ->
-          Logger.info("scheduler #{plugin}.#{pipeline.name} — firing run #{run_id}")
-
-          try do
-            Watcher.run(
-              plugin: plugin,
-              pipeline: pipeline,
-              spec: spec,
-              run_id: run_id,
-              llm: Sark.LLM.Anthropic,
-              triggered_by: :schedule
-            )
-          rescue
-            e ->
-              Logger.error(
-                "scheduler #{plugin}.#{pipeline.name} — runner raised: #{Exception.message(e)}"
+          result =
+            try do
+              Watcher.run(
+                plugin: plugin,
+                pipeline: pipeline,
+                spec: spec,
+                run_id: run_id,
+                llm: Sark.LLM.Anthropic,
+                triggered_by: :schedule
               )
+            rescue
+              e ->
+                Logger.error(
+                  "scheduler #{plugin}.#{pipeline.name} — runner raised: #{Exception.message(e)}"
+                )
 
-              {:error, e}
-          after
-            Lock.release(plugin, pipeline.name)
-          end
+                {:error, e}
+            after
+              Lock.release(plugin, pipeline.name)
+            end
+
+          log_outcome(plugin, pipeline.name, run_id, result)
         end,
         restart: :temporary
       )
 
     Lock.register_run(plugin, pipeline.name, pid)
+  end
+
+  defp log_outcome(plugin, name, run_id, {:ok, :skipped}) do
+    Logger.debug("scheduler #{plugin}.#{name} — run #{run_id} skipped (when: gate)")
+  end
+
+  defp log_outcome(plugin, name, run_id, {:ok, _}) do
+    Logger.info("scheduler #{plugin}.#{name} — run #{run_id} ok")
+  end
+
+  defp log_outcome(plugin, name, run_id, {:error, msg}) do
+    Logger.warning("scheduler #{plugin}.#{name} — run #{run_id} failed: #{inspect(msg)}")
+  end
+
+  defp log_outcome(plugin, name, run_id, other) do
+    Logger.warning(
+      "scheduler #{plugin}.#{name} — run #{run_id} unexpected return: #{inspect(other)}"
+    )
   end
 end
