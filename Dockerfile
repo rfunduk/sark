@@ -32,6 +32,7 @@ COPY priv priv
 ARG VERSION=0.0.0-dev
 ENV VERSION=${VERSION}
 
+RUN mix compile --force
 RUN mix release
 
 # ---- runtime ----
