@@ -79,9 +79,13 @@ defmodule Sark.EmbedderTest do
       assert Sark.Embedder.adapter_for!("openai") == Sark.Embedder.OpenAI
     end
 
+    test "voyage → Sark.Embedder.Voyage" do
+      assert Sark.Embedder.adapter_for!("voyage") == Sark.Embedder.Voyage
+    end
+
     test "unknown provider raises" do
       assert_raise RuntimeError, ~r/not supported yet/, fn ->
-        Sark.Embedder.adapter_for!("voyage")
+        Sark.Embedder.adapter_for!("cohere")
       end
     end
   end

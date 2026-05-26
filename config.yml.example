@@ -12,6 +12,10 @@ providers:
     api_key: "${ANTHROPIC_API_KEY}"
   ollama:
     url: http://localhost:11434
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+  voyage:
+    api_key: "${VOYAGE_API_KEY}"
 
 # Embedder spec. Required for `embed:`
 embedder:

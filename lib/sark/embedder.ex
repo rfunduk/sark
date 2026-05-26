@@ -103,6 +103,7 @@ defmodule Sark.Embedder do
 
     * `Sark.Embedder.Ollama` — calls Ollama's `/api/embed`
     * `Sark.Embedder.OpenAI` — calls OpenAI's `/embeddings`
+    * `Sark.Embedder.Voyage` — calls Voyage AI's `/embeddings`
   """
 
   alias Sark.Embedder.Config
@@ -237,9 +238,10 @@ defmodule Sark.Embedder do
 
   defp default_adapter_for!("ollama"), do: Sark.Embedder.Ollama
   defp default_adapter_for!("openai"), do: Sark.Embedder.OpenAI
+  defp default_adapter_for!("voyage"), do: Sark.Embedder.Voyage
 
   defp default_adapter_for!(provider) do
     raise "embedder.provider `#{provider}` not supported yet " <>
-            "(supported: ollama, openai)"
+            "(supported: ollama, openai, voyage)"
   end
 end

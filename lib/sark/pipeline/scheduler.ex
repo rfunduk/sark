@@ -157,10 +157,4 @@ defmodule Sark.Pipeline.Scheduler do
   defp log_outcome(plugin, name, run_id, {:error, msg}) do
     Logger.warning("scheduler #{plugin}.#{name} — run #{run_id} failed: #{inspect(msg)}")
   end
-
-  defp log_outcome(plugin, name, run_id, other) do
-    Logger.warning(
-      "scheduler #{plugin}.#{name} — run #{run_id} unexpected return: #{inspect(other)}"
-    )
-  end
 end
