@@ -41,7 +41,13 @@ auth:
     issuer: https://accounts.google.com
     client_id: xyz123.apps.googleusercontent.com
     client_secret: "${OIDC_CLIENT_SECRET}"
-    audience: "override" # by default -> `client_id` if set, else `sark`
+
+    # by default -> `client_id` if set, else "sark"
+    audience: "myoverride"
+
+    # optional, add to scope. some OIDC require `offline_access` or similar
+    # base set -> [openid, email, profile]
+    scope: [offline_access]
 
 # Plugin map: name → directory. The name is the routing key everywhere
 # (URL path `/<name>/mcp`, DB filename, token scopes).

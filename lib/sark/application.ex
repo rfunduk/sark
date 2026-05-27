@@ -52,7 +52,13 @@ defmodule Sark.Application do
   end
 
   defp idp_children(nil), do: []
-  defp idp_children(%Sark.Config.IdP{} = idp), do: [{Sark.Auth.KeyStore, idp}]
+
+  defp idp_children(%Sark.Config.IdP{} = idp) do
+    [
+      {Sark.Auth.KeyStore, idp},
+      Sark.OAuth.Correlator
+    ]
+  end
 
   defp base_children do
     [

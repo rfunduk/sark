@@ -4,46 +4,51 @@ defmodule Sark.OAuth.Broker do
   web, codex, custom scripts) and the configured upstream IdP. Clients
   treat sark as the authorization server; sark forwards to upstream.
 
-  Why broker instead of resource-only? Most MCP clients don't yet
-  implement MCP spec 2025-06-18's split between resource server and
-  authorization server. They expect the MCP server URL to host
-  `/oauth/authorize` + `/oauth/token` directly. Brokering through sark
-  makes those clients work against any upstream IdP without per-client
-  changes.
-
-  Two endpoints:
+  Endpoints:
 
     * `GET /oauth/authorize` — 302 to upstream `authorization_endpoint`
-      with the same query params; inject `scope=openid email profile`
-      if the client didn't send one. PKCE (`code_challenge` /
-      `code_challenge_method`) passes through unchanged. State is the
-      client's responsibility — sark stores nothing.
+      with the client's query params; inject `scope=openid email profile`
+      if absent. The client's RFC 8707 `resource=` param identifies
+      which plugin the resulting session belongs to — sark stashes
+      `code_challenge → plugin` (see `Sark.OAuth.Correlator`) so the
+      `/token` exchange can route the resulting session row to the
+      right `<plugin>.sark.db`.
 
-    * `POST /oauth/token` — form-POST proxy to upstream `token_endpoint`.
-      Inject `client_secret` from config (clients don't have it).
-      Pass through `grant_type`, `code`, `code_verifier`, `redirect_uri`,
-      `client_id`, `refresh_token`.
+    * `POST /oauth/token` — form-POST proxy to upstream. Inject
+      `client_secret` from config. On success, extract claims from the
+      upstream id_token, write a row to `_sessions` in the matched
+      plugin's sark DB, and return a sark-issued `sk_session_<random>`
+      token to the client as `access_token` (clients never see
+      upstream JWTs).
 
-  No state, no cache, no rate limit. PKCE state lives in the client's
-  cookie/storage and in the upstream's authorization_code; sark stays
-  stateless.
+  This isolates clients from IdP quirks (Google's opaque access tokens,
+  refresh-token id_token absence, etc). Once a session is established,
+  AuthPlug looks it up directly; no per-request upstream calls.
   """
 
   import Plug.Conn
+
+  alias Sark.Auth.JWT
   alias Sark.Auth.KeyStore
+  alias Sark.Auth.Session
   alias Sark.Config.IdP
+  alias Sark.OAuth.Correlator
 
-  @default_scope "openid email profile"
+  # Default session lifetime when upstream doesn't give us `expires_in`
+  # on the token response. JIT refresh keeps it perpetually fresh as
+  # long as upstream refresh succeeds.
+  @default_expires_in_sec 3600
 
-  @passthrough_authorize_params ~w(response_type client_id redirect_uri state code_challenge code_challenge_method scope)
-  @passthrough_token_params ~w(grant_type code redirect_uri code_verifier refresh_token client_id)
+  @passthrough_authorize_params ~w(response_type client_id redirect_uri state code_challenge code_challenge_method scope resource)
+  @passthrough_token_params ~w(grant_type code redirect_uri code_verifier refresh_token client_id resource)
 
   @spec authorize(Plug.Conn.t()) :: Plug.Conn.t()
   def authorize(conn) do
-    with {:ok, _idp} <- idp(),
+    with {:ok, idp} <- idp(),
          {:ok, upstream} <- KeyStore.fetch_endpoint("authorization_endpoint") do
       conn = fetch_query_params(conn)
-      params = build_authorize_params(conn.query_params)
+      params = build_authorize_params(conn.query_params, idp)
+      stash_plugin_correlation(conn.query_params)
       target = upstream <> "?" <> URI.encode_query(params)
 
       conn
@@ -56,24 +61,116 @@ defmodule Sark.OAuth.Broker do
 
   @spec token(Plug.Conn.t()) :: Plug.Conn.t()
   def token(conn) do
+    body = conn.body_params || %{}
+
     with {:ok, idp} <- idp(),
-         {:ok, upstream} <- KeyStore.fetch_endpoint("token_endpoint") do
-      params = build_token_params(conn.body_params || %{}, idp)
+         {:ok, plugin} <- resolve_plugin(body),
+         {:ok, upstream} <- KeyStore.fetch_endpoint("token_endpoint"),
+         params = build_token_params(body, idp),
+         {:ok, upstream_body} <- post_upstream(upstream, params),
+         {:ok, claims} <- verify_id_token(upstream_body, idp),
+         {:ok, session_token} <- create_session(plugin, claims, upstream_body) do
+      forget_correlation(body)
 
-      case Req.post(req(), url: upstream, form: params) do
-        {:ok, %Req.Response{status: status, body: body}} ->
-          {ct, body_iodata} = render_body(maybe_swap_for_id_token(body))
+      response = build_session_response(session_token, upstream_body)
 
-          conn
-          |> put_resp_content_type(ct)
-          |> send_resp(status, body_iodata)
-
-        {:error, reason} ->
-          send_broker_error(conn, "upstream_unreachable", reason)
-      end
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(response))
     else
       {:error, reason} -> send_broker_error(conn, "token_failed", reason)
     end
+  end
+
+  defp resolve_plugin(body) do
+    case Map.get(body, "code_verifier") do
+      v when is_binary(v) and v != "" ->
+        case Correlator.lookup(v) do
+          {:ok, plugin} -> {:ok, plugin}
+          :not_found -> {:error, :unknown_plugin_correlation}
+        end
+
+      _ ->
+        # Refresh-grant calls don't have code_verifier. Defer per-plugin
+        # routing for now — refresh grant handled in Phase 4 step 3.
+        {:error, :refresh_grant_not_yet_supported}
+    end
+  end
+
+  defp stash_plugin_correlation(query) do
+    with code_challenge when is_binary(code_challenge) <- Map.get(query, "code_challenge"),
+         resource when is_binary(resource) <- Map.get(query, "resource"),
+         {:ok, plugin} <- plugin_from_resource(resource) do
+      Correlator.stash(code_challenge, plugin)
+    else
+      _ -> :ok
+    end
+  end
+
+  # `resource` is a URL like `https://sark.example.com/openfig/mcp`.
+  # Pull the plugin segment (the one before `/mcp`).
+  defp plugin_from_resource(url) do
+    uri = URI.parse(url)
+    segments = String.split(uri.path || "", "/", trim: true)
+
+    case Enum.reverse(segments) do
+      ["mcp", plugin | _] -> {:ok, plugin}
+      _ -> :error
+    end
+  end
+
+  defp forget_correlation(%{"code_verifier" => v}) when is_binary(v), do: Correlator.forget(v)
+  defp forget_correlation(_), do: :ok
+
+  defp post_upstream(url, params) do
+    case Req.post(req(), url: url, form: params) do
+      {:ok, %Req.Response{status: 200, body: body}} -> {:ok, decode_body(body)}
+      {:ok, %Req.Response{status: status, body: body}} -> {:error, {:upstream, status, body}}
+      {:error, reason} -> {:error, {:upstream_unreachable, reason}}
+    end
+  end
+
+  defp decode_body(body) when is_map(body), do: body
+
+  defp decode_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, %{} = decoded} -> decoded
+      _ -> %{}
+    end
+  end
+
+  defp verify_id_token(%{"id_token" => id_token}, %IdP{} = idp) when is_binary(id_token) do
+    case JWT.verify(id_token, idp) do
+      {:ok, claims} -> {:ok, claims}
+      {:error, reason} -> {:error, {:id_token_invalid, reason}}
+    end
+  end
+
+  defp verify_id_token(_, _), do: {:error, :missing_id_token}
+
+  defp create_session(plugin, claims, upstream_body) do
+    expires_at = compute_expiry(upstream_body)
+    refresh = Map.get(upstream_body, "refresh_token")
+    Session.create(plugin, claims, refresh, expires_at)
+  end
+
+  defp compute_expiry(%{"expires_in" => seconds}) when is_integer(seconds) and seconds > 0 do
+    DateTime.utc_now() |> DateTime.add(seconds, :second)
+  end
+
+  defp compute_expiry(_) do
+    DateTime.utc_now() |> DateTime.add(@default_expires_in_sec, :second)
+  end
+
+  # Return a spec-shaped OAuth token response w/ sark's session token in
+  # `access_token`. Clients don't need (and shouldn't see) the upstream
+  # id_token or refresh_token.
+  defp build_session_response(session_token, upstream_body) do
+    %{
+      "access_token" => session_token,
+      "token_type" => "Bearer",
+      "expires_in" => Map.get(upstream_body, "expires_in", @default_expires_in_sec)
+    }
   end
 
   defp idp do
@@ -85,7 +182,21 @@ defmodule Sark.OAuth.Broker do
 
   # Inject scope only if the client didn't supply one. Drop anything not
   # on the passthrough list so the redirect to upstream stays minimal.
-  defp build_authorize_params(query) do
+  #
+  # Also inject `access_type=offline` + `prompt=consent`:
+  #   - Google requires `access_type=offline` to issue a refresh_token
+  #     at all. Without it Google returns access_token + id_token only,
+  #     no refresh_token, sark sessions die at id_token expiry.
+  #   - `prompt=consent` forces Google to reissue refresh_token even
+  #     when the user has previously consented. Costs a consent screen
+  #     per OAuth flow; in exchange sark always gets a usable refresh
+  #     token (otherwise: first dance gets one, every subsequent dance
+  #     against the same client_id+sub leaves refresh_token NULL).
+  # Other IdPs (Okta, Auth0, etc.) typically ignore unknown params, so
+  # these don't break the non-Google path. Operators wanting refresh
+  # tokens from Okta-style providers should add `offline_access` to
+  # their token scope config (Phase 4 follow-up).
+  defp build_authorize_params(query, %IdP{} = idp) do
     base =
       Enum.reduce(@passthrough_authorize_params, [], fn key, acc ->
         case Map.get(query, key) do
@@ -95,10 +206,10 @@ defmodule Sark.OAuth.Broker do
       end)
       |> Enum.reverse()
 
-    case Enum.find(base, fn {k, _} -> k == "scope" end) do
-      nil -> base ++ [{"scope", @default_scope}]
-      _ -> base
-    end
+    base
+    |> ensure_param("scope", Enum.join(IdP.effective_scope(idp), " "))
+    |> ensure_param("access_type", "offline")
+    |> ensure_param("prompt", "consent")
   end
 
   # Forward what the client sent; overwrite client_secret w/ our own.
@@ -126,37 +237,6 @@ defmodule Sark.OAuth.Broker do
     case Enum.find_index(list, fn {k, _} -> k == key end) do
       nil -> list ++ [{key, value}]
       idx -> List.replace_at(list, idx, {key, value})
-    end
-  end
-
-  defp render_body(body) when is_binary(body), do: {"application/json", body}
-  defp render_body(body) when is_map(body), do: {"application/json", Jason.encode!(body)}
-  defp render_body(body), do: {"text/plain", inspect(body)}
-
-  # Google (and possibly other IdPs) returns BOTH `access_token` (opaque)
-  # and `id_token` (JWT) in the OIDC response. Sark verifies JWTs, so
-  # swap them: hand the id_token back as `access_token`. Detection =
-  # check if the original access_token looks like a JWT (3 dot-separated
-  # base64url segments). If it does, no swap needed (Okta/Auth0 issue
-  # JWT access tokens directly).
-  defp maybe_swap_for_id_token(body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, %{} = decoded} -> decoded |> maybe_swap_for_id_token() |> Jason.encode!()
-      _ -> body
-    end
-  end
-
-  defp maybe_swap_for_id_token(%{"access_token" => access, "id_token" => id_token} = body)
-       when is_binary(access) and is_binary(id_token) do
-    if jwt_shaped?(access), do: body, else: Map.put(body, "access_token", id_token)
-  end
-
-  defp maybe_swap_for_id_token(body), do: body
-
-  defp jwt_shaped?(token) do
-    case String.split(token, ".") do
-      [_, _, _] -> true
-      _ -> false
     end
   end
 

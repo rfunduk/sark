@@ -158,18 +158,39 @@ defmodule Sark.Config do
     client_id = parse_optional_idp_string(map, "client_id")
     client_secret = parse_optional_idp_string(map, "client_secret")
     audience = parse_audience(Map.get(map, "audience"), client_id)
+    scope = parse_scope(Map.get(map, "scope"))
 
     %Sark.Config.IdP{
       issuer: issuer,
       audience: audience,
       client_id: client_id,
-      client_secret: client_secret
+      client_secret: client_secret,
+      scope: scope
     }
   end
 
   defp parse_idp(other) do
     raise "config: auth.idp must be a map, got #{inspect(other)}"
   end
+
+  # `scope:` is an additive list of extras. Sark always sends the
+  # baseline (`openid email profile`); operator's list tacks more onto
+  # it. Effective scope computed by `IdP.effective_scope/1`.
+  defp parse_scope(nil), do: []
+  defp parse_scope([]), do: []
+
+  defp parse_scope(list) when is_list(list) do
+    Enum.map(list, fn
+      tok when is_binary(tok) and tok != "" ->
+        tok
+
+      bad ->
+        raise "config: auth.idp.scope entries must be non-empty strings, got #{inspect(bad)}"
+    end)
+  end
+
+  defp parse_scope(other),
+    do: raise("config: auth.idp.scope must be a list of strings, got #{inspect(other)}")
 
   # Audience resolution:
   #   1. Explicit `audience:` wins.

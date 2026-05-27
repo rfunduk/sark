@@ -79,20 +79,37 @@ defmodule Sark.AuthPlug do
     end
   end
 
-  # Resolution order when an IdP is configured:
+  # Resolution order:
   #
-  #   1. Try the token as a JWT. Any JWT-specific failure (bad sig,
-  #      expired, wrong aud/iss) → straight to 401. We don't fall
-  #      through to the bearer table because the client clearly meant
-  #      to send a JWT.
-  #   2. `:bad_format` (token isn't a JWT at all) → fall through to
-  #      bearer-token lookup. Lets bearer tokens and JWT users coexist.
-  #
-  # Without an IdP, only the bearer path runs.
+  #   1. `sk_session_*` token → per-plugin `_sessions` lookup. Most
+  #      common path once a user has done the OAuth dance.
+  #   2. JWT verify (when IdP configured). Direct id_token path —
+  #      mostly useful for testing / custom clients that bypass the
+  #      broker.
+  #   3. Bearer-token table.
   defp resolve(conn, token) do
-    case Application.get_env(:sark, :idp) do
-      nil -> resolve_bearer(conn, token)
-      idp -> resolve_jwt(conn, token, idp)
+    cond do
+      Sark.Auth.Session.session_token?(token) ->
+        resolve_session(conn, token)
+
+      Application.get_env(:sark, :idp) != nil ->
+        resolve_jwt(conn, token, Application.get_env(:sark, :idp))
+
+      true ->
+        resolve_bearer(conn, token)
+    end
+  end
+
+  defp resolve_session(conn, token) do
+    case Scope.plugin_from_path(conn.path_info) do
+      {:ok, plugin} ->
+        case Sark.Auth.Session.lookup(plugin, token) do
+          {:ok, %{"claims" => claims}} -> authorize_jwt(conn, claims)
+          _ -> unauthorized(conn)
+        end
+
+      :error ->
+        unauthorized(conn)
     end
   end
 

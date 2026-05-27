@@ -70,7 +70,7 @@ defmodule Sark.AuthPlug.JWTTest do
         "iss" => @issuer,
         "aud" => @audience,
         "sub" => "117xxx",
-        "email" => "ryan@figment.io",
+        "email" => "ryan@example.com",
         "name" => "Ryan",
         "exp" => now + 600,
         "iat" => now
@@ -85,13 +85,13 @@ defmodule Sark.AuthPlug.JWTTest do
 
     refute conn.halted
     assert conn.assigns.plugin == "kv"
-    assert conn.assigns.token_name == "ryan@figment.io"
+    assert conn.assigns.token_name == "ryan@example.com"
 
     decoded = Jason.decode!(conn.assigns.sark_auth)
     assert decoded["iss"] == @issuer
     assert decoded["aud"] == @audience
     assert decoded["sub"] == "117xxx"
-    assert decoded["email"] == "ryan@figment.io"
+    assert decoded["email"] == "ryan@example.com"
   end
 
   test "expired JWT → 401 with challenge", ctx do

@@ -114,13 +114,14 @@ defmodule Sark.PluginTest do
     start_plugin!(spec, dir)
 
     # Tracker reflects applied internal migrations.
-    assert {:ok, _, [%{"version" => 1}, %{"version" => 2}]} =
+    assert {:ok, _, [%{"version" => 1}, %{"version" => 2}, %{"version" => 3}]} =
              DB.sark_read(spec.name, "SELECT version FROM _migrations ORDER BY version", [])
 
     # Tables exist + are queryable on the sark DB.
     assert {:ok, _, []} = DB.sark_read(spec.name, "SELECT * FROM _pipeline_log", [])
     assert {:ok, _, []} = DB.sark_read(spec.name, "SELECT * FROM _pipeline_step_log", [])
     assert {:ok, _, []} = DB.sark_read(spec.name, "SELECT * FROM _pipeline_state", [])
+    assert {:ok, _, []} = DB.sark_read(spec.name, "SELECT * FROM _sessions", [])
   end
 
   test "leaves non-JSON strings starting with [ or { untouched", %{tmp_dir: dir} do
