@@ -131,6 +131,28 @@ defmodule Sark.MCP.InternalTest do
     {:ok, _} = Internal.call_tool("kv", "secret_note", %{"body" => "ssh"})
   end
 
+  test "sark_whoami builtin returns the caller's envelope verbatim" do
+    envelope =
+      Jason.encode!(%{
+        "sub" => "117xxx",
+        "name" => "Ryan",
+        "email" => "ryan@example.com",
+        "iss" => "https://accounts.google.com"
+      })
+
+    {:ok, text} = Internal.call_tool("kv", "sark_whoami", %{}, sark_auth: envelope)
+    decoded = Jason.decode!(text)
+
+    assert decoded["sub"] == "117xxx"
+    assert decoded["email"] == "ryan@example.com"
+    assert decoded["iss"] == "https://accounts.google.com"
+  end
+
+  test "sark_whoami errors when no identity is present" do
+    {:error, msg} = Internal.call_tool("kv", "sark_whoami", %{})
+    assert msg =~ "no caller identity"
+  end
+
   test "whoami: sark_auth opt is exposed as a SQL binding" do
     envelope =
       Jason.encode!(%{

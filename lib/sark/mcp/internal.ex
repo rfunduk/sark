@@ -22,7 +22,7 @@ defmodule Sark.MCP.Internal do
   alias Sark.MCP.Registry
   alias Sark.Plugin.Spec
 
-  @builtin_always ~w(sark_patch sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune sark_pipelines_disable sark_pipelines_enable)
+  @builtin_always ~w(sark_patch sark_whoami sark_pipelines_list sark_pipelines_log sark_pipelines_recent sark_pipelines_costs sark_pipelines_run_now sark_pipelines_cancel sark_pipelines_log_prune sark_pipelines_disable sark_pipelines_enable)
   @builtin_allow_sql ~w(sark_catalog sark_sql)
 
   @spec call_tool(String.t(), String.t(), map, keyword) ::
@@ -49,6 +49,9 @@ defmodule Sark.MCP.Internal do
 
   defp dispatch(plugin, "sark_patch", params, opts),
     do: Handlers.PatchText.call(plugin, params, nil, opts)
+
+  defp dispatch(plugin, "sark_whoami", params, opts),
+    do: Handlers.Whoami.call(plugin, params, nil, opts)
 
   defp dispatch(plugin, "sark_pipelines_list", params, opts),
     do: Handlers.Pipelines.list(plugin, params, nil, opts)
@@ -154,6 +157,15 @@ defmodule Sark.MCP.Internal do
       end
 
     always ++ sql
+  end
+
+  defp builtin_spec("sark_whoami", %Spec{}) do
+    %{
+      name: "sark_whoami",
+      description:
+        "Returns the caller's identity envelope (the :sark_auth value plugin SQL sees).",
+      input_schema: %{type: "object", properties: %{}, required: []}
+    }
   end
 
   defp builtin_spec("sark_patch", %Spec{name: plugin, patchable: patchable}) do

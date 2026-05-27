@@ -60,7 +60,7 @@ defmodule Sark.MCP.Registration do
     Logger.info(
       "mcp registration — plugin=#{effective_spec.name} " <>
         "tools=#{length(effective_spec.tools)} " <>
-        "+sark_catalog +sark_sql +sark_patch +sark_pipelines_*" <>
+        "+sark_catalog +sark_sql +sark_patch +sark_whoami +sark_pipelines_*" <>
         if(map_size(effective_spec.embed) > 0,
           do: " +sark_embed_* +sark_vec_<table>",
           else: ""
@@ -146,6 +146,13 @@ defmodule Sark.MCP.Registration do
         end
       end
 
+    whoami_func =
+      quote do
+        def sark_whoami(params, session) do
+          Sark.MCP.Handlers.Whoami.call(unquote(plugin), params, session)
+        end
+      end
+
     pipelines_funcs =
       for {fname, handler_fn} <- [
             sark_pipelines_list: :list,
@@ -193,7 +200,8 @@ defmodule Sark.MCP.Registration do
       quote do
         (unquote_splicing(
            tool_funcs ++
-             [catalog_func, sql_func, patch_text_func] ++ pipelines_funcs ++ embed_admin_funcs
+             [catalog_func, sql_func, patch_text_func, whoami_func] ++
+             pipelines_funcs ++ embed_admin_funcs
          ))
       end
 
@@ -367,6 +375,19 @@ defmodule Sark.MCP.Registration do
       meta: %{file: __ENV__.file, line: __ENV__.line}
     }
 
+    whoami_spec = %{
+      name: "sark_whoami",
+      handler: handler,
+      function: :sark_whoami,
+      description:
+        "Returns the caller's identity envelope — the JSON :sark_auth value plugin SQL sees. " <>
+          "Bearer mode: {sub: token:<name>, name, iss: sark.bearer}. " <>
+          "OAuth mode: full JWT claims passthrough. " <>
+          "Useful for inspecting claim shape before writing auth.idp.rules: in config.",
+      input_schema: %{type: "object", properties: %{}, required: []},
+      meta: %{file: __ENV__.file, line: __ENV__.line}
+    }
+
     pipelines_specs =
       Enum.map(Sark.MCP.Handlers.Pipelines.tool_specs(), fn ts ->
         %{
@@ -395,7 +416,8 @@ defmodule Sark.MCP.Registration do
         []
       end
 
-    tool_specs ++ sql_specs ++ [patch_text_spec] ++ pipelines_specs ++ embed_admin_specs
+    tool_specs ++
+      sql_specs ++ [patch_text_spec, whoami_spec] ++ pipelines_specs ++ embed_admin_specs
   end
 
   @doc false
