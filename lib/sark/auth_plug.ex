@@ -81,7 +81,7 @@ defmodule Sark.AuthPlug do
 
   # Resolution order:
   #
-  #   1. `sk_session_*` token → per-plugin `_sessions` lookup. Most
+  #   1. `sk-sark-*` token → per-plugin `_sessions` lookup. Most
   #      common path once a user has done the OAuth dance.
   #   2. JWT verify (when IdP configured). Direct id_token path —
   #      mostly useful for testing / custom clients that bypass the
@@ -103,8 +103,11 @@ defmodule Sark.AuthPlug do
   defp resolve_session(conn, token) do
     case Scope.plugin_from_path(conn.path_info) do
       {:ok, plugin} ->
-        case Sark.Auth.Session.lookup(plugin, token) do
-          {:ok, %{"claims" => claims}} -> authorize_jwt(conn, claims)
+        with {:ok, row} <- Sark.Auth.Session.lookup(plugin, token),
+             idp = Application.get_env(:sark, :idp),
+             {:ok, %{"claims" => claims}} <- Sark.OAuth.Refresh.maybe_refresh(plugin, row, idp) do
+          authorize_jwt(conn, claims)
+        else
           _ -> unauthorized(conn)
         end
 

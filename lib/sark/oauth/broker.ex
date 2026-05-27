@@ -17,7 +17,7 @@ defmodule Sark.OAuth.Broker do
     * `POST /oauth/token` — form-POST proxy to upstream. Inject
       `client_secret` from config. On success, extract claims from the
       upstream id_token, write a row to `_sessions` in the matched
-      plugin's sark DB, and return a sark-issued `sk_session_<random>`
+      plugin's sark DB, and return a sark-issued `sk-sark-<random>`
       token to the client as `access_token` (clients never see
       upstream JWTs).
 
@@ -162,14 +162,26 @@ defmodule Sark.OAuth.Broker do
     DateTime.utc_now() |> DateTime.add(@default_expires_in_sec, :second)
   end
 
-  # Return a spec-shaped OAuth token response w/ sark's session token in
-  # `access_token`. Clients don't need (and shouldn't see) the upstream
-  # id_token or refresh_token.
-  defp build_session_response(session_token, upstream_body) do
+  # Sark session token's client-visible lifetime. Decoupled from
+  # upstream's `expires_in` — sark JIT-refreshes the upstream token
+  # transparently behind the scenes (see `Sark.OAuth.Refresh`). If we
+  # forwarded upstream's 1h expiry here, MCP clients (Claude Code etc.)
+  # would discard their session token after an hour without ever
+  # giving sark a chance to refresh it.
+  #
+  # 30 days = balance between "feels durable" and "client should redo
+  # OAuth occasionally to recover from server-side cleanup / IdP key
+  # rotation / revocation we haven't propagated".
+  @session_lifetime_sec 30 * 24 * 3600
+
+  # Return a spec-shaped OAuth token response w/ sark's session token
+  # in `access_token`. Clients don't need (and shouldn't see) the
+  # upstream id_token or refresh_token.
+  defp build_session_response(session_token, _upstream_body) do
     %{
       "access_token" => session_token,
       "token_type" => "Bearer",
-      "expires_in" => Map.get(upstream_body, "expires_in", @default_expires_in_sec)
+      "expires_in" => @session_lifetime_sec
     }
   end
 

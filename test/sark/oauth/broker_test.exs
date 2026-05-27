@@ -193,9 +193,11 @@ defmodule Sark.OAuth.BrokerTest do
       assert conn.status == 200
       body = Jason.decode!(conn.resp_body)
 
-      assert "sk_session_" <> _ = body["access_token"]
+      assert "sk-sark-" <> _ = body["access_token"]
       assert body["token_type"] == "Bearer"
-      assert body["expires_in"] == 3600
+      # Decoupled from upstream's 1h: sark session token is long-lived,
+      # JIT-refreshes upstream internally.
+      assert body["expires_in"] >= 24 * 3600
 
       # Upstream got our client_secret + the original code.
       forwarded = captured_form(ctx.captured)

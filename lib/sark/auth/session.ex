@@ -5,19 +5,19 @@ defmodule Sark.Auth.Session do
 
   A session abstracts away upstream JWT lifecycle: sark holds the
   upstream refresh token + caches the last-known identity claims.
-  Clients hold an opaque `sk_session_<random>` and never see upstream
+  Clients hold an opaque `sk-sark-<random>` and never see upstream
   tokens. This isolates Google's quirks (no id_token reissue on
   refresh, opaque access tokens) from sark's verification model.
   """
 
   alias Sark.Plugin.DB
 
-  @session_prefix "sk_session_"
+  @session_prefix "sk-sark-"
   # 32 url-safe base64 chars ≈ 192 bits of entropy.
   @rand_bytes 24
 
   @doc """
-  Create a session row. Returns the generated `sk_session_*` token.
+  Create a session row. Returns the generated `sk-sark-*` token.
   """
   @spec create(String.t(), map, String.t() | nil, DateTime.t()) ::
           {:ok, String.t()} | {:error, term}
