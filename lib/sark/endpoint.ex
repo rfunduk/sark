@@ -5,15 +5,22 @@ defmodule Sark.Endpoint do
     * `/health` — unauthenticated liveness
     * `/<plugin>/.well-known/oauth-protected-resource` — RFC 9728
       protected-resource metadata. Unauthenticated. Tells MCP clients
-      where to find this resource's auth servers. Pre-Phase-2 the
-      `authorization_servers` field is absent — bearer-only deployment.
+      where to find this resource's auth servers (sark itself, in
+      broker mode).
+    * `/.well-known/oauth-authorization-server` — RFC 8414 auth-server
+      metadata. Unauthenticated. Advertises sark's `/oauth/authorize`
+      + `/oauth/token`.
+    * `/oauth/authorize` — broker. 302s to upstream IdP's authorize
+      endpoint w/ scope injected.
+    * `/oauth/token` — broker. Proxies POST to upstream token endpoint
+      w/ client_secret injected from config.
     * `/<plugin>/mcp` — per-plugin MCP server (one Phantom router per
       plugin, looked up at request time so hot-reloaded plugins don't
       need an endpoint restart)
 
-  All non-health, non-well-known routes pass through `Sark.AuthPlug`,
-  which both bearer-checks and scopes the token to the URL's plugin. By
-  the time we get to dispatch the conn already has `:plugin` assigned.
+  All non-health, non-well-known, non-broker routes pass through
+  `Sark.AuthPlug`. By the time we get to dispatch the conn already has
+  `:plugin` assigned.
   """
 
   use Plug.Router
@@ -24,8 +31,8 @@ defmodule Sark.Endpoint do
   plug(:match)
 
   plug(Plug.Parsers,
-    parsers: [{:json, length: 1_000_000}],
-    pass: ["application/json"],
+    parsers: [{:urlencoded, length: 1_000_000}, {:json, length: 1_000_000}],
+    pass: ["application/json", "application/x-www-form-urlencoded"],
     json_decoder: Jason
   )
 
@@ -37,6 +44,18 @@ defmodule Sark.Endpoint do
 
   get "/:plugin/.well-known/oauth-protected-resource" do
     serve_protected_resource_metadata(conn, plugin)
+  end
+
+  get "/.well-known/oauth-authorization-server" do
+    serve_authorization_server_metadata(conn)
+  end
+
+  get "/oauth/authorize" do
+    Sark.OAuth.Broker.authorize(conn)
+  end
+
+  post "/oauth/token" do
+    Sark.OAuth.Broker.token(conn)
   end
 
   match "/:plugin/mcp" do
@@ -62,11 +81,9 @@ defmodule Sark.Endpoint do
     end
   end
 
-  # RFC 9728 protected-resource metadata. Always returns the `resource`
-  # field. When `auth.idp:` is configured, also advertises
-  # `authorization_servers` (the IdP issuer) and `bearer_methods_supported`.
-  # Bearer-only deployments (no IdP) omit those — the client falls back
-  # to whatever bearer-issuance flow the operator documents.
+  # RFC 9728 protected-resource metadata. Advertises sark itself as the
+  # authorization server when broker mode is active (`auth.idp:` set).
+  # Clients hit sark's `/oauth/*` endpoints; sark proxies upstream.
   defp serve_protected_resource_metadata(conn, plugin) do
     router = Registration.router_module(plugin)
 
@@ -85,14 +102,43 @@ defmodule Sark.Endpoint do
     base = %{"resource" => resource_url(conn, plugin)}
 
     case Application.get_env(:sark, :idp) do
-      %Sark.Config.IdP{issuer: issuer} ->
+      %Sark.Config.IdP{} ->
         Map.merge(base, %{
-          "authorization_servers" => [issuer],
-          "bearer_methods_supported" => ["header", "query"]
+          "authorization_servers" => [Sark.URL.base(conn)],
+          "bearer_methods_supported" => ["header", "query"],
+          "scopes_supported" => ["openid", "email", "profile"]
         })
 
       _ ->
         base
+    end
+  end
+
+  # RFC 8414 authorization-server metadata. Advertises sark's broker
+  # endpoints (sark IS the auth server, from the client's perspective).
+  defp serve_authorization_server_metadata(conn) do
+    case Application.get_env(:sark, :idp) do
+      %Sark.Config.IdP{issuer: issuer} ->
+        base = Sark.URL.base(conn)
+
+        body =
+          Jason.encode!(%{
+            "issuer" => issuer,
+            "authorization_endpoint" => "#{base}/oauth/authorize",
+            "token_endpoint" => "#{base}/oauth/token",
+            "response_types_supported" => ["code"],
+            "grant_types_supported" => ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported" => ["S256"],
+            "scopes_supported" => ["openid", "email", "profile"],
+            "token_endpoint_auth_methods_supported" => ["none", "client_secret_post"]
+          })
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, body)
+
+      _ ->
+        send_resp(conn, 404, "not found")
     end
   end
 

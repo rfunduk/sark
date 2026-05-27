@@ -630,7 +630,7 @@ defmodule Sark.ConfigTest do
       end
     end
 
-    test "rejects missing audience", %{tmp_dir: dir} do
+    test "audience defaults to `sark` when omitted", %{tmp_dir: dir} do
       path =
         write_config(dir, """
         listen: 127.0.0.1:9090
@@ -638,13 +638,12 @@ defmodule Sark.ConfigTest do
         auth:
           tokens: []
           idp:
-            issuer: https://accounts.google.com
+            issuer: https://idp.local
         plugins: {}
         """)
 
-      assert_raise RuntimeError, ~r/auth\.idp\.audience is required/, fn ->
-        Sark.Config.load!(path)
-      end
+      cfg = Sark.Config.load!(path)
+      assert cfg.idp.audience == "sark"
     end
 
     test "rejects non-http(s) issuer", %{tmp_dir: dir} do

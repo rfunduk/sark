@@ -155,16 +155,44 @@ defmodule Sark.Config do
 
   defp parse_idp(map) when is_map(map) do
     issuer = fetch_idp_url!(map, "issuer")
-    audience = fetch_idp_string!(map, "audience")
+    client_id = parse_optional_idp_string(map, "client_id")
+    client_secret = parse_optional_idp_string(map, "client_secret")
+    audience = parse_audience(Map.get(map, "audience"), client_id)
 
     %Sark.Config.IdP{
       issuer: issuer,
-      audience: audience
+      audience: audience,
+      client_id: client_id,
+      client_secret: client_secret
     }
   end
 
   defp parse_idp(other) do
     raise "config: auth.idp must be a map, got #{inspect(other)}"
+  end
+
+  # Audience resolution:
+  #   1. Explicit `audience:` wins.
+  #   2. Else default to `client_id` (Google-style: aud = client_id).
+  #   3. Else default to `"sark"` (resource-indicator IdPs: PocketID,
+  #      Okta, Auth0, Keycloak, Authelia — operator registers the
+  #      resource as `sark`).
+  defp parse_audience(v, _client_id) when is_binary(v) and v != "", do: v
+  defp parse_audience(nil, client_id) when is_binary(client_id) and client_id != "", do: client_id
+  defp parse_audience("", client_id) when is_binary(client_id) and client_id != "", do: client_id
+  defp parse_audience(nil, _), do: "sark"
+  defp parse_audience("", _), do: "sark"
+
+  defp parse_audience(other, _),
+    do: raise("config: auth.idp.audience must be a string, got #{inspect(other)}")
+
+  defp parse_optional_idp_string(map, key) do
+    case Map.get(map, key) do
+      nil -> nil
+      "" -> nil
+      v when is_binary(v) -> v
+      other -> raise "config: auth.idp.#{key} must be a string, got #{inspect(other)}"
+    end
   end
 
   defp fetch_idp_string!(map, key) do

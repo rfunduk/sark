@@ -39,7 +39,9 @@ auth:
     - { name: default, plugins: <scope>, token: "${SARK_TOKEN}" }
   idp:
     issuer: https://accounts.google.com
-    audience: "${OIDC_CLIENT_ID}"
+    client_id: xyz123.apps.googleusercontent.com
+    client_secret: "${OIDC_CLIENT_SECRET}"
+    audience: "override" # by default -> `client_id` if set, else `sark`
 
 # Plugin map: name → directory. The name is the routing key everywhere
 # (URL path `/<name>/mcp`, DB filename, token scopes).

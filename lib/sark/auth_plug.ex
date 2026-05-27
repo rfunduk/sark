@@ -9,7 +9,13 @@ defmodule Sark.AuthPlug.Scope do
 
   @spec well_known?([String.t()]) :: boolean
   def well_known?([_plugin, ".well-known", "oauth-protected-resource"]), do: true
+  def well_known?([".well-known", "oauth-authorization-server"]), do: true
   def well_known?(_), do: false
+
+  @spec oauth_broker?([String.t()]) :: boolean
+  def oauth_broker?(["oauth", "authorize"]), do: true
+  def oauth_broker?(["oauth", "token"]), do: true
+  def oauth_broker?(_), do: false
 end
 
 defmodule Sark.AuthPlug do
@@ -64,7 +70,7 @@ defmodule Sark.AuthPlug do
   end
 
   defp exempt?(["health"]), do: true
-  defp exempt?(path), do: Scope.well_known?(path)
+  defp exempt?(path), do: Scope.well_known?(path) or Scope.oauth_broker?(path)
 
   defp authenticate(conn) do
     case extract_token(conn) do
@@ -92,9 +98,18 @@ defmodule Sark.AuthPlug do
 
   defp resolve_jwt(conn, token, idp) do
     case Sark.Auth.JWT.verify(token, idp) do
-      {:ok, claims} -> authorize_jwt(conn, claims)
-      {:error, :bad_format} -> resolve_bearer(conn, token)
-      {:error, _reason} -> unauthorized(conn)
+      {:ok, claims} ->
+        authorize_jwt(conn, claims)
+
+      {:error, :bad_format} ->
+        require Logger
+        Logger.debug("auth: token is not a JWT, falling through to bearer table")
+        resolve_bearer(conn, token)
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("auth: JWT verify failed — #{inspect(reason)}")
+        unauthorized(conn)
     end
   end
 

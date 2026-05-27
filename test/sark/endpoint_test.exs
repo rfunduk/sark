@@ -75,21 +75,63 @@ defmodule Sark.EndpointTest do
     assert doc["resource"] == "https://sark.example.com/kv/mcp"
   end
 
-  test "metadata doc advertises authorization_servers when an IdP is configured" do
+  test "metadata doc advertises sark itself as auth server in broker mode" do
     idp = %Sark.Config.IdP{
       issuer: "https://accounts.google.com",
       audience: "sark-test"
     }
 
-    prior = Application.get_env(:sark, :idp)
+    prior_idp = Application.get_env(:sark, :idp)
+    prior_url = Application.get_env(:sark, :url)
     Application.put_env(:sark, :idp, idp)
-    on_exit(fn -> Application.put_env(:sark, :idp, prior) end)
+    Application.put_env(:sark, :url, "https://sark.example.com")
+
+    on_exit(fn ->
+      Application.put_env(:sark, :idp, prior_idp)
+      Application.put_env(:sark, :url, prior_url)
+    end)
 
     conn = call(conn(:get, "/kv/.well-known/oauth-protected-resource"))
     doc = Jason.decode!(conn.resp_body)
 
-    assert doc["authorization_servers"] == ["https://accounts.google.com"]
+    assert doc["authorization_servers"] == ["https://sark.example.com"]
     assert doc["bearer_methods_supported"] == ["header", "query"]
+    assert doc["scopes_supported"] == ["openid", "email", "profile"]
+  end
+
+  test "auth-server metadata advertises broker endpoints" do
+    idp = %Sark.Config.IdP{
+      issuer: "https://accounts.google.com",
+      audience: "sark-test"
+    }
+
+    prior_idp = Application.get_env(:sark, :idp)
+    prior_url = Application.get_env(:sark, :url)
+    Application.put_env(:sark, :idp, idp)
+    Application.put_env(:sark, :url, "https://sark.example.com")
+
+    on_exit(fn ->
+      Application.put_env(:sark, :idp, prior_idp)
+      Application.put_env(:sark, :url, prior_url)
+    end)
+
+    conn = call(conn(:get, "/.well-known/oauth-authorization-server"))
+    assert conn.status == 200
+
+    doc = Jason.decode!(conn.resp_body)
+    assert doc["issuer"] == "https://accounts.google.com"
+    assert doc["authorization_endpoint"] == "https://sark.example.com/oauth/authorize"
+    assert doc["token_endpoint"] == "https://sark.example.com/oauth/token"
+    assert doc["code_challenge_methods_supported"] == ["S256"]
+  end
+
+  test "auth-server metadata 404s in bearer-only deployment" do
+    prior = Application.get_env(:sark, :idp)
+    Application.put_env(:sark, :idp, nil)
+    on_exit(fn -> Application.put_env(:sark, :idp, prior) end)
+
+    conn = call(conn(:get, "/.well-known/oauth-authorization-server"))
+    assert conn.status == 404
   end
 
   test "metadata doc omits authorization_servers in bearer-only deployment" do
