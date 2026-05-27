@@ -578,6 +578,94 @@ defmodule Sark.ConfigTest do
     assert_raise RuntimeError, ~r/bare origin/, fn -> Sark.Config.load!(path) end
   end
 
+  describe "auth.idp" do
+    test "parses a minimal idp block", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens: []
+          idp:
+            issuer: https://accounts.google.com
+            audience: sark.example.com
+        plugins: {}
+        """)
+
+      cfg = Sark.Config.load!(path)
+
+      assert %Sark.Config.IdP{
+               issuer: "https://accounts.google.com",
+               audience: "sark.example.com"
+             } = cfg.idp
+    end
+
+    test "idp defaults to nil when block absent", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth: { tokens: [] }
+        plugins: {}
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert cfg.idp == nil
+    end
+
+    test "rejects missing issuer", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens: []
+          idp:
+            audience: sark
+        plugins: {}
+        """)
+
+      assert_raise RuntimeError, ~r/auth\.idp\.issuer is required/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects missing audience", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens: []
+          idp:
+            issuer: https://accounts.google.com
+        plugins: {}
+        """)
+
+      assert_raise RuntimeError, ~r/auth\.idp\.audience is required/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects non-http(s) issuer", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens: []
+          idp:
+            issuer: ftp://nope.example.com
+            audience: sark
+        plugins: {}
+        """)
+
+      assert_raise RuntimeError, ~r/auth\.idp\.issuer must use http or https/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+  end
+
   test "rejects non-map `auth:` block", %{tmp_dir: dir} do
     path =
       write_config(dir, """

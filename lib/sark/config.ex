@@ -73,6 +73,7 @@ defmodule Sark.Config do
     :tokens,
     :plugins,
     :source_path,
+    idp: nil,
     providers: %Sark.Providers{},
     embedder: nil
   ]
@@ -130,6 +131,7 @@ defmodule Sark.Config do
     end
 
     tokens = parse_tokens(fetch!(auth, "tokens"), plugins)
+    idp = parse_idp(Map.get(auth, "idp"))
     providers = Sark.Providers.parse(Map.get(raw, "providers"))
     embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
 
@@ -141,11 +143,55 @@ defmodule Sark.Config do
       data_dir: data_dir,
       log_level: parse_log_level(Map.get(raw, "log_level", "info")),
       tokens: tokens,
+      idp: idp,
       plugins: plugins,
       source_path: abs,
       providers: providers,
       embedder: embedder
     }
+  end
+
+  defp parse_idp(nil), do: nil
+
+  defp parse_idp(map) when is_map(map) do
+    issuer = fetch_idp_url!(map, "issuer")
+    audience = fetch_idp_string!(map, "audience")
+
+    %Sark.Config.IdP{
+      issuer: issuer,
+      audience: audience
+    }
+  end
+
+  defp parse_idp(other) do
+    raise "config: auth.idp must be a map, got #{inspect(other)}"
+  end
+
+  defp fetch_idp_string!(map, key) do
+    case Map.get(map, key) do
+      v when is_binary(v) and v != "" -> v
+      _ -> raise "config: auth.idp.#{key} is required"
+    end
+  end
+
+  defp fetch_idp_url!(map, key) do
+    value = fetch_idp_string!(map, key)
+    validate_idp_url!(value, "auth.idp.#{key}")
+  end
+
+  defp validate_idp_url!(value, where) do
+    uri = URI.parse(value)
+
+    cond do
+      uri.scheme not in ["http", "https"] ->
+        raise "config: #{where} must use http or https scheme, got #{inspect(value)}"
+
+      uri.host in [nil, ""] ->
+        raise "config: #{where} must include a host, got #{inspect(value)}"
+
+      true ->
+        value
+    end
   end
 
   defp parse_url(nil), do: nil

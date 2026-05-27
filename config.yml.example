@@ -28,9 +28,6 @@ embedder:
   defaults:
     chunk: { size: 1024, overlap: 128 }
 
-# Identity. `auth:` namespaces bearer tokens (and, future, an OAuth IdP
-# block). Each token entry: { name: <label>, plugins: <scope>, token: <secret> }
-#
 # `<scope>` is a list. Entries can be:
 #   - "*"                — every known plugin, every tool
 #   - <plugin>           — that plugin, every tool
@@ -39,7 +36,10 @@ embedder:
 #   - {"*": <pat>|[...]} — all plugins, only matching tools
 auth:
   tokens:
-    - { name: default, plugins: ["*"], token: "${SARK_TOKEN}" }
+    - { name: default, plugins: <scope>, token: "${SARK_TOKEN}" }
+  idp:
+    issuer: https://accounts.google.com
+    audience: "${OIDC_CLIENT_ID}"
 
 # Plugin map: name → directory. The name is the routing key everywhere
 # (URL path `/<name>/mcp`, DB filename, token scopes).

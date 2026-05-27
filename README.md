@@ -401,6 +401,7 @@ Rules:
 - Reserved. Plugin params cannot use the `sark_` prefix (parse-time error).
 - Unopinionated. Sark provides; plugin decides. No automatic injection into INSERTs, no row-level read filtering, no schema sniffing.
 - Pipeline identity is the pipeline itself — not the user who scheduled it. Pipelines have no user.
+- Behind a reverse proxy set top-level `url:` so the metadata-document URL in the `WWW-Authenticate` challenge points at the externally-visible host.
 
 
 ## Shared Fragments

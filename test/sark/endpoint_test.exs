@@ -74,4 +74,32 @@ defmodule Sark.EndpointTest do
     doc = Jason.decode!(conn.resp_body)
     assert doc["resource"] == "https://sark.example.com/kv/mcp"
   end
+
+  test "metadata doc advertises authorization_servers when an IdP is configured" do
+    idp = %Sark.Config.IdP{
+      issuer: "https://accounts.google.com",
+      audience: "sark-test"
+    }
+
+    prior = Application.get_env(:sark, :idp)
+    Application.put_env(:sark, :idp, idp)
+    on_exit(fn -> Application.put_env(:sark, :idp, prior) end)
+
+    conn = call(conn(:get, "/kv/.well-known/oauth-protected-resource"))
+    doc = Jason.decode!(conn.resp_body)
+
+    assert doc["authorization_servers"] == ["https://accounts.google.com"]
+    assert doc["bearer_methods_supported"] == ["header", "query"]
+  end
+
+  test "metadata doc omits authorization_servers in bearer-only deployment" do
+    prior = Application.get_env(:sark, :idp)
+    Application.put_env(:sark, :idp, nil)
+    on_exit(fn -> Application.put_env(:sark, :idp, prior) end)
+
+    conn = call(conn(:get, "/kv/.well-known/oauth-protected-resource"))
+    doc = Jason.decode!(conn.resp_body)
+
+    refute Map.has_key?(doc, "authorization_servers")
+  end
 end

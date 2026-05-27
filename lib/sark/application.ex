@@ -21,10 +21,16 @@ defmodule Sark.Application do
     # the incoming conn.
     Application.put_env(:sark, :url, config.url)
 
+    # OAuth IdP. Read by `Sark.AuthPlug` (JWT verify path) and
+    # `Sark.Endpoint` (protected-resource metadata advertisement).
+    # nil → bearer-only deployment.
+    Application.put_env(:sark, :idp, config.idp)
+
     {ip, port} = config.listen
 
     children =
       base_children() ++
+        idp_children(config.idp) ++
         [
           {Sark.AuthRegistry, config.tokens},
           {Sark.PluginSupervisor,
@@ -44,6 +50,9 @@ defmodule Sark.Application do
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Sark.Supervisor)
   end
+
+  defp idp_children(nil), do: []
+  defp idp_children(%Sark.Config.IdP{} = idp), do: [{Sark.Auth.KeyStore, idp}]
 
   defp base_children do
     [

@@ -68,14 +68,40 @@ defmodule Sark.AuthPlug do
 
   defp authenticate(conn) do
     case extract_token(conn) do
-      {:ok, token} ->
-        case AuthRegistry.lookup(token) do
-          {:ok, %{name: name} = entry} -> authorize(conn, entry, name)
-          _ -> unauthorized(conn)
-        end
+      {:ok, token} -> resolve(conn, token)
+      :error -> unauthorized(conn)
+    end
+  end
 
-      :error ->
-        unauthorized(conn)
+  # Resolution order when an IdP is configured:
+  #
+  #   1. Try the token as a JWT. Any JWT-specific failure (bad sig,
+  #      expired, wrong aud/iss) → straight to 401. We don't fall
+  #      through to the bearer table because the client clearly meant
+  #      to send a JWT.
+  #   2. `:bad_format` (token isn't a JWT at all) → fall through to
+  #      bearer-token lookup. Lets bearer tokens and JWT users coexist.
+  #
+  # Without an IdP, only the bearer path runs.
+  defp resolve(conn, token) do
+    case Application.get_env(:sark, :idp) do
+      nil -> resolve_bearer(conn, token)
+      idp -> resolve_jwt(conn, token, idp)
+    end
+  end
+
+  defp resolve_jwt(conn, token, idp) do
+    case Sark.Auth.JWT.verify(token, idp) do
+      {:ok, claims} -> authorize_jwt(conn, claims)
+      {:error, :bad_format} -> resolve_bearer(conn, token)
+      {:error, _reason} -> unauthorized(conn)
+    end
+  end
+
+  defp resolve_bearer(conn, token) do
+    case AuthRegistry.lookup(token) do
+      {:ok, %{name: name} = entry} -> authorize_bearer(conn, entry, name)
+      _ -> unauthorized(conn)
     end
   end
 
@@ -94,7 +120,7 @@ defmodule Sark.AuthPlug do
     end
   end
 
-  defp authorize(conn, entry, name) do
+  defp authorize_bearer(conn, entry, name) do
     case Scope.plugin_from_path(conn.path_info) do
       {:ok, plugin} ->
         if AuthRegistry.authorized?(entry, plugin) do
@@ -110,6 +136,27 @@ defmodule Sark.AuthPlug do
       :error ->
         not_found(conn)
     end
+  end
+
+  # JWT path: every valid JWT for the configured IdP grants access to
+  # every plugin. Per-plugin scoping (mirror of the bearer allow-list)
+  # arrives in Phase 4 — for now we only check the token's `aud` matches
+  # this sark instance, and trust any caller the IdP vouches for.
+  defp authorize_jwt(conn, claims) do
+    case Scope.plugin_from_path(conn.path_info) do
+      {:ok, plugin} ->
+        conn
+        |> assign(:token_name, jwt_display_name(claims))
+        |> assign(:plugin, plugin)
+        |> assign(:sark_auth, Jason.encode!(claims))
+
+      :error ->
+        not_found(conn)
+    end
+  end
+
+  defp jwt_display_name(claims) do
+    claims["preferred_username"] || claims["email"] || claims["name"] || claims["sub"] || "jwt"
   end
 
   defp bearer_envelope(name) do

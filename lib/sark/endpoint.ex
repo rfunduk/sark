@@ -62,21 +62,37 @@ defmodule Sark.Endpoint do
     end
   end
 
-  # RFC 9728 protected-resource metadata. Pre-Phase-2 (no OAuth IdP
-  # wired) the doc carries only the resource identity. Once `auth.idp:`
-  # lands we'll advertise `authorization_servers`, `bearer_methods`,
-  # and `scopes_supported` here.
+  # RFC 9728 protected-resource metadata. Always returns the `resource`
+  # field. When `auth.idp:` is configured, also advertises
+  # `authorization_servers` (the IdP issuer) and `bearer_methods_supported`.
+  # Bearer-only deployments (no IdP) omit those — the client falls back
+  # to whatever bearer-issuance flow the operator documents.
   defp serve_protected_resource_metadata(conn, plugin) do
     router = Registration.router_module(plugin)
 
     if Code.ensure_loaded?(router) do
-      body = Jason.encode!(%{"resource" => resource_url(conn, plugin)})
+      body = Jason.encode!(metadata_doc(conn, plugin))
 
       conn
       |> put_resp_content_type("application/json")
       |> send_resp(200, body)
     else
       send_resp(conn, 404, "not found")
+    end
+  end
+
+  defp metadata_doc(conn, plugin) do
+    base = %{"resource" => resource_url(conn, plugin)}
+
+    case Application.get_env(:sark, :idp) do
+      %Sark.Config.IdP{issuer: issuer} ->
+        Map.merge(base, %{
+          "authorization_servers" => [issuer],
+          "bearer_methods_supported" => ["header", "query"]
+        })
+
+      _ ->
+        base
     end
   end
 

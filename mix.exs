@@ -9,10 +9,14 @@ defmodule Sark.MixProject do
       version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       releases: releases()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def application do
     [
@@ -32,7 +36,9 @@ defmodule Sark.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:anthropix, "~> 0.6"},
       {:crontab, "~> 1.2"},
-      {:sqlite_vec, "~> 0.1"}
+      {:sqlite_vec, "~> 0.1"},
+      {:joken, "~> 2.6"},
+      {:req, "~> 0.5"}
     ]
   end
 
