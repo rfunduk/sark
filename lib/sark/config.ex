@@ -5,6 +5,7 @@ defmodule Sark.Config do
   Shape:
 
       listen: 127.0.0.1:8080
+      url: https://sark.example.com  # optional, see below
       data_dir: /var/sark/data
       log_level: info                # optional
       providers:                     # optional, only required if LLM/embedder used
@@ -29,6 +30,14 @@ defmodule Sark.Config do
 
   All identity config lives under `auth:`. Currently only `tokens:`; a
   future OAuth IdP block will sit alongside it as `auth.idp:`.
+
+  `url:` is the externally-visible base URL of this sark instance.
+  Required only when sark runs behind a reverse proxy (nginx, Cloudflare,
+  Caddy) — the proxy terminates TLS and forwards a different host/scheme
+  than what clients see. Used to build the metadata-document URL in the
+  `WWW-Authenticate` challenge and the `resource` field in the
+  protected-resource metadata doc. When absent, both are derived from
+  the incoming `conn` (correct for local + single-host deployments).
 
   Each entry in `auth.tokens[*].plugins` is either:
 
@@ -58,6 +67,7 @@ defmodule Sark.Config do
 
   defstruct [
     :listen,
+    :url,
     :data_dir,
     :log_level,
     :tokens,
@@ -73,6 +83,7 @@ defmodule Sark.Config do
   @type token_entry :: %{name: String.t(), allowed: allowed()}
   @type t :: %__MODULE__{
           listen: listen(),
+          url: String.t() | nil,
           data_dir: String.t(),
           log_level: atom(),
           tokens: %{String.t() => token_entry()},
@@ -101,6 +112,7 @@ defmodule Sark.Config do
     config_dir = Path.dirname(abs)
 
     listen = parse_listen(fetch!(raw, "listen"))
+    url = parse_url(Map.get(raw, "url"))
     data_dir = Path.expand(fetch!(raw, "data_dir"), config_dir)
     File.mkdir_p!(data_dir)
 
@@ -125,6 +137,7 @@ defmodule Sark.Config do
 
     %__MODULE__{
       listen: listen,
+      url: url,
       data_dir: data_dir,
       log_level: parse_log_level(Map.get(raw, "log_level", "info")),
       tokens: tokens,
@@ -134,6 +147,37 @@ defmodule Sark.Config do
       embedder: embedder
     }
   end
+
+  defp parse_url(nil), do: nil
+
+  defp parse_url(value) when is_binary(value) do
+    uri = URI.parse(value)
+
+    cond do
+      uri.scheme not in ["http", "https"] ->
+        raise "config: url must use http or https scheme, got #{inspect(value)}"
+
+      uri.host in [nil, ""] ->
+        raise "config: url must include a host, got #{inspect(value)}"
+
+      uri.path not in [nil, "", "/"] ->
+        raise "config: url must be a bare origin (no path), got #{inspect(value)}"
+
+      true ->
+        # Normalize: strip trailing slash, drop empty path/query/fragment.
+        port_part =
+          case {uri.scheme, uri.port} do
+            {"http", 80} -> ""
+            {"https", 443} -> ""
+            {_, nil} -> ""
+            {_, p} -> ":#{p}"
+          end
+
+        "#{uri.scheme}://#{uri.host}#{port_part}"
+    end
+  end
+
+  defp parse_url(other), do: raise("config: url must be a string, got #{inspect(other)}")
 
   defp fetch!(map, key) do
     case Map.fetch(map, key) do

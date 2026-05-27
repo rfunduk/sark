@@ -6,6 +6,10 @@ defmodule Sark.AuthPlug.Scope do
   @spec plugin_from_path([String.t()]) :: {:ok, String.t()} | :error
   def plugin_from_path([plugin, "mcp" | _]) when is_binary(plugin), do: {:ok, plugin}
   def plugin_from_path(_), do: :error
+
+  @spec well_known?([String.t()]) :: boolean
+  def well_known?([_plugin, ".well-known", "oauth-protected-resource"]), do: true
+  def well_known?(_), do: false
 end
 
 defmodule Sark.AuthPlug do
@@ -47,19 +51,20 @@ defmodule Sark.AuthPlug do
   alias Sark.AuthPlug.Scope
   alias Sark.AuthRegistry
 
-  @exempt_paths [["health"]]
-
   @impl true
   def init(opts), do: opts
 
   @impl true
   def call(conn, _opts) do
-    if conn.path_info in @exempt_paths do
+    if exempt?(conn.path_info) do
       conn
     else
       authenticate(conn)
     end
   end
+
+  defp exempt?(["health"]), do: true
+  defp exempt?(path), do: Scope.well_known?(path)
 
   defp authenticate(conn) do
     case extract_token(conn) do
@@ -117,9 +122,35 @@ defmodule Sark.AuthPlug do
 
   defp unauthorized(conn) do
     conn
+    |> with_challenge()
     |> put_resp_content_type("application/json")
     |> send_resp(401, ~s({"error":"unauthorized"}))
     |> halt()
+  end
+
+  # Per RFC 9728 / MCP 2025-06-18: a 401 from a protected resource SHOULD
+  # carry a `WWW-Authenticate: Bearer resource_metadata="<url>"` header
+  # pointing at the resource's protected-resource metadata document. The
+  # client follows the pointer to discover auth-server config. Without
+  # this header, MCP clients (Claude.ai, Claude Code) cannot tell apart
+  # "typo'd bearer token" from "this server isn't OAuth-configured", and
+  # they default to telling the user the server is misconfigured.
+  #
+  # Only attached when the path is `/<plugin>/mcp[/...]` — we need a
+  # plugin name to build the metadata URL.
+  defp with_challenge(conn) do
+    case Scope.plugin_from_path(conn.path_info) do
+      {:ok, plugin} ->
+        url = metadata_url(conn, plugin)
+        put_resp_header(conn, "www-authenticate", ~s|Bearer resource_metadata="#{url}"|)
+
+      :error ->
+        conn
+    end
+  end
+
+  defp metadata_url(conn, plugin) do
+    "#{Sark.URL.base(conn)}/#{plugin}/.well-known/oauth-protected-resource"
   end
 
   defp not_found(conn) do

@@ -511,6 +511,73 @@ defmodule Sark.ConfigTest do
     end
   end
 
+  test "parses optional url:", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      url: https://sark.example.com
+      data_dir: #{Path.join(dir, "data")}
+      auth: { tokens: [] }
+      plugins: {}
+      """)
+
+    cfg = Sark.Config.load!(path)
+    assert cfg.url == "https://sark.example.com"
+  end
+
+  test "url defaults to nil when absent", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth: { tokens: [] }
+      plugins: {}
+      """)
+
+    cfg = Sark.Config.load!(path)
+    assert cfg.url == nil
+  end
+
+  test "url drops trailing slash and default port", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      url: https://sark.example.com:443/
+      data_dir: #{Path.join(dir, "data")}
+      auth: { tokens: [] }
+      plugins: {}
+      """)
+
+    cfg = Sark.Config.load!(path)
+    assert cfg.url == "https://sark.example.com"
+  end
+
+  test "url rejects non-http(s) scheme", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      url: ftp://sark.example.com
+      data_dir: #{Path.join(dir, "data")}
+      auth: { tokens: [] }
+      plugins: {}
+      """)
+
+    assert_raise RuntimeError, ~r/http or https/, fn -> Sark.Config.load!(path) end
+  end
+
+  test "url rejects paths", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      url: https://sark.example.com/sub
+      data_dir: #{Path.join(dir, "data")}
+      auth: { tokens: [] }
+      plugins: {}
+      """)
+
+    assert_raise RuntimeError, ~r/bare origin/, fn -> Sark.Config.load!(path) end
+  end
+
   test "rejects non-map `auth:` block", %{tmp_dir: dir} do
     path =
       write_config(dir, """

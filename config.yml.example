@@ -2,6 +2,9 @@
 # "${VAR}" will be interpolated from env vars.
 # Paths are absolute or relative to this config file.
 
+# Optional, use when behind reverse proxy
+url: https://sark.mydomain.com
+
 listen: 0.0.0.0:8080
 data_dir: /storage/data
 log_level: info

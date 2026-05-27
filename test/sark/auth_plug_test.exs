@@ -120,4 +120,34 @@ defmodule Sark.AuthPlugTest do
     conn = call(conn(:post, "/kv/mcp?token="))
     assert conn.status == 401
   end
+
+  test "401 on /<plugin>/mcp carries a WWW-Authenticate challenge pointing at metadata" do
+    conn = call(conn(:post, "/kv/mcp"))
+    assert conn.status == 401
+
+    [challenge] = get_resp_header(conn, "www-authenticate")
+    assert challenge =~ ~r/^Bearer resource_metadata=/
+    assert challenge =~ "/kv/.well-known/oauth-protected-resource"
+  end
+
+  test "401 outside the /<plugin>/mcp shape omits the challenge (no plugin to advertise)" do
+    conn = call(conn(:post, "/whatever"))
+    assert conn.status == 401
+    assert get_resp_header(conn, "www-authenticate") == []
+  end
+
+  test "/<plugin>/.well-known/oauth-protected-resource is auth-exempt" do
+    conn = call(conn(:get, "/kv/.well-known/oauth-protected-resource"))
+    refute conn.halted
+  end
+
+  test "challenge URL honors the configured external url when set" do
+    prior = Application.get_env(:sark, :url)
+    Application.put_env(:sark, :url, "https://sark.example.com")
+    on_exit(fn -> Application.put_env(:sark, :url, prior) end)
+
+    conn = call(conn(:post, "/kv/mcp"))
+    [challenge] = get_resp_header(conn, "www-authenticate")
+    assert challenge =~ "https://sark.example.com/kv/.well-known/oauth-protected-resource"
+  end
 end

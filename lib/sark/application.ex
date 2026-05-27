@@ -16,6 +16,11 @@ defmodule Sark.Application do
   defp start_supervised(%Sark.Config{} = config) do
     configure_logger(config)
 
+    # Externally-visible base URL. Read by `Sark.URL.base/1` at request
+    # time when building metadata + challenge URLs. nil → derive from
+    # the incoming conn.
+    Application.put_env(:sark, :url, config.url)
+
     {ip, port} = config.listen
 
     children =

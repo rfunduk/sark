@@ -3,13 +3,17 @@ defmodule Sark.Endpoint do
   HTTP entrypoint.
 
     * `/health` — unauthenticated liveness
+    * `/<plugin>/.well-known/oauth-protected-resource` — RFC 9728
+      protected-resource metadata. Unauthenticated. Tells MCP clients
+      where to find this resource's auth servers. Pre-Phase-2 the
+      `authorization_servers` field is absent — bearer-only deployment.
     * `/<plugin>/mcp` — per-plugin MCP server (one Phantom router per
       plugin, looked up at request time so hot-reloaded plugins don't
       need an endpoint restart)
 
-  All non-health routes pass through `Sark.AuthPlug`, which both
-  bearer-checks and scopes the token to the URL's plugin. By the time
-  we get to dispatch the conn already has `:plugin` assigned.
+  All non-health, non-well-known routes pass through `Sark.AuthPlug`,
+  which both bearer-checks and scopes the token to the URL's plugin. By
+  the time we get to dispatch the conn already has `:plugin` assigned.
   """
 
   use Plug.Router
@@ -29,6 +33,10 @@ defmodule Sark.Endpoint do
 
   get "/health" do
     send_resp(conn, 200, "ok")
+  end
+
+  get "/:plugin/.well-known/oauth-protected-resource" do
+    serve_protected_resource_metadata(conn, plugin)
   end
 
   match "/:plugin/mcp" do
@@ -53,4 +61,24 @@ defmodule Sark.Endpoint do
       send_resp(conn, 404, "not found")
     end
   end
+
+  # RFC 9728 protected-resource metadata. Pre-Phase-2 (no OAuth IdP
+  # wired) the doc carries only the resource identity. Once `auth.idp:`
+  # lands we'll advertise `authorization_servers`, `bearer_methods`,
+  # and `scopes_supported` here.
+  defp serve_protected_resource_metadata(conn, plugin) do
+    router = Registration.router_module(plugin)
+
+    if Code.ensure_loaded?(router) do
+      body = Jason.encode!(%{"resource" => resource_url(conn, plugin)})
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, body)
+    else
+      send_resp(conn, 404, "not found")
+    end
+  end
+
+  defp resource_url(conn, plugin), do: "#{Sark.URL.base(conn)}/#{plugin}/mcp"
 end
