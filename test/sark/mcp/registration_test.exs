@@ -80,9 +80,11 @@ defmodule Sark.MCP.RegistrationTest do
              :put,
              :put_strict,
              :put_unique,
+             :record_caller,
              :reset_note,
              :secret_note,
-             :total
+             :total,
+             :whoami
            ]
   end
 
@@ -209,8 +211,10 @@ defmodule Sark.MCP.RegistrationTest do
                "put",
                "put_strict",
                "put_unique",
+               "record_caller",
                "reset_note",
-               "total"
+               "total",
+               "whoami"
              ]
   end
 

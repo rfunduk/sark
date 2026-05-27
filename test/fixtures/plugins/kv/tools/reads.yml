@@ -40,6 +40,18 @@ tools:
     sql: |
       SELECT key, value FROM kv ORDER BY updated_at DESC LIMIT :limit
 
+  whoami:
+    description: |
+      Echoes the caller's sark_auth envelope fields. Verifies the implicit
+      :sark_auth SQL binding is always present.
+    returns: results
+    format: json
+    sql: |
+      SELECT
+        json_extract(:sark_auth, '$.sub')  AS sub,
+        json_extract(:sark_auth, '$.name') AS name,
+        json_extract(:sark_auth, '$.iss')  AS iss
+
   bool_reject_demo:
     description: |
       Synthetic read that fires a reject when `flag` is true, used to

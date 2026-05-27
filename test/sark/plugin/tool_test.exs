@@ -128,6 +128,29 @@ defmodule Sark.Plugin.ToolTest do
         })
       end
     end
+
+    test "SQL may reference :sark_auth without declaring it as a param" do
+      q =
+        Tool.parse!("whoami", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT json_extract(:sark_auth, '$.sub') AS sub"
+        })
+
+      assert [%{param_order: [:sark_auth]}] = q.statements
+      assert q.params == []
+    end
+
+    test "raises when a plugin declares a param under the sark_ prefix" do
+      assert_raise ArgumentError, ~r/`sark_auth` is reserved/, fn ->
+        Tool.parse!("bad", %{
+          "description" => "x",
+          "returns" => "results",
+          "sql" => "SELECT :sark_auth",
+          "params" => %{"sark_auth" => %{"type" => "text"}}
+        })
+      end
+    end
   end
 
   describe "reject:" do

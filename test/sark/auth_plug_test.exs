@@ -57,6 +57,19 @@ defmodule Sark.AuthPlugTest do
     assert conn.assigns.plugin == "kv"
   end
 
+  test "synthesizes :sark_auth envelope from the token name" do
+    conn =
+      conn(:post, "/kv/mcp")
+      |> put_req_header("authorization", "Bearer #{@valid}")
+      |> call()
+
+    assert %{
+             "sub" => "token:default",
+             "name" => "default",
+             "iss" => "sark.bearer"
+           } = Jason.decode!(conn.assigns.sark_auth)
+  end
+
   test "query string `?token=` passes when no header" do
     conn =
       conn(:post, "/kv/mcp?token=#{@valid}")

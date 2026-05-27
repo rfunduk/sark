@@ -130,7 +130,8 @@ defmodule Sark.Pipeline.Runner do
       on_event: on_event,
       workdir: workdir,
       env: env,
-      conn: nil
+      conn: nil,
+      sark_auth: pipeline_sark_auth(pipeline)
     }
 
     :ok = emit_start_run(plugin, pipeline, run_id, triggered_by)
@@ -366,8 +367,20 @@ defmodule Sark.Pipeline.Runner do
   defp read_opts(%{conn: nil}), do: []
   defp read_opts(%{conn: conn}), do: [conn: conn]
 
-  defp call_opts(%{conn: nil}), do: []
-  defp call_opts(%{conn: conn}), do: [conn: conn]
+  defp call_opts(%{conn: nil, sark_auth: auth}), do: [sark_auth: auth]
+  defp call_opts(%{conn: conn, sark_auth: auth}), do: [conn: conn, sark_auth: auth]
+
+  # Synthesize the sark_auth envelope for pipeline-triggered tool calls.
+  # Pipelines have no user — identity is the pipeline itself. Plugin SQL
+  # that wants to distinguish user-driven writes from pipeline writes can
+  # match on `json_extract(:sark_auth, '$.iss') = 'sark.pipeline'`.
+  defp pipeline_sark_auth(%Pipeline{name: name}) do
+    Jason.encode!(%{
+      "sub" => "system",
+      "name" => to_string(name),
+      "iss" => "sark.pipeline"
+    })
+  end
 
   defp llm_body(step, stdin, state) do
     case decode_json_stdin(stdin, "llm") do
@@ -612,6 +625,7 @@ defmodule Sark.Pipeline.Runner do
       plugin: state.plugin,
       run_id: state.run_id,
       conn: state.conn,
+      sark_auth: state.sark_auth,
       step: step,
       llm: state.llm,
       tools: tools,
@@ -676,7 +690,7 @@ defmodule Sark.Pipeline.Runner do
           tool_uses ->
             assistant_msg = %{role: :assistant, content: resp.content}
 
-            case dispatch_tool_calls(state.plugin, state.conn, tool_uses, state.on_event) do
+            case dispatch_tool_calls(state, tool_uses) do
               {:ok, result_blocks} ->
                 user_msg = %{role: :user, content: result_blocks}
                 next = messages ++ [assistant_msg, user_msg]
@@ -706,15 +720,15 @@ defmodule Sark.Pipeline.Runner do
     end
   end
 
-  defp dispatch_tool_calls(plugin, conn, tool_uses, on_event) do
-    opts = if conn, do: [conn: conn], else: []
+  defp dispatch_tool_calls(state, tool_uses) do
+    opts = call_opts(state)
 
     Enum.reduce_while(tool_uses, {:ok, []}, fn tu, {:ok, acc} ->
-      on_event.({:tool_call, %{id: tu.id, name: tu.name, input: tu.input}})
+      state.on_event.({:tool_call, %{id: tu.id, name: tu.name, input: tu.input}})
 
-      case Internal.call_tool(plugin, tu.name, tu.input || %{}, opts) do
+      case Internal.call_tool(state.plugin, tu.name, tu.input || %{}, opts) do
         {:ok, text} ->
-          on_event.({:tool_result, %{id: tu.id, ok: true, text: text}})
+          state.on_event.({:tool_result, %{id: tu.id, ok: true, text: text}})
 
           block = %{
             type: :tool_result,
@@ -726,7 +740,7 @@ defmodule Sark.Pipeline.Runner do
           {:cont, {:ok, acc ++ [block]}}
 
         {:error, msg} ->
-          on_event.({:tool_result, %{id: tu.id, ok: false, text: msg}})
+          state.on_event.({:tool_result, %{id: tu.id, ok: false, text: msg}})
 
           block = %{
             type: :tool_result,

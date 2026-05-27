@@ -31,10 +31,12 @@ defmodule Sark.MCP.Handlers.Tool do
   defp do_call(plugin, tool_name, raw_params, session, opts) do
     raw_params = raw_params || %{}
     conn = Keyword.get(opts, :conn)
+    sark_auth = resolve_sark_auth(session, opts)
 
     with {:ok, %Tool{} = q} <- Registry.get(plugin, tool_name),
          {:ok, coerced} <- Tool.coerce_params(q, raw_params),
          {:ok, coerced} <- inject_vec_embed(q, coerced),
+         coerced = Map.put(coerced, :sark_auth, sark_auth),
          {:ok, cols, value} <- execute(plugin, q, coerced, raw_params, conn) do
       reply_text(Render.render(value, q.format, q.returns, cols), session)
     else
@@ -136,6 +138,23 @@ defmodule Sark.MCP.Handlers.Tool do
   defp render_val(nil, _), do: ""
   defp render_val(v, _) when is_binary(v), do: v
   defp render_val(v, _), do: inspect(v)
+
+  # Pull the request's sark_auth envelope from wherever it landed.
+  # MCP path: phantom router's `connect/2` stashed it on `session.assigns`
+  # (see `Sark.MCP.Registration.apply_sark_auth/2`).
+  # Internal/pipeline path: caller passes it via `opts[:sark_auth]`.
+  # Fallback (tests that bypass auth): a sentinel envelope so plugin SQL
+  # that references `:sark_auth` still has a valid JSON value to extract.
+  defp resolve_sark_auth(session, opts) do
+    Keyword.get(opts, :sark_auth) || session_sark_auth(session) || unknown_envelope()
+  end
+
+  defp session_sark_auth(%{assigns: %{sark_auth: v}}) when is_binary(v), do: v
+  defp session_sark_auth(_), do: nil
+
+  defp unknown_envelope do
+    Jason.encode!(%{"sub" => "unknown", "name" => "unknown", "iss" => "sark.unknown"})
+  end
 
   defp bind(stmts, coerced) do
     Enum.map(stmts, fn s ->

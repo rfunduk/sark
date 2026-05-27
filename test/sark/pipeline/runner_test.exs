@@ -343,6 +343,26 @@ defmodule Sark.Pipeline.RunnerTest do
       assert s1["status"] == "success"
     end
 
+    test "tool step receives a pipeline-source sark_auth envelope", %{spec: spec} do
+      # `record_caller` writes the iss + name from :sark_auth into the notes
+      # table. Running it from a pipeline must produce a row tagged with the
+      # synthesized pipeline envelope (iss = sark.pipeline, name = pipeline).
+      pipeline =
+        build_pipeline("audit_run", %{
+          "steps" => [
+            %{"tool" => "record_caller"}
+          ]
+        })
+
+      rid = run_id()
+      assert {:ok, _} = run!(pipeline, spec, run_id: rid)
+
+      {:ok, _, [%{"body" => body}]} =
+        DB.read(spec.name, "SELECT body FROM notes ORDER BY id DESC LIMIT 1", [])
+
+      assert body == "sark.pipeline:audit_run"
+    end
+
     test "tool error propagates as step failure", %{spec: spec} do
       pipeline =
         build_pipeline("bad_tool", %{

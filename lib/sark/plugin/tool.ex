@@ -74,6 +74,12 @@ defmodule Sark.Plugin.Tool do
   @valid_returns ~w(results scalar count none)a
   @valid_types ~w(integer real text blob boolean array object)a
 
+  # Implicit SQL binds injected by sark at dispatch time. Plugin SQL may
+  # reference these via `:name` placeholders without declaring them as
+  # tool params. The `sark_` prefix is reserved — plugins cannot declare
+  # params under it (same convention as built-in tool names).
+  @implicit_binds [:sark_auth]
+
   @doc """
   Parse a single entry from `plugin.yml` into a `%Tool{}`.
   """
@@ -99,7 +105,11 @@ defmodule Sark.Plugin.Tool do
 
     declared = MapSet.new(params, & &1.name)
     embed_siblings = embed_sibling_names!(params, declared, where)
-    declared_all = MapSet.union(declared, embed_siblings)
+
+    declared_all =
+      declared
+      |> MapSet.union(embed_siblings)
+      |> MapSet.union(MapSet.new(@implicit_binds))
 
     statements =
       Enum.map(raw_sqls, fn raw ->
@@ -301,6 +311,10 @@ defmodule Sark.Plugin.Tool do
   end
 
   defp parse_param!(name_str, spec, where) when is_binary(name_str) and is_map(spec) do
+    if String.starts_with?(name_str, "sark_") do
+      bad!(where, "param `#{name_str}` is reserved — `sark_` prefix is sark-managed")
+    end
+
     name = String.to_atom(name_str)
     pwhere = "#{where}.params.#{name_str}"
     base = parse_value_spec!(spec, pwhere)

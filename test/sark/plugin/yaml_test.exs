@@ -531,6 +531,39 @@ defmodule Sark.Plugin.YAMLTest do
       assert r.message == "no '{id}'"
     end
 
+    test "SQL-string fragment splices as a prelude into a multi-statement sql: list",
+         %{tmp_dir: dir} do
+      plugin =
+        write(Path.join(dir, "p"), %{
+          "plugin.yml" => """
+          shared:
+            touch_caller: |
+              INSERT INTO callers (sub) VALUES (json_extract(:sark_auth,'$.sub'))
+              ON CONFLICT(sub) DO NOTHING
+
+          tools:
+            create_thing:
+              description: x
+              write: true
+              returns: results
+              params:
+                label: { type: text }
+              sql:
+                - @touch_caller
+                - INSERT INTO things (label) VALUES (:label) RETURNING id
+          """
+        })
+
+      {[tool], _, _} = YAML.load(plugin)
+      assert length(tool.statements) == 2
+
+      [s0, s1] = tool.statements
+      assert s0.compiled_sql =~ "INSERT INTO callers"
+      assert s0.param_order == [:sark_auth]
+      assert s1.compiled_sql =~ "INSERT INTO things"
+      assert s1.param_order == [:label]
+    end
+
     test "fragment cycle raises", %{tmp_dir: dir} do
       plugin =
         write(Path.join(dir, "p"), %{

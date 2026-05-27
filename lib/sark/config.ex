@@ -18,15 +18,19 @@ defmodule Sark.Config do
         dim: 768
         defaults:
           chunk: { size: 1024, overlap: 128 }
-      tokens:
-        - { name: ryan,   plugins: ["*"], token: sk-ryan }
-        - { name: reader, plugins: [{kv: ["get", "list", "find"]}], token: sk-ro }
-        - { name: mixed,  plugins: [kb, {kv: "read_*"}], token: sk-mix }
+      auth:
+        tokens:
+          - { name: ryan,   plugins: ["*"], token: sk-ryan }
+          - { name: reader, plugins: [{kv: ["get", "list", "find"]}], token: sk-ro }
+          - { name: mixed,  plugins: [kb, {kv: "read_*"}], token: sk-mix }
       plugins:
         kb:  ~/code/sark-kb
         kv:  test/fixtures/plugins/kv
 
-  Each entry in `tokens[*].plugins` is either:
+  All identity config lives under `auth:`. Currently only `tokens:`; a
+  future OAuth IdP block will sit alongside it as `auth.idp:`.
+
+  Each entry in `auth.tokens[*].plugins` is either:
 
     * a string — plugin name (full access to all of its tools), or `"*"`
       (every known plugin)
@@ -101,7 +105,19 @@ defmodule Sark.Config do
     File.mkdir_p!(data_dir)
 
     plugins = parse_plugins(fetch!(raw, "plugins"), config_dir)
-    tokens = parse_tokens(fetch!(raw, "tokens"), plugins)
+
+    if Map.has_key?(raw, "tokens") do
+      raise "config: top-level `tokens:` was moved under `auth.tokens:` — " <>
+              "nest your tokens list inside an `auth:` block"
+    end
+
+    auth = fetch!(raw, "auth")
+
+    unless is_map(auth) do
+      raise "config: `auth` must be a map, got #{inspect(auth)}"
+    end
+
+    tokens = parse_tokens(fetch!(auth, "tokens"), plugins)
     providers = Sark.Providers.parse(Map.get(raw, "providers"))
     embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
 

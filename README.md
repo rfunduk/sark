@@ -85,11 +85,12 @@ Shortest path:
 3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: /storage/plugins/kv`) and ensure a token is scoped to it.
 
     ```yaml
-    tokens:
-      - { name: full,   plugins: "*",                              token: sk-full }
-      - { name: kvonly, plugins: [kv],                             token: sk-kv }
-      - { name: reader, plugins: [{kv: ["get", "list", "find"]}],  token: sk-ro }
-      - { name: mixed,  plugins: [myplugin, {kv: "report_*"}],     token: sk-mix }
+    auth:
+      tokens:
+        - { name: full,   plugins: "*",                              token: sk-full }
+        - { name: kvonly, plugins: [kv],                             token: sk-kv }
+        - { name: reader, plugins: [{kv: ["get", "list", "find"]}],  token: sk-ro }
+        - { name: mixed,  plugins: [myplugin, {kv: "report_*"}],     token: sk-mix }
     ```
 
 4. Boot Sark. The plugin's database is created and migration 1 is applied.
@@ -367,6 +368,41 @@ tools:
 Use them for things like writing system-only event kinds, flipping server-managed columns, or reading shadow/history tables that shouldn't be part of the public contract.
 
 
+## Caller Identity (`:sark_auth`)
+
+Every tool call gets one implicit SQL binding: `:sark_auth` -> JSON envelope describing whoever invoked the tool. Always present, JWT-shaped, three sources:
+
+```json
+// Bearer token (from auth.tokens)
+{"sub": "token:<name>", "name": "<name>", "iss": "sark.bearer"}
+
+// Pipeline (scheduled or manual)
+{"sub": "system", "name": "<pipeline>", "iss": "sark.pipeline"}
+
+// OAuth
+{"sub": "<idp sub>", "email": "...", "name": "...", "iss": "<idp>", ...rest of JWT}
+```
+
+Plugin SQL extracts whatever fields it wants via `json_extract`:
+
+```sql
+-- record the caller on every write
+INSERT INTO things (label, created_by)
+VALUES (:label, json_extract(:sark_auth,'$.sub'));
+
+-- filter reads to caller-owned rows
+SELECT * FROM things
+WHERE created_by = json_extract(:sark_auth,'$.sub');
+```
+
+Rules:
+
+- Implicit. No `params:` declaration needed; reference `:sark_auth` directly in SQL.
+- Reserved. Plugin params cannot use the `sark_` prefix (parse-time error).
+- Unopinionated. Sark provides; plugin decides. No automatic injection into INSERTs, no row-level read filtering, no schema sniffing.
+- Pipeline identity is the pipeline itself — not the user who scheduled it. Pipelines have no user.
+
+
 ## Shared Fragments
 
 A `shared:` entry is any reusable subtree — a `params:` block, a `format:`, a reject list, a pipeline's `llm.tools` / `llm.system`, whatever. `@name` substitutes it into **any field of any tool or pipeline**. Example:
@@ -393,6 +429,11 @@ shared:
     - sql: SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id LIKE :id || '%')
       message: "no task matches prefix '{id}'"
 
+  upsert_caller: |
+    INSERT INTO callers (sub, last_seen)
+    VALUES (json_extract(:sark_auth,'$.sub'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    ON CONFLICT(sub) DO UPDATE SET last_seen = excluded.last_seen
+
 tools:
   list:
     returns: results
@@ -408,7 +449,9 @@ tools:
       - @prefix_rejects                # spliced (fragment is a list)
       - sql: SELECT 1 FROM tasks WHERE id = :id AND status = :status
         message: "task already in status '{status}'"
-    sql: UPDATE tasks SET status = :status WHERE id = :id
+    sql:
+      - @upsert_caller
+      - UPDATE tasks SET status = :status WHERE id = :id
 
 pipelines:
   janitor:

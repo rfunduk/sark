@@ -218,7 +218,14 @@ defmodule Sark.MCP.Registration do
           # Resolve per-token tool allow-list against this plugin's tool set
           # and stash on the session — Phantom.Cache.list/3 filters
           # `tools/list` + `tools/call` against `session.allowed_tools`.
-          {:ok, Sark.MCP.Registration.apply_token_allowlist(session, conn, unquote(plugin))}
+          # Also copy the `:sark_auth` envelope assigned by AuthPlug onto
+          # `session.assigns` so tool handlers can inject it as a SQL bind.
+          session =
+            session
+            |> Sark.MCP.Registration.apply_token_allowlist(conn, unquote(plugin))
+            |> Sark.MCP.Registration.apply_sark_auth(conn)
+
+          {:ok, session}
         end
       end
 
@@ -253,6 +260,24 @@ defmodule Sark.MCP.Registration do
   end
 
   def apply_token_allowlist(session, _other, _plugin), do: session
+
+  @doc """
+  Copy the `:sark_auth` envelope from `conn.assigns` onto
+  `session.assigns` so tool handlers can read it via
+  `session.assigns[:sark_auth]` and inject it as a SQL bind.
+
+  No-op when the conn lacks the assign (internal handler calls in
+  tests that bypass `Sark.AuthPlug`).
+  """
+  @spec apply_sark_auth(map(), Plug.Conn.t() | map()) :: map()
+  def apply_sark_auth(session, %Plug.Conn{} = conn) do
+    case Map.get(conn.assigns, :sark_auth) do
+      nil -> session
+      envelope -> Phantom.Session.assign(session, :sark_auth, envelope)
+    end
+  end
+
+  def apply_sark_auth(session, _other), do: session
 
   defp purge_if_loaded(module) do
     if Code.ensure_loaded?(module) do

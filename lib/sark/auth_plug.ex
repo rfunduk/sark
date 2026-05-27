@@ -29,6 +29,16 @@ defmodule Sark.AuthPlug do
       names
 
   On success, assigns `:token_name` + `:plugin` for downstream handlers.
+
+  Also assigns `:sark_auth` — a JSON-encoded envelope describing the
+  caller's identity. Synthesized here in JWT-like shape:
+
+      {"sub": "token:<name>", "name": "<name>", "iss": "sark.bearer"}
+
+  Phantom router's `connect/2` copies this onto `session.assigns` so
+  tool handlers can inject it as the `:sark_auth` SQL binding. Plugins
+  reach for the parts they want via `json_extract`, e.g.
+  `json_extract(:sark_auth, '$.sub')`. Sark provides, plugin decides.
   """
 
   @behaviour Plug
@@ -87,6 +97,7 @@ defmodule Sark.AuthPlug do
           |> assign(:token_name, name)
           |> assign(:plugin, plugin)
           |> assign(:token_entry, entry)
+          |> assign(:sark_auth, bearer_envelope(name))
         else
           not_found(conn)
         end
@@ -94,6 +105,14 @@ defmodule Sark.AuthPlug do
       :error ->
         not_found(conn)
     end
+  end
+
+  defp bearer_envelope(name) do
+    Jason.encode!(%{
+      "sub" => "token:" <> name,
+      "name" => name,
+      "iss" => "sark.bearer"
+    })
   end
 
   defp unauthorized(conn) do

@@ -16,9 +16,10 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{data_dir}
-      tokens:
-        - { name: laptop, plugins: ["*"], token: sk-aaaa }
-        - { name: phone,  plugins: ["*"], token: sk-bbbb }
+      auth:
+        tokens:
+          - { name: laptop, plugins: ["*"], token: sk-aaaa }
+          - { name: phone,  plugins: ["*"], token: sk-bbbb }
       plugins: {}
       """)
 
@@ -42,8 +43,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: ./data
-      tokens:
-        - { name: laptop, plugins: ["*"], token: sk-aaaa }
+      auth:
+        tokens:
+          - { name: laptop, plugins: ["*"], token: sk-aaaa }
       plugins: {}
       """)
 
@@ -64,8 +66,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: laptop, plugins: ["*"], token: "${#{var}}" }
+      auth:
+        tokens:
+          - { name: laptop, plugins: ["*"], token: "${#{var}}" }
       plugins: {}
       """)
 
@@ -78,8 +81,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: laptop, plugins: ["*"], token: "${SARK_DEFINITELY_UNSET_XYZ}" }
+      auth:
+        tokens:
+          - { name: laptop, plugins: ["*"], token: "${SARK_DEFINITELY_UNSET_XYZ}" }
       plugins: {}
       """)
 
@@ -92,7 +96,7 @@ defmodule Sark.ConfigTest do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
-      tokens: []
+      auth: { tokens: [] }
       plugins: {}
       """)
 
@@ -106,7 +110,7 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: not-a-host-port
       data_dir: #{Path.join(dir, "data")}
-      tokens: []
+      auth: { tokens: [] }
       plugins: {}
       """)
 
@@ -120,9 +124,10 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: a, plugins: ["*"], token: sk-same }
-        - { name: b, plugins: ["*"], token: sk-same }
+      auth:
+        tokens:
+          - { name: a, plugins: ["*"], token: sk-same }
+          - { name: b, plugins: ["*"], token: sk-same }
       plugins: {}
       """)
 
@@ -139,7 +144,7 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens: []
+      auth: { tokens: [] }
       plugins:
         workouts: plugins/workouts
       """)
@@ -153,8 +158,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: steve, plugins: [kb], token: sk-steve }
+      auth:
+        tokens:
+          - { name: steve, plugins: [kb], token: sk-steve }
       plugins:
         kb:  ./kb
         workouts: ./workouts
@@ -170,10 +176,11 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - name: ro
-          plugins: [{kv: [get, list, find]}]
-          token: sk-ro
+      auth:
+        tokens:
+          - name: ro
+            plugins: [{kv: [get, list, find]}]
+            token: sk-ro
       plugins:
         kv: ./kv
         kb: ./kb
@@ -196,8 +203,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: ro, plugins: [{kv: "read_*"}], token: sk-ro }
+      auth:
+        tokens:
+          - { name: ro, plugins: [{kv: "read_*"}], token: sk-ro }
       plugins:
         kv: ./kv
       """)
@@ -214,8 +222,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: t, plugins: [{kv: ["*", "ge?"]}], token: sk-t }
+      auth:
+        tokens:
+          - { name: t, plugins: [{kv: ["*", "ge?"]}], token: sk-t }
       plugins:
         kv: ./kv
       """)
@@ -234,8 +243,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: t, plugins: [{kv: ["read_*"]}], token: sk-t }
+      auth:
+        tokens:
+          - { name: t, plugins: [{kv: ["read_*"]}], token: sk-t }
       plugins:
         kv: ./kv
       """)
@@ -252,8 +262,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: t, plugins: [{"*": [sark_catalog]}], token: sk-t }
+      auth:
+        tokens:
+          - { name: t, plugins: [{"*": [sark_catalog]}], token: sk-t }
       plugins:
         kv: ./kv
         kb: ./kb
@@ -271,12 +282,13 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - name: t
-          plugins:
-            - {kv: [bump]}
-            - {"*": [sark_catalog]}
-          token: sk-t
+      auth:
+        tokens:
+          - name: t
+            plugins:
+              - {kv: [bump]}
+              - {"*": [sark_catalog]}
+            token: sk-t
       plugins:
         kv: ./kv
         kb: ./kb
@@ -293,12 +305,13 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - name: t
-          plugins:
-            - {kv: [read_*]}
-            - {kv: [bump]}
-          token: sk-t
+      auth:
+        tokens:
+          - name: t
+            plugins:
+              - {kv: [read_*]}
+              - {kv: [bump]}
+            token: sk-t
       plugins:
         kv: ./kv
       """)
@@ -313,12 +326,13 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - name: t
-          plugins:
-            - {kv: [read_*]}
-            - kv
-          token: sk-t
+      auth:
+        tokens:
+          - name: t
+            plugins:
+              - {kv: [read_*]}
+              - kv
+            token: sk-t
       plugins:
         kv: ./kv
       """)
@@ -334,8 +348,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: t, plugins: "*", token: sk-t }
+      auth:
+        tokens:
+          - { name: t, plugins: "*", token: sk-t }
       plugins:
         kv: ./kv
       """)
@@ -349,8 +364,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: t, plugins: kv, token: sk-t }
+      auth:
+        tokens:
+          - { name: t, plugins: kv, token: sk-t }
       plugins:
         kv: ./kv
         kb: ./kb
@@ -365,8 +381,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: t, plugins: ["*"], token: sk-t }
+      auth:
+        tokens:
+          - { name: t, plugins: ["*"], token: sk-t }
       plugins:
         kv: ./kv
       """)
@@ -380,8 +397,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: bad, plugins: [{ghost: ["x"]}], token: sk-bad }
+      auth:
+        tokens:
+          - { name: bad, plugins: [{ghost: ["x"]}], token: sk-bad }
       plugins:
         kb: ./kb
       """)
@@ -396,11 +414,12 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - name: bad
-          plugins:
-            - {kv: [a], kb: [b]}
-          token: sk-bad
+      auth:
+        tokens:
+          - name: bad
+            plugins:
+              - {kv: [a], kb: [b]}
+            token: sk-bad
       plugins:
         kv: ./kv
         kb: ./kb
@@ -416,8 +435,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: bad, plugins: [{kv: [42]}], token: sk-bad }
+      auth:
+        tokens:
+          - { name: bad, plugins: [{kv: [42]}], token: sk-bad }
       plugins:
         kv: ./kv
       """)
@@ -432,8 +452,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: bad, plugins: [{kv: 42}], token: sk-bad }
+      auth:
+        tokens:
+          - { name: bad, plugins: [{kv: 42}], token: sk-bad }
       plugins:
         kv: ./kv
       """)
@@ -448,8 +469,9 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens:
-        - { name: bad, plugins: [ghost], token: sk-bad }
+      auth:
+        tokens:
+          - { name: bad, plugins: [ghost], token: sk-bad }
       plugins:
         kb: ./kb
       """)
@@ -464,12 +486,41 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      tokens: []
+      auth: { tokens: [] }
       plugins:
         "Bad Name!": ./bad
       """)
 
     assert_raise RuntimeError, ~r/invalid/, fn ->
+      Sark.Config.load!(path)
+    end
+  end
+
+  test "rejects top-level `tokens:` with a migration hint", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      tokens:
+        - { name: legacy, plugins: ["*"], token: sk-legacy }
+      plugins: {}
+      """)
+
+    assert_raise RuntimeError, ~r/moved under `auth\.tokens:`/, fn ->
+      Sark.Config.load!(path)
+    end
+  end
+
+  test "rejects non-map `auth:` block", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth: "nope"
+      plugins: {}
+      """)
+
+    assert_raise RuntimeError, ~r/`auth` must be a map/, fn ->
       Sark.Config.load!(path)
     end
   end

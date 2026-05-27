@@ -35,6 +35,18 @@ tools:
       SELECT json_extract(value, '$.body')
       FROM json_each(:notes)
 
+  record_caller:
+    description: |
+      Insert a notes row tagged with iss:name from the implicit :sark_auth
+      binding. Used to verify auth envelope plumbing from both MCP + pipeline
+      callers.
+    returns: results
+    write: true
+    sql: |
+      INSERT INTO notes (body) VALUES (
+        json_extract(:sark_auth, '$.iss') || ':' || json_extract(:sark_auth, '$.name')
+      ) RETURNING id
+
   secret_note:
     description: "Worker-only note insert (used to test internal flag)."
     internal: true

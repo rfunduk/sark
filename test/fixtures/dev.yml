@@ -2,8 +2,9 @@ listen: 127.0.0.1:8080
 data_dir: ./dev_data
 log_level: debug
 
-tokens:
-  - { name: dev, plugins: [kv], token: sk-dev }
+auth:
+  tokens:
+    - { name: dev, plugins: [kv], token: sk-dev }
 
 plugins:
   kv: plugins/kv

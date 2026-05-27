@@ -131,6 +131,29 @@ defmodule Sark.MCP.InternalTest do
     {:ok, _} = Internal.call_tool("kv", "secret_note", %{"body" => "ssh"})
   end
 
+  test "whoami: sark_auth opt is exposed as a SQL binding" do
+    envelope =
+      Jason.encode!(%{
+        "sub" => "token:work-laptop",
+        "name" => "work-laptop",
+        "iss" => "sark.bearer"
+      })
+
+    {:ok, text} = Internal.call_tool("kv", "whoami", %{}, sark_auth: envelope)
+    [row] = Jason.decode!(text)
+
+    assert row["sub"] == "token:work-laptop"
+    assert row["name"] == "work-laptop"
+    assert row["iss"] == "sark.bearer"
+  end
+
+  test "whoami: missing sark_auth opt falls back to unknown envelope" do
+    {:ok, text} = Internal.call_tool("kv", "whoami", %{})
+    [row] = Jason.decode!(text)
+    assert row["sub"] == "unknown"
+    assert row["iss"] == "sark.unknown"
+  end
+
   test "catalog filters internal tools out of public response", %{spec: %Spec{} = spec} do
     spec = %Spec{spec | allow_sql: true}
     {:ok, text} = Internal.call_tool("kv", "sark_catalog", %{})

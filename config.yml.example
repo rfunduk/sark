@@ -25,8 +25,8 @@ embedder:
   defaults:
     chunk: { size: 1024, overlap: 128 }
 
-# Bearer tokens. Each entry:
-#   { name: <label>, plugins: <scope>, token: <secret> }
+# Identity. `auth:` namespaces bearer tokens (and, future, an OAuth IdP
+# block). Each token entry: { name: <label>, plugins: <scope>, token: <secret> }
 #
 # `<scope>` is a list. Entries can be:
 #   - "*"                — every known plugin, every tool
@@ -34,8 +34,9 @@ embedder:
 #   - {<plugin>: <pat>}  — that plugin, only tools matching the glob(s)
 #   - {<plugin>: [<pat>, <pat>...]}
 #   - {"*": <pat>|[...]} — all plugins, only matching tools
-tokens:
-  - { name: default, plugins: ["*"], token: "${SARK_TOKEN}" }
+auth:
+  tokens:
+    - { name: default, plugins: ["*"], token: "${SARK_TOKEN}" }
 
 # Plugin map: name → directory. The name is the routing key everywhere
 # (URL path `/<name>/mcp`, DB filename, token scopes).
