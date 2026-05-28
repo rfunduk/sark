@@ -57,22 +57,24 @@ defmodule Sark.MCP.RegistrationAllowlistTest do
     assert out.allowed_tools == nil
   end
 
-  test "pattern list → allowed_tools is filtered tool names", %{tmp_dir: dir} do
+  test "single block with positives → allowed_tools is filtered tool names", %{tmp_dir: dir} do
     boot_kv!(dir)
-    # `find`, `list` are real kv queries; `nope_*` matches nothing.
-    conn =
-      conn_with_entry(%{
-        name: "t",
-        allowed: %{"kv" => [~r/\Afind\z/, ~r/\Alist\z/, ~r/\Anope_.*\z/]}
-      })
+    # `find`, `list` are real kv queries; `nope_%` matches nothing.
+    block = %{
+      pos: [~r/\Afind\z/, ~r/\Alist\z/, ~r/\Anope_.*\z/],
+      neg: []
+    }
+
+    conn = conn_with_entry(%{name: "t", allowed: %{"kv" => [block]}})
 
     out = Registration.apply_token_allowlist(session(), conn, "kv")
     assert Enum.sort(out.allowed_tools) == ["find", "list"]
   end
 
-  test "glob `sark_*` matches every built-in but no queries", %{tmp_dir: dir} do
+  test "glob `sark_%` matches every built-in but no queries", %{tmp_dir: dir} do
     boot_kv!(dir)
-    conn = conn_with_entry(%{name: "t", allowed: %{"kv" => [~r/\Asark_.*\z/]}})
+    block = %{pos: [~r/\Asark_.*\z/], neg: []}
+    conn = conn_with_entry(%{name: "t", allowed: %{"kv" => [block]}})
     out = Registration.apply_token_allowlist(session(), conn, "kv")
     # kv fixture has allow_sql true, so sark_catalog + sark_sql registered.
     sorted = Enum.sort(out.allowed_tools)
@@ -80,6 +82,18 @@ defmodule Sark.MCP.RegistrationAllowlistTest do
     assert "sark_catalog" in sorted
     assert "sark_sql" in sorted
     refute Enum.any?(sorted, &(not String.starts_with?(&1, "sark_")))
+  end
+
+  test "block with negation → matches pos minus neg", %{tmp_dir: dir} do
+    boot_kv!(dir)
+    # all built-ins except sark_sql
+    block = %{pos: [~r/\Asark_.*\z/], neg: [~r/\Asark_sql\z/]}
+    conn = conn_with_entry(%{name: "t", allowed: %{"kv" => [block]}})
+    out = Registration.apply_token_allowlist(session(), conn, "kv")
+    sorted = Enum.sort(out.allowed_tools)
+    assert "sark_catalog" in sorted
+    assert "sark_patch" in sorted
+    refute "sark_sql" in sorted
   end
 
   test "plugin not present in entry → empty allowlist (every call denied)",

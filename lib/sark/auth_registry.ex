@@ -6,19 +6,22 @@ defmodule Sark.AuthRegistry do
   Read path is lock-free; lookup cost is constant. Logs reference the
   operator name, never the token.
 
-  `entry.allowed` is `%{plugin => :all | [Regex.t()]}`. A plugin key
-  present at all = the token can reach `/<plugin>/mcp`. Value is `:all`
-  for unrestricted tool surface, or a list of compiled glob patterns
-  matched against tool names. Resolved per-connection in the generated
-  router's `connect/2` and stored as `Phantom.Session.allowed_tools`.
+  `entry.allowed` is `:all | %{plugin => :all | [block]}` where `block`
+  is `%{pos: [Regex], neg: [Regex]}`. A plugin key present at all = the
+  token can reach `/<plugin>/mcp`. Value `:all` = unrestricted surface;
+  list of blocks = each block contributes names whose pos matches AND
+  no neg matches. Cross-block union (names granted by *any* block).
+  Resolved per-connection in the router's `connect/2` and stored as
+  `Phantom.Session.allowed_tools`.
   """
 
   use GenServer
 
   @table __MODULE__
 
-  @type tool_patterns :: :all | [Regex.t()]
-  @type allowed :: :all | %{String.t() => tool_patterns()}
+  @type block :: %{pos: [Regex.t()], neg: [Regex.t()]}
+  @type tool_grant :: :all | [block()]
+  @type allowed :: :all | %{String.t() => tool_grant()}
   @type entry :: %{name: String.t(), allowed: allowed()}
 
   @spec start_link(%{String.t() => entry()}) :: GenServer.on_start()
@@ -60,11 +63,17 @@ defmodule Sark.AuthRegistry do
     case Map.get(allowed, plugin) do
       nil -> []
       :all -> :all
-      patterns when is_list(patterns) -> Enum.filter(available, &matches_any?(&1, patterns))
+      blocks when is_list(blocks) -> Enum.filter(available, &any_block_grants?(blocks, &1))
     end
   end
 
-  defp matches_any?(name, patterns), do: Enum.any?(patterns, &Regex.match?(&1, name))
+  defp any_block_grants?(blocks, name),
+    do: Enum.any?(blocks, &block_grants?(&1, name))
+
+  defp block_grants?(%{pos: pos, neg: neg}, name) do
+    Enum.any?(pos, &Regex.match?(&1, name)) and
+      not Enum.any?(neg, &Regex.match?(&1, name))
+  end
 
   @impl true
   def init(tokens) do

@@ -89,16 +89,30 @@ defmodule Sark.MCP.Registration do
 
   defp camelize(plugin), do: Macro.camelize(String.replace(plugin, "-", "_"))
 
-  # Built-in tools (`sark_patch`, `sark_catalog`, `sark_sql`) live alongside
-  # plugin-declared tools in the same per-plugin namespace. The `sark_`
-  # prefix is reserved — raising on collision keeps a plugin tool from
-  # silently shadowing a built-in (or vice versa) depending on
-  # registration order.
+  # Tool names must:
+  #   * not start with the reserved `sark_` prefix (sark-managed built-ins
+  #     + synthesised tools live there)
+  #   * match `\A[a-z0-9][a-z0-9_-]*\z` — lowercase + digits + `_`/`-`,
+  #     non-alphanumeric leading char forbidden. Required so scope
+  #     syntax tokens (`ALL`, `-prefix`, `%`) can't collide with literal
+  #     tool names.
+  @tool_name_re ~r/\A[a-z0-9][a-z0-9_-]*\z/
+
   defp check_reserved_names!(%Spec{name: plugin, tools: tools}) do
     Enum.each(tools, fn q ->
-      if String.starts_with?(Atom.to_string(q.name), @reserved_prefix) do
-        raise "plugin #{plugin}: tool name `#{q.name}` is reserved — " <>
-                "`#{@reserved_prefix}` prefix is sark-managed (built-ins + synthesised tools)"
+      name = Atom.to_string(q.name)
+
+      cond do
+        String.starts_with?(name, @reserved_prefix) ->
+          raise "plugin #{plugin}: tool name `#{name}` is reserved — " <>
+                  "`#{@reserved_prefix}` prefix is sark-managed (built-ins + synthesised tools)"
+
+        not Regex.match?(@tool_name_re, name) ->
+          raise "plugin #{plugin}: tool name `#{name}` invalid — must match " <>
+                  "#{Regex.source(@tool_name_re)} (lowercase, no leading dash, no `%`, no uppercase)"
+
+        true ->
+          :ok
       end
     end)
   end

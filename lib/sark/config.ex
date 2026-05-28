@@ -21,9 +21,10 @@ defmodule Sark.Config do
           chunk: { size: 1024, overlap: 128 }
       auth:
         tokens:
-          - { name: ryan,   plugins: ["*"], token: sk-ryan }
-          - { name: reader, plugins: [{kv: ["get", "list", "find"]}], token: sk-ro }
-          - { name: mixed,  plugins: [kb, {kv: "read_*"}], token: sk-mix }
+          - { name: ryan,   plugins: [ALL], token: sk-ryan }
+          - { name: reader, plugins: [{kv: [get, list, find]}], token: sk-ro }
+          - { name: mixed,  plugins: [kb, {kv: read_%}], token: sk-mix }
+          - { name: minus,  plugins: [ALL, -secrets, {kv: [ALL, -sark_%]}], token: sk-mn }
       plugins:
         kb:  ~/code/sark-kb
         kv:  test/fixtures/plugins/kv
@@ -41,20 +42,30 @@ defmodule Sark.Config do
 
   Each entry in `auth.tokens[*].plugins` is either:
 
-    * a string — plugin name (full access to all of its tools), or `"*"`
-      (every known plugin)
-    * a single-key map — `{plugin: pattern_or_list}` where the value is a
-      glob pattern (`*` / `?`) or list of glob patterns matched against
-      tool names. `plugin` can be `"*"` to apply patterns across every
-      known plugin.
+    * a string — plugin name (full access), `ALL` (every known plugin),
+      or `-<plugin>` / `-ALL` to negate
+    * a single-key map — `{plugin: pattern_or_list}` where value is a
+      glob pattern (`%`) or list of patterns/negations matched against
+      tool names. Key can be `ALL` to apply patterns across every plugin.
 
-  `["*"]` shorthand is equivalent to `[{"*": "*"}]` — every plugin, every
-  tool. Multiple entries for the same plugin union; if any contributes
-  `"*"` the plugin's surface is unrestricted.
+  Reserved tokens:
 
-  Patterns are anchored fnmatch (`read_*` matches `read_foo` but not
-  `foo_read`). Globs only work if the plugin author names tools
-  consistently — sark doesn't enforce naming.
+    * `ALL` — uppercase keyword for "everything" (plugin or tool level).
+      Plugin + tool names are enforced lowercase so `ALL` never shadows
+      a real name.
+    * `-prefix` — negation. `-secrets` removes plugin `secrets`. `-foo_%`
+      excludes tools matching `foo_*`. Negation narrows the grant it
+      appears in — never reaches across rules or tokens.
+    * `%` — glob char (any sequence). SQL-LIKE flavour. `_` stays
+      literal (snake_case-safe). Compiled to anchored regex.
+
+  `[ALL]` shorthand is `:all` — every plugin, every tool. Multi-entry
+  per plugin within a token unions as separate grants; negation in one
+  doesn't suppress positives from another.
+
+  Patterns are anchored (`read_%` matches `read_foo` but not `foo_read`).
+
+  Legacy `*` / `?` / `!` syntax is hard-rejected with a migration hint.
 
   Reachability check happens in `Sark.AuthPlug` against the URL path
   `/<plugin>/mcp`. Tool-name filtering happens in the generated router's
@@ -79,8 +90,9 @@ defmodule Sark.Config do
   ]
 
   @type listen :: {:inet.ip_address(), :inet.port_number()}
-  @type tool_patterns :: :all | [Regex.t()]
-  @type allowed :: :all | %{String.t() => tool_patterns()}
+  @type block :: %{pos: [Regex.t()], neg: [Regex.t()]}
+  @type tool_grant :: :all | [block()]
+  @type allowed :: :all | %{String.t() => tool_grant()}
   @type token_entry :: %{name: String.t(), allowed: allowed()}
   @type t :: %__MODULE__{
           listen: listen(),
@@ -227,7 +239,7 @@ defmodule Sark.Config do
   defp parse_match(other, idx),
     do: raise("config: auth.idp.rules[#{idx}].match must be a map, got #{inspect(other)}")
 
-  @match_ops ~w(equals in suffix exists)
+  @match_ops ~w(equals in contains suffix exists)
 
   defp parse_match_op(map, idx) do
     ops = Enum.filter(@match_ops, &Map.has_key?(map, &1))
@@ -249,11 +261,35 @@ defmodule Sark.Config do
   defp validate_op_value("exists", other, idx),
     do: raise("config: auth.idp.rules[#{idx}].match.exists must be `true`, got #{inspect(other)}")
 
-  defp validate_op_value(op, v, _idx) when op in ["equals", "in", "suffix"] and is_binary(v),
-    do: v
+  defp validate_op_value("in", list, idx) when is_list(list) do
+    if list == [] do
+      raise "config: auth.idp.rules[#{idx}].match.in must be a non-empty list"
+    end
+
+    Enum.each(list, fn
+      v when is_binary(v) or is_number(v) or is_boolean(v) ->
+        :ok
+
+      bad ->
+        raise "config: auth.idp.rules[#{idx}].match.in entries must be scalar (string/number/boolean), got #{inspect(bad)}"
+    end)
+
+    list
+  end
+
+  defp validate_op_value("in", other, idx),
+    do:
+      raise(
+        "config: auth.idp.rules[#{idx}].match.in must be a list of scalars, got #{inspect(other)} — for list-claim membership use `contains: <v>`"
+      )
 
   defp validate_op_value(op, v, _idx)
-       when op in ["equals", "in"] and (is_number(v) or is_boolean(v)), do: v
+       when op in ["equals", "contains", "suffix"] and is_binary(v),
+       do: v
+
+  defp validate_op_value(op, v, _idx)
+       when op in ["equals", "contains"] and (is_number(v) or is_boolean(v)),
+       do: v
 
   defp validate_op_value(op, other, idx),
     do: raise("config: auth.idp.rules[#{idx}].match.#{op} value invalid: #{inspect(other)}")
@@ -406,97 +442,192 @@ defmodule Sark.Config do
 
   defp parse_tokens(other, _), do: raise("config: tokens must be list, got #{inspect(other)}")
 
-  # Legacy shorthand: `plugins: ["*"]` → unrestricted everywhere. Kept
-  # because it's terser than `[{"*": "*"}]` for the common "give me a
-  # full-access token" case and matches the README example.
-  defp parse_allowed(_where, ["*"], _plugins), do: :all
+  # Public so Sark.Auth.Rules can reuse it for parsing rule plugins blocks.
+  @doc false
+  @spec parse_allowed(String.t(), term(), %{String.t() => term()}) :: allowed()
+  def parse_allowed(where, raw, plugins)
 
-  # Scalar sugar — `plugins: "*"` / `plugins: "kv"` parse as list-of-one,
-  # matching the same string→list affordance the per-plugin pattern value
-  # already gives (`{kv: "read_*"}`).
-  defp parse_allowed(where, s, plugins) when is_binary(s),
+  # Scalar sugar — `plugins: ALL` / `plugins: kv` parse as list-of-one.
+  def parse_allowed(where, s, plugins) when is_binary(s),
     do: parse_allowed(where, [s], plugins)
 
-  defp parse_allowed(where, list, plugins) when is_list(list) do
-    list
-    |> Enum.reduce(%{}, fn entry, acc -> merge_entry(entry, acc, where, plugins) end)
-    |> expand_wildcard(plugins)
+  def parse_allowed(_where, ["ALL"], _plugins), do: :all
+
+  def parse_allowed(where, list, plugins) when is_list(list) do
+    Enum.each(list, &reject_legacy!(&1, where))
+
+    Enum.reduce(list, %{}, fn entry, acc ->
+      apply_entry(entry, acc, where, plugins)
+    end)
   end
 
-  defp parse_allowed(where, other, _) do
+  def parse_allowed(where, other, _) do
     raise "config: #{where} plugins must be a list, got #{inspect(other)}"
   end
 
-  defp merge_entry(plugin, acc, where, plugins) when is_binary(plugin) do
-    validate_plugin_or_wildcard!(plugin, where, plugins)
-    Map.update(acc, plugin, :all, &merge_patterns(&1, :all))
+  # --- legacy-syntax rejection -----------------------------------------------
+
+  defp reject_legacy!("*", where),
+    do: raise("config: #{where} `*` is no longer valid — use `ALL` (uppercase keyword)")
+
+  defp reject_legacy!("!" <> _ = s, where),
+    do: raise("config: #{where} `!`-prefix negation is no longer valid (`#{s}`) — use `-` prefix")
+
+  defp reject_legacy!(s, where) when is_binary(s) do
+    cond do
+      String.contains?(s, "*") ->
+        raise "config: #{where} glob char `*` is no longer valid in `#{s}` — use `%`"
+
+      String.contains?(s, "?") ->
+        raise "config: #{where} glob char `?` is no longer valid in `#{s}` — use `%` (any sequence; single-char glob not supported)"
+
+      true ->
+        :ok
+    end
   end
 
-  defp merge_entry(map, acc, where, plugins) when is_map(map) and map_size(map) == 1 do
-    [{plugin, raw}] = Map.to_list(map)
+  defp reject_legacy!(map, where) when is_map(map) and map_size(map) == 1 do
+    [{k, v}] = Map.to_list(map)
 
-    unless is_binary(plugin) do
-      raise "config: #{where} plugin key must be string, got #{inspect(plugin)}"
+    if is_binary(k) do
+      cond do
+        k == "*" ->
+          raise "config: #{where} plugin key `*` is no longer valid — use `ALL`"
+
+        String.starts_with?(k, "!") ->
+          raise "config: #{where} `!`-prefix on plugin key (`#{k}`) is invalid — negation only applies to bare entries"
+
+        true ->
+          :ok
+      end
     end
 
-    validate_plugin_or_wildcard!(plugin, where, plugins)
-    patterns = parse_pattern_value(raw, where, plugin)
-    Map.update(acc, plugin, patterns, &merge_patterns(&1, patterns))
+    cond do
+      is_binary(v) -> reject_legacy!(v, where)
+      is_list(v) -> Enum.each(v, &reject_legacy!(&1, where))
+      true -> :ok
+    end
   end
 
-  defp merge_entry(other, _acc, where, _plugins) do
-    raise "config: #{where} plugins entries must be a plugin name or a single-key map " <>
-            "(got #{inspect(other)})"
+  defp reject_legacy!(_other, _where), do: :ok
+
+  # --- entry dispatch --------------------------------------------------------
+
+  defp apply_entry("ALL", acc, _where, plugins) do
+    Enum.reduce(Map.keys(plugins), acc, fn p, acc ->
+      Map.update(acc, p, :all, &union_value(&1, :all))
+    end)
   end
 
-  defp validate_plugin_or_wildcard!("*", _token, _plugins), do: :ok
+  defp apply_entry("-ALL", _acc, _where, _plugins), do: %{}
 
-  defp validate_plugin_or_wildcard!(name, where, plugins) do
+  defp apply_entry("-" <> name, acc, where, plugins) do
+    validate_plugin!(name, where, plugins)
+    Map.delete(acc, name)
+  end
+
+  defp apply_entry(name, acc, where, plugins) when is_binary(name) do
+    validate_plugin!(name, where, plugins)
+    Map.update(acc, name, :all, &union_value(&1, :all))
+  end
+
+  defp apply_entry(map, acc, where, plugins) when is_map(map) and map_size(map) == 1 do
+    [{key, raw}] = Map.to_list(map)
+
+    unless is_binary(key) do
+      raise "config: #{where} plugin key must be string, got #{inspect(key)}"
+    end
+
+    value = parse_tool_value(raw, where, key)
+
+    cond do
+      key == "ALL" ->
+        Enum.reduce(Map.keys(plugins), acc, fn p, acc ->
+          Map.update(acc, p, value, &union_value(&1, value))
+        end)
+
+      String.starts_with?(key, "-") ->
+        raise "config: #{where} negated plugin key `#{key}` cannot carry tool patterns — " <>
+                "drop the patterns or remove the `-`"
+
+      true ->
+        validate_plugin!(key, where, plugins)
+        Map.update(acc, key, value, &union_value(&1, value))
+    end
+  end
+
+  defp apply_entry(other, _acc, where, _plugins) do
+    raise "config: #{where} plugins entry must be a name or single-key map (got #{inspect(other)})"
+  end
+
+  defp validate_plugin!(name, where, plugins) do
     unless Map.has_key?(plugins, name) do
       raise "config: #{where} references unknown plugin `#{name}`"
     end
   end
 
-  defp parse_pattern_value(s, where, plugin) when is_binary(s),
-    do: [compile_glob!(s, where, plugin)]
+  # --- tool-value parser (the {plugin: <value>} payload) ---------------------
 
-  defp parse_pattern_value(list, where, plugin) when is_list(list) do
-    Enum.map(list, fn
-      s when is_binary(s) ->
-        compile_glob!(s, where, plugin)
+  # Scalar sugar.
+  defp parse_tool_value(s, where, plugin) when is_binary(s),
+    do: parse_tool_value([s], where, plugin)
 
-      other ->
-        raise "config: #{where} tool pattern for `#{plugin}` must be string, got #{inspect(other)}"
+  defp parse_tool_value(list, where, plugin) when is_list(list) do
+    Enum.each(list, fn
+      s when is_binary(s) -> :ok
+      o -> raise "config: #{where} tool pattern for `#{plugin}` must be string, got #{inspect(o)}"
     end)
+
+    {has_all, pos, neg} =
+      Enum.reduce(list, {false, [], []}, fn item, {ha, p, n} ->
+        case classify_pattern(item, where, plugin) do
+          :all -> {true, p, n}
+          {:pos, re} -> {ha, [re | p], n}
+          {:neg, re} -> {ha, p, [re | n]}
+          :all_neg -> {ha, p, [~r/.*/ | n]}
+        end
+      end)
+
+    pos = Enum.reverse(pos)
+    neg = Enum.reverse(neg)
+
+    cond do
+      has_all and neg == [] ->
+        :all
+
+      has_all ->
+        [%{pos: [~r/.*/], neg: neg}]
+
+      true ->
+        [%{pos: pos, neg: neg}]
+    end
   end
 
-  defp parse_pattern_value(other, where, plugin) do
+  defp parse_tool_value(other, where, plugin) do
     raise "config: #{where} tool patterns for `#{plugin}` must be string or list, got #{inspect(other)}"
   end
 
-  defp merge_patterns(:all, _), do: :all
-  defp merge_patterns(_, :all), do: :all
-  defp merge_patterns(a, b) when is_list(a) and is_list(b), do: a ++ b
+  defp classify_pattern("ALL", _where, _plugin), do: :all
+  defp classify_pattern("-ALL", _where, _plugin), do: :all_neg
 
-  defp expand_wildcard(map, plugins) do
-    case Map.pop(map, "*") do
-      {nil, m} ->
-        m
-
-      {wild, m} ->
-        Enum.reduce(Map.keys(plugins), m, fn p, acc ->
-          Map.update(acc, p, wild, &merge_patterns(&1, wild))
-        end)
-    end
+  defp classify_pattern("-" <> rest, where, plugin) when rest != "" do
+    {:neg, compile_glob!(rest, where, plugin)}
   end
+
+  defp classify_pattern("-", where, plugin),
+    do: raise("config: #{where} tool pattern `-` is empty for plugin `#{plugin}`")
+
+  defp classify_pattern("", where, plugin),
+    do: raise("config: #{where} empty tool pattern for plugin `#{plugin}`")
+
+  defp classify_pattern(s, where, plugin), do: {:pos, compile_glob!(s, where, plugin)}
 
   defp compile_glob!(s, where, plugin) do
     regex =
       s
       |> String.graphemes()
       |> Enum.map_join(fn
-        "*" -> ".*"
-        "?" -> "."
+        "%" -> ".*"
         c -> Regex.escape(c)
       end)
 
@@ -508,6 +639,14 @@ defmodule Sark.Config do
         raise "config: #{where} bad tool pattern `#{s}` for plugin `#{plugin}`: #{inspect(reason)}"
     end
   end
+
+  # --- union ---------------------------------------------------------------
+
+  @doc false
+  @spec union_value(tool_grant(), tool_grant()) :: tool_grant()
+  def union_value(:all, _), do: :all
+  def union_value(_, :all), do: :all
+  def union_value(a, b) when is_list(a) and is_list(b), do: a ++ b
 
   defp parse_plugins(map, config_dir) when is_map(map) do
     Map.new(map, fn {name, path} ->

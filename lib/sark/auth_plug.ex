@@ -193,7 +193,7 @@ defmodule Sark.AuthPlug do
   # JWT/session callers are always rules-gated. `auth.idp.rules:` absent
   # or empty ⇒ zero matches ⇒ default deny. No back-compat "every JWT
   # gets everything" path — opt-in by writing an explicit
-  # `{ match: { path: sub, exists: true }, plugins: ["*"] }` rule.
+  # `{ match: { path: sub, exists: true }, plugins: [ALL] }` rule.
   defp apply_rules(conn, claims, plugin) do
     case Application.get_env(:sark, :idp) do
       %Sark.Config.IdP{rules: rules} ->

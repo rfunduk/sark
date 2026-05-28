@@ -12,30 +12,78 @@ defmodule Sark.Auth.RulesTest do
 
   defp open_rule(plugins), do: %{match: nil, plugins: plugins}
 
+  defp block(pos, neg \\ []) do
+    pos_res = Enum.map(pos, fn s -> Regex.compile!("\\A" <> regex_of(s) <> "\\z") end)
+    neg_res = Enum.map(neg, fn s -> Regex.compile!("\\A" <> regex_of(s) <> "\\z") end)
+    %{pos: pos_res, neg: neg_res}
+  end
+
+  defp regex_of(s) do
+    s
+    |> String.graphemes()
+    |> Enum.map_join(fn
+      "%" -> ".*"
+      c -> Regex.escape(c)
+    end)
+  end
+
   describe "eval — operators" do
     test "equals matches when path value strictly equals" do
-      rules = [rule("email", :equals, "ryan@figment.io", :all)]
-      assert Rules.eval(%{"email" => "ryan@figment.io"}, rules) == :all
+      rules = [rule("email", :equals, "ryan@example.com", :all)]
+      assert Rules.eval(%{"email" => "ryan@example.com"}, rules) == :all
     end
 
     test "equals does not match different string" do
-      rules = [rule("email", :equals, "ryan@figment.io", :all)]
+      rules = [rule("email", :equals, "ryan@example.com", :all)]
       assert Rules.eval(%{"email" => "someone@else"}, rules) == :deny
     end
 
-    test "in matches list membership" do
-      rules = [rule("groups", :in, "admin", :all)]
+    test "in: scalar claim ∈ config list" do
+      rules = [rule("role", :in, ["owner", "admin"], :all)]
+      assert Rules.eval(%{"role" => "admin"}, rules) == :all
+    end
+
+    test "in: scalar claim not in list → deny" do
+      rules = [rule("role", :in, ["owner", "admin"], :all)]
+      assert Rules.eval(%{"role" => "viewer"}, rules) == :deny
+    end
+
+    test "in: against list claim never matches (use contains)" do
+      rules = [rule("groups", :in, ["admin"], :all)]
+      assert Rules.eval(%{"groups" => ["admin"]}, rules) == :deny
+    end
+
+    test "in: against nil claim never matches" do
+      rules = [rule("role", :in, ["owner"], :all)]
+      assert Rules.eval(%{}, rules) == :deny
+    end
+
+    test "in: matches numbers + booleans" do
+      r1 = [rule("level", :in, [1, 2, 3], :all)]
+      assert Rules.eval(%{"level" => 2}, r1) == :all
+
+      r2 = [rule("flag", :in, [true], :all)]
+      assert Rules.eval(%{"flag" => true}, r2) == :all
+    end
+
+    test "contains: config scalar ∈ claim list" do
+      rules = [rule("groups", :contains, "admin", :all)]
       assert Rules.eval(%{"groups" => ["user", "admin"]}, rules) == :all
     end
 
-    test "in against non-list value never matches" do
-      rules = [rule("groups", :in, "admin", :all)]
+    test "contains: scalar not in claim list → deny" do
+      rules = [rule("groups", :contains, "admin", :all)]
+      assert Rules.eval(%{"groups" => ["user"]}, rules) == :deny
+    end
+
+    test "contains: against non-list claim never matches" do
+      rules = [rule("groups", :contains, "admin", :all)]
       assert Rules.eval(%{"groups" => "admin"}, rules) == :deny
     end
 
     test "suffix matches string ending" do
-      rules = [rule("email", :suffix, "@figment.io", :all)]
-      assert Rules.eval(%{"email" => "ryan@figment.io"}, rules) == :all
+      rules = [rule("email", :suffix, "@example.com", :all)]
+      assert Rules.eval(%{"email" => "ryan@example.com"}, rules) == :all
     end
 
     test "suffix against non-string never matches" do
@@ -54,7 +102,7 @@ defmodule Sark.Auth.RulesTest do
     end
 
     test "nested path resolves through dotted segments" do
-      rules = [rule("realm_access.roles", :in, "reader", :all)]
+      rules = [rule("realm_access.roles", :contains, "reader", :all)]
       assert Rules.eval(%{"realm_access" => %{"roles" => ["reader"]}}, rules) == :all
     end
   end
@@ -72,7 +120,7 @@ defmodule Sark.Auth.RulesTest do
     test "two matches union plugin keys" do
       rules = [
         rule("email", :equals, "x", %{"openfig" => :all}),
-        rule("groups", :in, "support", %{"ticketing" => :all})
+        rule("groups", :contains, "support", %{"ticketing" => :all})
       ]
 
       assert Rules.eval(%{"email" => "x", "groups" => ["support"]}, rules) ==
@@ -82,39 +130,34 @@ defmodule Sark.Auth.RulesTest do
     test ":all absorbs map in union" do
       rules = [
         rule("email", :equals, "x", %{"openfig" => :all}),
-        rule("groups", :in, "admin", :all)
+        rule("groups", :contains, "admin", :all)
       ]
 
       assert Rules.eval(%{"email" => "x", "groups" => ["admin"]}, rules) == :all
     end
 
-    test "same plugin in two rules: :all wins over pattern list" do
-      {:ok, re} = Regex.compile("read_.*")
-
+    test "same plugin in two rules: :all wins over block list" do
       rules = [
-        rule("a", :equals, 1, %{"kv" => [re]}),
+        rule("a", :equals, 1, %{"kv" => [block(["read_%"])]}),
         rule("b", :equals, 2, %{"kv" => :all})
       ]
 
       assert Rules.eval(%{"a" => 1, "b" => 2}, rules) == %{"kv" => :all}
     end
 
-    test "same plugin in two rules: pattern lists concatenate" do
-      {:ok, ra} = Regex.compile("read_.*")
-      {:ok, rb} = Regex.compile("list_.*")
-
+    test "same plugin in two rules: block lists concatenate" do
       rules = [
-        rule("a", :equals, 1, %{"kv" => [ra]}),
-        rule("b", :equals, 2, %{"kv" => [rb]})
+        rule("a", :equals, 1, %{"kv" => [block(["read_%"])]}),
+        rule("b", :equals, 2, %{"kv" => [block(["list_%"])]})
       ]
 
-      assert %{"kv" => patterns} = Rules.eval(%{"a" => 1, "b" => 2}, rules)
-      assert length(patterns) == 2
+      assert %{"kv" => blocks} = Rules.eval(%{"a" => 1, "b" => 2}, rules)
+      assert length(blocks) == 2
     end
 
     test "order does not matter — additivity holds either way" do
       rules_a = [
-        rule("groups", :in, "admin", :all),
+        rule("groups", :contains, "admin", :all),
         rule("email", :equals, "ryan", %{"openfig" => :all})
       ]
 
@@ -126,6 +169,51 @@ defmodule Sark.Auth.RulesTest do
 
     test "match=nil rule is unconditional default-allow" do
       assert Rules.eval(%{}, [open_rule(:all)]) == :all
+    end
+  end
+
+  describe "eval — cross-rule negation non-interference" do
+    # End-to-end: rules union into block list, then `Sark.AuthRegistry.tool_allowlist`
+    # resolves names. Rule B's negation must not suppress rule A's positive.
+    test "rule A grants read_%, rule B grants ALL minus read_secret → read_secret stays granted via A" do
+      rules = [
+        rule("a", :equals, 1, %{"kv" => [block(["read_%"])]}),
+        rule("b", :equals, 2, %{"kv" => [block(["%"], ["read_secret"])]})
+      ]
+
+      merged = Rules.eval(%{"a" => 1, "b" => 2}, rules)
+      assert %{"kv" => blocks} = merged
+      assert length(blocks) == 2
+
+      entry = %{name: "test", allowed: merged}
+
+      result =
+        Sark.AuthRegistry.tool_allowlist(entry, "kv", [
+          "read_secret",
+          "read_other",
+          "bump",
+          "write_x"
+        ])
+
+      # read_secret: granted via A (read_%), even though B negates it.
+      # read_other: granted via A and B.
+      # bump, write_x: granted via B only (A doesn't cover).
+      assert "read_secret" in result
+      assert "read_other" in result
+      assert "bump" in result
+      assert "write_x" in result
+    end
+
+    test "single-rule negation IS effective (intra-block neg applies)" do
+      rules = [
+        rule("a", :equals, 1, %{"kv" => [block(["%"], ["read_secret"])]})
+      ]
+
+      merged = Rules.eval(%{"a" => 1}, rules)
+      entry = %{name: "test", allowed: merged}
+
+      result = Sark.AuthRegistry.tool_allowlist(entry, "kv", ["read_secret", "bump"])
+      assert result == ["bump"]
     end
   end
 

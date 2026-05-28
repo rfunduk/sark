@@ -137,6 +137,64 @@ Useful if you enable `allow_sql` as then the `sark_catalog` tool will get the sc
 
 Sark supports OIDC and bearer auth. The default policy is *deny* -> no tools available at all, can't actually do anything, so you need to give access to plugins and tools explicitly. See [`config.yml.example`](config.yml.example).
 
+#### Limiting Access
+
+In bearer token and IDP `plugins:`, you specify which plugins and their tools should be granted. By default no access is granted at all, so you're building up the list with an accumulator:
+
+| `<scope>`                          | effect                               |
+|------------------------------------|--------------------------------------|
+| ALL                                | every known plugin, every tool       |
+| `<plugin>`                         | that plugin, every tool              |
+| `- <plugin>`                       | remove plugin from accumulator       |
+| `{ <plugin>: <pat>|[<pat>, ...]}`  | that plugin, tools matching glob(s)  |
+| `{ALL: <pat>|[<pat>, ...]}`        | all plugins, tools matching glob(s)  |
+
+`<pat>` specifies the tools to provide:
+
+| `<pat>`                          | effect                               |
+|----------------------------------|--------------------------------------|
+| `ALL`                            | match every tool                     |
+| `<name>`                         | that exact tool                      |
+| `<glob>` with `%`                | `%` is any sequence                  |
+| `-<name>` / `-<glob>` / `-ALL`   | negation; narrows this grant only    |
+
+Examples:
+
+| e.g.                                       | effect                        |
+|--------------------------------------------|-------------------------------|
+| `plugins: [ALL]`                           | all plugins, all tools        |
+| `plugins: [ALL, -secrets]`                 | all plugins except `secrets`  |
+| `plugins: [{kv: [ALL, -read_audit]}]       | kv minus one tool             |
+| `plugins: [{ALL: [ALL, -sark_%]}]`         | all plugins, no built-ins     |
+| `plugins: [ALL, -secrets, {kv: [read_%]}]` | mix plugin + tool levels      |
+
+Order matters! `[ALL, -secrets]` ≠ `[-secrets, ALL]`. Patterns are
+processed left-to-right against an accumulator.
+
+Negation narrows the grant it appears in. It does NOT reach across other
+rules / tokens — rule A's `read_%` positive and rule B's `[ALL, -read_secret]`
+negative both fire? `read_secret` stays granted (via A).
+
+Because of this, when using IDP, rules define an *additive union*.
+
+Speaking of IDP rules, instead of simple token-has-`<scope>`, you can match against the claims from the provider.
+
+```yaml
+rules:
+  - { match: <def>, plugins: <scope> }
+```
+
+| `<def>` form                 | meaning                             |
+|------------------------------|-------------------------------------|
+| *omitted* / `true`           | unconditional (always fires)        |
+| `{ path, equals: <v> }`      | strict equality on claim value      |
+| `{ path, in: [<v>, ...] }`   | claim ∈ list                        |
+| `{ path, contains: <v> }`    | claim is a list, v ∈ list           |
+| `{ path, suffix: <v> }`      | claim is a string, ends with v      |
+| `{ path, exists: true }`     | claim resolves to non-null          |
+
+`<path>` is a bare (or dotted) name from the claims JSON (e.g. `email`, `realm_access.roles`).
+
 ### `plugin.yml`
 
 Create a `plugin.yml` for each plugin:

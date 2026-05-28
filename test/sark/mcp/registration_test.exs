@@ -566,4 +566,61 @@ defmodule Sark.MCP.RegistrationTest do
       Registration.register_plugin!(spec)
     end
   end
+
+  describe "tool name regex" do
+    defp spec_with_tool(name) do
+      %Sark.Plugin.Spec{
+        name: "kv",
+        dir: @kv_fixture,
+        migrations: [],
+        tools: [
+          %Sark.Plugin.Tool{
+            name: name,
+            description: "x",
+            returns: :results,
+            write: false,
+            params: [],
+            format: :list,
+            statements: []
+          }
+        ]
+      }
+    end
+
+    test "rejects uppercase tool name (would shadow ALL keyword)" do
+      assert_raise RuntimeError, ~r/invalid/, fn ->
+        Registration.register_plugin!(spec_with_tool(:ALL))
+      end
+    end
+
+    test "rejects tool name with leading dash (negation prefix collision)" do
+      assert_raise RuntimeError, ~r/invalid/, fn ->
+        Registration.register_plugin!(spec_with_tool(:"-foo"))
+      end
+    end
+
+    test "rejects tool name containing `%` (glob char)" do
+      assert_raise RuntimeError, ~r/invalid/, fn ->
+        Registration.register_plugin!(spec_with_tool(:"foo%bar"))
+      end
+    end
+
+    test "rejects mixed-case tool name" do
+      assert_raise RuntimeError, ~r/invalid/, fn ->
+        Registration.register_plugin!(spec_with_tool(:fooBar))
+      end
+    end
+
+    test "accepts snake_case + dash + digits" do
+      # Doesn't actually register (kv plugin specifics absent) but must pass
+      # the name check. Compile-time errors blow up elsewhere — we catch
+      # them, and only care that the name regex didn't reject.
+      try do
+        Registration.register_plugin!(spec_with_tool(:"read-1_things"))
+      rescue
+        e ->
+          refute Exception.message(e) =~ "invalid"
+      end
+    end
+  end
 end

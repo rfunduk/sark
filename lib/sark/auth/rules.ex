@@ -12,17 +12,19 @@ defmodule Sark.Auth.Rules do
 
   Match operators:
 
-    * `equals`  — strict equality on the path's resolved value
-    * `in`      — path resolves to list, value member of list
-    * `suffix`  — path resolves to string, ends with value
-    * `exists`  — path resolves to a non-null value (any type)
+    * `equals`   — strict equality on the path's resolved value
+    * `in`       — path resolves to a scalar; scalar ∈ value-list
+    * `contains` — path resolves to a list; value ∈ list
+    * `suffix`   — path resolves to a string, ends with value
+    * `exists`   — path resolves to a non-null value (any type)
   """
 
   alias Sark.Auth.JSONPath
 
-  @type op :: :equals | :in | :suffix | :exists
+  @type op :: :equals | :in | :contains | :suffix | :exists
   @type match :: %{path: [String.t()], op: op(), value: term()}
-  @type plugins :: :all | %{String.t() => :all | [Regex.t()]}
+  @type block :: %{pos: [Regex.t()], neg: [Regex.t()]}
+  @type plugins :: :all | %{String.t() => :all | [block()]}
   @type rule :: %{match: match() | nil, plugins: plugins()}
   @type t :: [rule()]
 
@@ -52,8 +54,15 @@ defmodule Sark.Auth.Rules do
   end
 
   defp apply_op(:equals, actual, expected), do: actual == expected
-  defp apply_op(:in, list, value) when is_list(list), do: value in list
+
+  defp apply_op(:in, actual, list)
+       when is_list(list) and not is_list(actual) and not is_nil(actual),
+       do: actual in list
+
   defp apply_op(:in, _, _), do: false
+
+  defp apply_op(:contains, list, value) when is_list(list), do: value in list
+  defp apply_op(:contains, _, _), do: false
 
   defp apply_op(:suffix, str, suffix) when is_binary(str) and is_binary(suffix),
     do: String.ends_with?(str, suffix)
@@ -64,17 +73,15 @@ defmodule Sark.Auth.Rules do
 
   @doc false
   # Union merge of two parsed `plugins` allow-lists. Mirrors the shape
-  # produced by `Sark.Config.parse_allowed/3`. `:all` is absorbing at
-  # both top level and plugin-key level.
+  # produced by `Sark.Config.parse_allowed/3`. `:all` absorbs at both
+  # top level and per-plugin level. List-of-blocks concatenates —
+  # cross-rule negation does **not** interfere (each block resolves
+  # independently in `Sark.AuthRegistry.tool_allowlist/3`).
   @spec union(plugins(), plugins()) :: plugins()
   def union(:all, _), do: :all
   def union(_, :all), do: :all
 
   def union(a, b) when is_map(a) and is_map(b) do
-    Map.merge(a, b, fn _plugin, av, bv -> merge_patterns(av, bv) end)
+    Map.merge(a, b, fn _plugin, av, bv -> Sark.Config.union_value(av, bv) end)
   end
-
-  defp merge_patterns(:all, _), do: :all
-  defp merge_patterns(_, :all), do: :all
-  defp merge_patterns(a, b) when is_list(a) and is_list(b), do: a ++ b
 end

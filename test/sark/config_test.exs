@@ -18,8 +18,8 @@ defmodule Sark.ConfigTest do
       data_dir: #{data_dir}
       auth:
         tokens:
-          - { name: laptop, plugins: ["*"], token: sk-aaaa }
-          - { name: phone,  plugins: ["*"], token: sk-bbbb }
+          - { name: laptop, plugins: [ALL], token: sk-aaaa }
+          - { name: phone,  plugins: [ALL], token: sk-bbbb }
       plugins: {}
       """)
 
@@ -45,7 +45,7 @@ defmodule Sark.ConfigTest do
       data_dir: ./data
       auth:
         tokens:
-          - { name: laptop, plugins: ["*"], token: sk-aaaa }
+          - { name: laptop, plugins: [ALL], token: sk-aaaa }
       plugins: {}
       """)
 
@@ -68,7 +68,7 @@ defmodule Sark.ConfigTest do
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: laptop, plugins: ["*"], token: "${#{var}}" }
+          - { name: laptop, plugins: [ALL], token: "${#{var}}" }
       plugins: {}
       """)
 
@@ -83,7 +83,7 @@ defmodule Sark.ConfigTest do
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: laptop, plugins: ["*"], token: "${SARK_DEFINITELY_UNSET_XYZ}" }
+          - { name: laptop, plugins: [ALL], token: "${SARK_DEFINITELY_UNSET_XYZ}" }
       plugins: {}
       """)
 
@@ -126,8 +126,8 @@ defmodule Sark.ConfigTest do
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: a, plugins: ["*"], token: sk-same }
-          - { name: b, plugins: ["*"], token: sk-same }
+          - { name: a, plugins: [ALL], token: sk-same }
+          - { name: b, plugins: [ALL], token: sk-same }
       plugins: {}
       """)
 
@@ -187,11 +187,11 @@ defmodule Sark.ConfigTest do
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-ro" => %{allowed: %{"kv" => patterns}}} = cfg.tokens
-    assert length(patterns) == 3
-    assert Enum.all?(patterns, &match?(%Regex{}, &1))
+    %{"sk-ro" => %{allowed: %{"kv" => [%{pos: pos, neg: []}]}}} = cfg.tokens
+    assert length(pos) == 3
+    assert Enum.all?(pos, &match?(%Regex{}, &1))
 
-    [get_re, list_re, find_re] = patterns
+    [get_re, list_re, find_re] = pos
     assert Regex.match?(get_re, "get")
     refute Regex.match?(get_re, "getter")
     assert Regex.match?(list_re, "list")
@@ -205,37 +205,39 @@ defmodule Sark.ConfigTest do
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: ro, plugins: [{kv: "read_*"}], token: sk-ro }
+          - { name: ro, plugins: [{kv: read_%}], token: sk-ro }
       plugins:
         kv: ./kv
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-ro" => %{allowed: %{"kv" => [re]}}} = cfg.tokens
+    %{"sk-ro" => %{allowed: %{"kv" => [%{pos: [re], neg: []}]}}} = cfg.tokens
     assert Regex.match?(re, "read_things")
     assert Regex.match?(re, "read_one")
     refute Regex.match?(re, "write_things")
   end
 
-  test "glob `*` matches any tool, `?` matches one char", %{tmp_dir: dir} do
+  test "`%` glob matches any sequence (leading, mid, trailing)", %{tmp_dir: dir} do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: t, plugins: [{kv: ["*", "ge?"]}], token: sk-t }
+          - { name: t, plugins: [{kv: [read_%, %_audit, foo_%_bar]}], token: sk-t }
       plugins:
         kv: ./kv
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-t" => %{allowed: %{"kv" => [star, q]}}} = cfg.tokens
-    assert Regex.match?(star, "anything")
-    assert Regex.match?(star, "sark_patch")
-    assert Regex.match?(q, "get")
-    refute Regex.match?(q, "gets")
-    refute Regex.match?(q, "g")
+    %{"sk-t" => %{allowed: %{"kv" => [%{pos: [trail, lead, mid], neg: []}]}}} = cfg.tokens
+
+    assert Regex.match?(trail, "read_foo")
+    refute Regex.match?(trail, "write_foo")
+    assert Regex.match?(lead, "user_audit")
+    refute Regex.match?(lead, "user_audit_x")
+    assert Regex.match?(mid, "foo_x_bar")
+    refute Regex.match?(mid, "foo__")
   end
 
   test "patterns are anchored — partial match doesn't pass", %{tmp_dir: dir} do
@@ -245,26 +247,44 @@ defmodule Sark.ConfigTest do
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: t, plugins: [{kv: ["read_*"]}], token: sk-t }
+          - { name: t, plugins: [{kv: [read_%]}], token: sk-t }
       plugins:
         kv: ./kv
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-t" => %{allowed: %{"kv" => [re]}}} = cfg.tokens
+    %{"sk-t" => %{allowed: %{"kv" => [%{pos: [re]}]}}} = cfg.tokens
     refute Regex.match?(re, "foo_read_one")
     refute Regex.match?(re, "read")
     assert Regex.match?(re, "read_anything")
   end
 
-  test "wildcard `*` plugin key expands across all known plugins", %{tmp_dir: dir} do
+  test "`_` is literal in patterns (snake_case safe)", %{tmp_dir: dir} do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: t, plugins: [{"*": [sark_catalog]}], token: sk-t }
+          - { name: t, plugins: [{kv: [read_audit]}], token: sk-t }
+      plugins:
+        kv: ./kv
+      """)
+
+    cfg = Sark.Config.load!(path)
+    %{"sk-t" => %{allowed: %{"kv" => [%{pos: [re]}]}}} = cfg.tokens
+    assert Regex.match?(re, "read_audit")
+    refute Regex.match?(re, "readxaudit")
+  end
+
+  test "`{ALL: ...}` plugin key expands across all known plugins", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth:
+        tokens:
+          - { name: t, plugins: [{ALL: [get_meta]}], token: sk-t }
       plugins:
         kv: ./kv
         kb: ./kb
@@ -273,11 +293,11 @@ defmodule Sark.ConfigTest do
     cfg = Sark.Config.load!(path)
     %{"sk-t" => %{allowed: allowed}} = cfg.tokens
     assert Map.keys(allowed) |> Enum.sort() == ["kb", "kv"]
-    assert match?([%Regex{}], Map.fetch!(allowed, "kv"))
-    assert match?([%Regex{}], Map.fetch!(allowed, "kb"))
+    assert match?([%{pos: [%Regex{}], neg: []}], Map.fetch!(allowed, "kv"))
+    assert match?([%{pos: [%Regex{}], neg: []}], Map.fetch!(allowed, "kb"))
   end
 
-  test "wildcard `*` unions with explicit plugin entries", %{tmp_dir: dir} do
+  test "`{ALL: ...}` unions with explicit plugin entries", %{tmp_dir: dir} do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
@@ -287,7 +307,7 @@ defmodule Sark.ConfigTest do
           - name: t
             plugins:
               - {kv: [bump]}
-              - {"*": [sark_catalog]}
+              - {ALL: [get_meta]}
             token: sk-t
       plugins:
         kv: ./kv
@@ -295,12 +315,12 @@ defmodule Sark.ConfigTest do
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-t" => %{allowed: %{"kv" => kv_pats, "kb" => kb_pats}}} = cfg.tokens
-    assert length(kv_pats) == 2
-    assert length(kb_pats) == 1
+    %{"sk-t" => %{allowed: %{"kv" => kv_blocks, "kb" => kb_blocks}}} = cfg.tokens
+    assert length(kv_blocks) == 2
+    assert length(kb_blocks) == 1
   end
 
-  test "duplicate plugin entries union their pattern lists", %{tmp_dir: dir} do
+  test "duplicate plugin entries union as separate blocks", %{tmp_dir: dir} do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
@@ -309,7 +329,7 @@ defmodule Sark.ConfigTest do
         tokens:
           - name: t
             plugins:
-              - {kv: [read_*]}
+              - {kv: [read_%]}
               - {kv: [bump]}
             token: sk-t
       plugins:
@@ -317,8 +337,9 @@ defmodule Sark.ConfigTest do
       """)
 
     cfg = Sark.Config.load!(path)
-    %{"sk-t" => %{allowed: %{"kv" => patterns}}} = cfg.tokens
-    assert length(patterns) == 2
+    %{"sk-t" => %{allowed: %{"kv" => blocks}}} = cfg.tokens
+    assert length(blocks) == 2
+    Enum.each(blocks, fn b -> assert match?(%{pos: [_], neg: []}, b) end)
   end
 
   test "bare plugin entry overrides any prior pattern list for that plugin", %{tmp_dir: dir} do
@@ -330,7 +351,7 @@ defmodule Sark.ConfigTest do
         tokens:
           - name: t
             plugins:
-              - {kv: [read_*]}
+              - {kv: [read_%]}
               - kv
             token: sk-t
       plugins:
@@ -343,14 +364,14 @@ defmodule Sark.ConfigTest do
     assert kv_value == :all
   end
 
-  test "scalar `plugins: \"*\"` is sugar for `[\"*\"]`", %{tmp_dir: dir} do
+  test "scalar `plugins: ALL` is sugar for `[ALL]`", %{tmp_dir: dir} do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: t, plugins: "*", token: sk-t }
+          - { name: t, plugins: ALL, token: sk-t }
       plugins:
         kv: ./kv
       """)
@@ -376,20 +397,349 @@ defmodule Sark.ConfigTest do
     assert %{"sk-t" => %{allowed: %{"kv" => :all}}} = cfg.tokens
   end
 
-  test "`[\"*\"]` legacy shorthand stays `:all`", %{tmp_dir: dir} do
+  test "`[ALL]` becomes top-level `:all`", %{tmp_dir: dir} do
     path =
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       auth:
         tokens:
-          - { name: t, plugins: ["*"], token: sk-t }
+          - { name: t, plugins: [ALL], token: sk-t }
       plugins:
         kv: ./kv
       """)
 
     cfg = Sark.Config.load!(path)
     assert %{"sk-t" => %{allowed: :all}} = cfg.tokens
+  end
+
+  describe "plugin-level negation" do
+    test "[ALL, -name] removes the named plugin", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [ALL, -secrets], token: sk-t }
+        plugins:
+          kv: ./kv
+          kb: ./kb
+          secrets: ./secrets
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: allowed}} = cfg.tokens
+      assert Map.keys(allowed) |> Enum.sort() == ["kb", "kv"]
+      assert allowed["kv"] == :all
+      assert allowed["kb"] == :all
+    end
+
+    test "[-ALL] empties everything (explicit deny-all marker)", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [ALL, -ALL], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert %{"sk-t" => %{allowed: %{}}} = cfg.tokens
+    end
+
+    test "[-name] alone (no positive) = empty allowlist", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [-secrets], token: sk-t }
+        plugins:
+          secrets: ./secrets
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert %{"sk-t" => %{allowed: %{}}} = cfg.tokens
+    end
+
+    test "order matters — [ALL, -secrets] vs [-secrets, ALL]", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: a, plugins: [ALL, -secrets],  token: sk-a }
+            - { name: b, plugins: [-secrets, ALL],  token: sk-b }
+        plugins:
+          kv: ./kv
+          secrets: ./secrets
+        """)
+
+      cfg = Sark.Config.load!(path)
+      # [ALL, -secrets]: add all, remove secrets → no secrets
+      assert Map.keys(cfg.tokens["sk-a"].allowed) |> Enum.sort() == ["kv"]
+      # [-secrets, ALL]: remove (no-op, not in acc), then add all → secrets back
+      assert Map.keys(cfg.tokens["sk-b"].allowed) |> Enum.sort() == ["kv", "secrets"]
+    end
+
+    test "negated plugin must exist (unknown plugin → error)", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [ALL, -ghost], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      assert_raise RuntimeError, ~r/unknown plugin `ghost`/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "plugin-level mix: [ALL, -secrets, {kv: [...]}]", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [ALL, -secrets, {kv: [read_%]}], token: sk-t }
+        plugins:
+          kv: ./kv
+          kb: ./kb
+          secrets: ./secrets
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: allowed}} = cfg.tokens
+      assert Map.keys(allowed) |> Enum.sort() == ["kb", "kv"]
+      assert allowed["kb"] == :all
+      # kv: ALL block from `ALL` (which is :all), then `{kv: [read_%]}` block.
+      # Union: :all absorbs.
+      assert allowed["kv"] == :all
+    end
+
+    test "negated plugin key carrying patterns is rejected", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{"-secrets": [foo]}], token: sk-t }
+        plugins:
+          secrets: ./secrets
+        """)
+
+      assert_raise RuntimeError, ~r/negated plugin key/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+  end
+
+  describe "tool-level negation" do
+    test "[ALL, -name] resolves correctly", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: [ALL, -read_audit]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: %{"kv" => [block]}}} = cfg.tokens
+      assert match?(%{pos: [%Regex{}], neg: [%Regex{}]}, block)
+
+      # Block grants any name except `read_audit`
+      [pos] = block.pos
+      [neg] = block.neg
+      assert Regex.match?(pos, "read_audit")
+      assert Regex.match?(pos, "anything")
+      assert Regex.match?(neg, "read_audit")
+      refute Regex.match?(neg, "read_other")
+    end
+
+    test "[-name] only (no positive) → empty effective set", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: [-foo]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: %{"kv" => [%{pos: [], neg: [_]}]}}} = cfg.tokens
+    end
+
+    test "[ALL, -%_secret] glob negation", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: [ALL, -%_secret]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: %{"kv" => [block]}}} = cfg.tokens
+      [neg] = block.neg
+      assert Regex.match?(neg, "user_secret")
+      assert Regex.match?(neg, "api_secret")
+      refute Regex.match?(neg, "user_audit")
+    end
+
+    test "[-ALL] inside tool list = empty (negation absorbs)", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: [ALL, -ALL]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: %{"kv" => [block]}}} = cfg.tokens
+      # pos = [.*], neg = [.*] → resolves to empty in AuthRegistry
+      assert match?(%{pos: [%Regex{}], neg: [%Regex{}]}, block)
+    end
+
+    test "[ALL] alone in tool list = :all (no neg → unrestricted)", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: [ALL]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert %{"sk-t" => %{allowed: %{"kv" => :all}}} = cfg.tokens
+    end
+
+    test "{ALL: [ALL, -sark_%]} — all plugins, no builtins", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{ALL: [ALL, -sark_%]}], token: sk-t }
+        plugins:
+          kv: ./kv
+          kb: ./kb
+        """)
+
+      cfg = Sark.Config.load!(path)
+      %{"sk-t" => %{allowed: allowed}} = cfg.tokens
+      assert Map.keys(allowed) |> Enum.sort() == ["kb", "kv"]
+      [%{neg: [neg]}] = allowed["kv"]
+      assert Regex.match?(neg, "sark_catalog")
+      refute Regex.match?(neg, "read_foo")
+    end
+  end
+
+  describe "legacy syntax rejection" do
+    test "rejects `*` wildcard with migration hint", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: ["*"], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      assert_raise RuntimeError, ~r/use `ALL`/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "rejects `*` glob inside pattern", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: ["read_*"]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      assert_raise RuntimeError, ~r/use `%`/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "rejects `?` glob", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: ["ge?"]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      assert_raise RuntimeError, ~r/`\?`/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "rejects `!`-prefix negation", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{kv: [ALL, "!read_audit"]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      assert_raise RuntimeError, ~r/`!`-prefix/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "rejects `*` plugin key", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens:
+            - { name: t, plugins: [{"*": [foo]}], token: sk-t }
+        plugins:
+          kv: ./kv
+        """)
+
+      assert_raise RuntimeError, ~r/use `ALL`/, fn -> Sark.Config.load!(path) end
+    end
   end
 
   test "rejects unknown plugin name inside a single-key map", %{tmp_dir: dir} do
@@ -502,7 +852,7 @@ defmodule Sark.ConfigTest do
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
       tokens:
-        - { name: legacy, plugins: ["*"], token: sk-legacy }
+        - { name: legacy, plugins: [ALL], token: sk-legacy }
       plugins: {}
       """)
 
@@ -702,33 +1052,74 @@ defmodule Sark.ConfigTest do
     test "parses a happy rule with each operator", %{tmp_dir: dir} do
       path =
         idp_config(dir, """
-              - { match: { path: groups,             in: admin },             plugins: ["*"] }
-              - { match: { path: email,              equals: ryan@figment.io }, plugins: [kv] }
-              - { match: { path: email,              suffix: "@figment.io" }, plugins: [{kv: ["read_*"]}] }
-              - { match: { path: sub,                exists: true },         plugins: [kv] }
+              - { match: { path: role,     in: [owner, admin] },       plugins: [ALL] }
+              - { match: { path: groups,   contains: admin },          plugins: [kv] }
+              - { match: { path: email,    equals: ryan@example.com }, plugins: [kv] }
+              - { match: { path: email,    suffix: "@example.com" },   plugins: [{kv: [read_%]}] }
+              - { match: { path: sub,      exists: true },             plugins: [kv] }
         """)
 
       cfg = Sark.Config.load!(path)
-      assert [r1, r2, r3, r4] = cfg.idp.rules
+      assert [r1, r2, r3, r4, r5] = cfg.idp.rules
       assert r1.match.op == :in
-      assert r1.match.value == "admin"
-      assert r1.match.path == ["groups"]
+      assert r1.match.value == ["owner", "admin"]
+      assert r1.match.path == ["role"]
       assert r1.plugins == :all
-      assert r2.match.op == :equals
-      assert r3.match.op == :suffix
-      assert r3.match.value == "@figment.io"
-      assert r4.match.op == :exists
-      assert r4.match.value == true
+      assert r2.match.op == :contains
+      assert r2.match.value == "admin"
+      assert r3.match.op == :equals
+      assert r4.match.op == :suffix
+      assert r4.match.value == "@example.com"
+      assert r5.match.op == :exists
+      assert r5.match.value == true
     end
 
     test "nested path parses into segments", %{tmp_dir: dir} do
       path =
         idp_config(dir, """
-              - { match: { path: realm_access.roles, in: reader }, plugins: [kv] }
+              - { match: { path: realm_access.roles, contains: reader }, plugins: [kv] }
         """)
 
       cfg = Sark.Config.load!(path)
       assert [%{match: %{path: ["realm_access", "roles"]}}] = cfg.idp.rules
+    end
+
+    test "in: rejects scalar (must be list)", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: role, in: admin }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/must be a list/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "in: rejects empty list", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: role, in: [] }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/non-empty list/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "in: rejects nested non-scalars", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: role, in: [[nested]] }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/scalar/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "contains: rejects list value", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: groups, contains: [admin] }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/match\.contains value invalid/, fn ->
+        Sark.Config.load!(path)
+      end
     end
 
     test "rule without match is unconditional default-allow", %{tmp_dir: dir} do

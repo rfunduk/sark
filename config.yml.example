@@ -28,11 +28,6 @@ embedder:
   defaults:
     chunk: { size: 1024, overlap: 128 }
 
-# `<scope>` is a list. Entries can be:
-#   - "*"                             — every known plugin, every tool
-#   - <plugin>                        — that plugin, every tool
-#   - {<plugin>: <pat>|[<pat>, ...]}  — that plugin, only tools matching the glob(s)
-#   - {"*": <pat>|[...]}              — all plugins, only matching tools
 auth:
   tokens:
     - { name: default, plugins: <scope>, token: "${SARK_TOKEN}" }
@@ -45,20 +40,10 @@ auth:
     # by default -> `client_id` if set, else "sark"
     audience: "myoverride"
 
-    # optional, add to scope. some OIDC require `offline_access` or similar
-    # base set -> [openid, email, profile]
+    # optional, add to scope. some OIDC require `offline_access` or similar.
+    # base set -> [openid, email, profile] always set
     scope: [offline_access]
 
-    # Rules define an *additive union*.
-    #
-    # `match:` forms:
-    #   - omitted / true              — unconditional (always fires)
-    #   - { path, equals: <v> }       — strict equality on path value
-    #   - { path, in: [<v>, ...] }    — path is a list, v ∈ list
-    #   - { path, suffix: <v> }       — path is a string, ends with v
-    #   - { path, exists: true }      — path resolves to non-null
-    #
-    # `path:` is a bare dotted name (e.g. `email`, `realm_access.roles`).
     rules:
       - { match: <def>, plugins: <scope> }
 
