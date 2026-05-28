@@ -173,10 +173,9 @@ defmodule Sark.AuthPlug do
     end
   end
 
-  # JWT path: every valid JWT for the configured IdP grants access to
-  # every plugin. Per-plugin scoping (mirror of the bearer allow-list)
-  # arrives in Phase 4 — for now we only check the token's `aud` matches
-  # this sark instance, and trust any caller the IdP vouches for.
+  # JWT path: if `auth.idp.rules:` is configured, evaluate claims against
+  # rules to derive the effective plugin scope. Otherwise fall through to
+  # legacy behavior (every valid JWT reaches every plugin).
   defp authorize_jwt(conn, claims) do
     case Scope.plugin_from_path(conn.path_info) do
       {:ok, plugin} ->
@@ -184,9 +183,36 @@ defmodule Sark.AuthPlug do
         |> assign(:token_name, jwt_display_name(claims))
         |> assign(:plugin, plugin)
         |> assign(:sark_auth, Jason.encode!(claims))
+        |> apply_rules(claims, plugin)
 
       :error ->
         not_found(conn)
+    end
+  end
+
+  # JWT/session callers are always rules-gated. `auth.idp.rules:` absent
+  # or empty ⇒ zero matches ⇒ default deny. No back-compat "every JWT
+  # gets everything" path — opt-in by writing an explicit
+  # `{ match: { path: sub, exists: true }, plugins: ["*"] }` rule.
+  defp apply_rules(conn, claims, plugin) do
+    case Application.get_env(:sark, :idp) do
+      %Sark.Config.IdP{rules: rules} ->
+        case Sark.Auth.Rules.eval(claims, rules) do
+          :deny ->
+            forbidden(conn)
+
+          allowed ->
+            entry = %{name: conn.assigns[:token_name] || "jwt", allowed: allowed}
+
+            if Sark.AuthRegistry.authorized?(entry, plugin) do
+              assign(conn, :token_entry, entry)
+            else
+              not_found(conn)
+            end
+        end
+
+      _ ->
+        conn
     end
   end
 
@@ -239,6 +265,13 @@ defmodule Sark.AuthPlug do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(404, ~s({"error":"not found"}))
+    |> halt()
+  end
+
+  defp forbidden(conn) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(403, ~s({"error":"forbidden","reason":"no matching auth rule"}))
     |> halt()
   end
 end

@@ -21,6 +21,13 @@ defmodule Sark.Config.IdP do
       Authelia, PocketID) to obtain refresh tokens. Google doesn't use
       `offline_access` — sark always injects `access_type=offline` for
       that, no scope addition needed.
+    * `rules` — claim-driven plugin scope. List of
+      `%{match: %{path, op, value} | nil, plugins: parsed_allowed}`.
+      Evaluated additively (`Sark.Auth.Rules.eval/2`); every matching
+      rule contributes to a unioned allow-list. Absent / empty (`[]`)
+      ⇒ no rule can ever match ⇒ default deny. Opt into open access
+      with an unconditional rule:
+      `{ match: true, plugins: ["*"] }` (or omit `match:` entirely).
   """
 
   @baseline_scope ["openid", "email", "profile"]
@@ -31,7 +38,8 @@ defmodule Sark.Config.IdP do
     :audience,
     :client_id,
     :client_secret,
-    scope: []
+    scope: [],
+    rules: []
   ]
 
   @type t :: %__MODULE__{
@@ -39,7 +47,8 @@ defmodule Sark.Config.IdP do
           audience: String.t(),
           client_id: String.t() | nil,
           client_secret: String.t() | nil,
-          scope: [String.t()]
+          scope: [String.t()],
+          rules: Sark.Auth.Rules.t()
         }
 
   @doc "Baseline scope sark always sends."

@@ -29,14 +29,14 @@ embedder:
     chunk: { size: 1024, overlap: 128 }
 
 # `<scope>` is a list. Entries can be:
-#   - "*"                — every known plugin, every tool
-#   - <plugin>           — that plugin, every tool
-#   - {<plugin>: <pat>}  — that plugin, only tools matching the glob(s)
-#   - {<plugin>: [<pat>, <pat>...]}
-#   - {"*": <pat>|[...]} — all plugins, only matching tools
+#   - "*"                             — every known plugin, every tool
+#   - <plugin>                        — that plugin, every tool
+#   - {<plugin>: <pat>|[<pat>, ...]}  — that plugin, only tools matching the glob(s)
+#   - {"*": <pat>|[...]}              — all plugins, only matching tools
 auth:
   tokens:
     - { name: default, plugins: <scope>, token: "${SARK_TOKEN}" }
+
   idp:
     issuer: https://accounts.google.com
     client_id: xyz123.apps.googleusercontent.com
@@ -48,6 +48,19 @@ auth:
     # optional, add to scope. some OIDC require `offline_access` or similar
     # base set -> [openid, email, profile]
     scope: [offline_access]
+
+    # Rules define an *additive union*.
+    #
+    # `match:` forms:
+    #   - omitted / true              — unconditional (always fires)
+    #   - { path, equals: <v> }       — strict equality on path value
+    #   - { path, in: [<v>, ...] }    — path is a list, v ∈ list
+    #   - { path, suffix: <v> }       — path is a string, ends with v
+    #   - { path, exists: true }      — path resolves to non-null
+    #
+    # `path:` is a bare dotted name (e.g. `email`, `realm_access.roles`).
+    rules:
+      - { match: <def>, plugins: <scope> }
 
 # Plugin map: name → directory. The name is the routing key everywhere
 # (URL path `/<name>/mcp`, DB filename, token scopes).

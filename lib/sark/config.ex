@@ -131,7 +131,7 @@ defmodule Sark.Config do
     end
 
     tokens = parse_tokens(fetch!(auth, "tokens"), plugins)
-    idp = parse_idp(Map.get(auth, "idp"))
+    idp = parse_idp(Map.get(auth, "idp"), plugins)
     providers = Sark.Providers.parse(Map.get(raw, "providers"))
     embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
 
@@ -151,27 +151,112 @@ defmodule Sark.Config do
     }
   end
 
-  defp parse_idp(nil), do: nil
+  defp parse_idp(nil, _plugins), do: nil
 
-  defp parse_idp(map) when is_map(map) do
+  defp parse_idp(map, plugins) when is_map(map) do
     issuer = fetch_idp_url!(map, "issuer")
     client_id = parse_optional_idp_string(map, "client_id")
     client_secret = parse_optional_idp_string(map, "client_secret")
     audience = parse_audience(Map.get(map, "audience"), client_id)
     scope = parse_scope(Map.get(map, "scope"))
+    rules = parse_rules(Map.get(map, "rules"), plugins)
 
     %Sark.Config.IdP{
       issuer: issuer,
       audience: audience,
       client_id: client_id,
       client_secret: client_secret,
-      scope: scope
+      scope: scope,
+      rules: rules
     }
   end
 
-  defp parse_idp(other) do
+  defp parse_idp(other, _plugins) do
     raise "config: auth.idp must be a map, got #{inspect(other)}"
   end
+
+  defp parse_rules(nil, _plugins), do: []
+  defp parse_rules([], _plugins), do: []
+
+  defp parse_rules(list, plugins) when is_list(list) do
+    list
+    |> Enum.with_index()
+    |> Enum.map(fn {raw, idx} -> parse_rule(raw, idx, plugins) end)
+  end
+
+  defp parse_rules(other, _plugins),
+    do: raise("config: auth.idp.rules must be a list, got #{inspect(other)}")
+
+  defp parse_rule(raw, idx, plugins) when is_map(raw) do
+    plugins_field =
+      case Map.fetch(raw, "plugins") do
+        {:ok, v} -> v
+        :error -> raise "config: auth.idp.rules[#{idx}] missing required `plugins:`"
+      end
+
+    %{
+      match: parse_match(Map.get(raw, "match"), idx),
+      plugins: parse_allowed("auth.idp.rules[#{idx}]", plugins_field, plugins)
+    }
+  end
+
+  defp parse_rule(other, idx, _plugins),
+    do: raise("config: auth.idp.rules[#{idx}] must be a map, got #{inspect(other)}")
+
+  defp parse_match(nil, _idx), do: nil
+  defp parse_match(true, _idx), do: nil
+
+  defp parse_match(false, idx),
+    do: raise("config: auth.idp.rules[#{idx}].match: false is a dead rule — remove it")
+
+  defp parse_match(map, idx) when is_map(map) do
+    path_raw =
+      case Map.get(map, "path") do
+        v when is_binary(v) and v != "" ->
+          v
+
+        other ->
+          raise "config: auth.idp.rules[#{idx}].match.path must be non-empty string, got #{inspect(other)}"
+      end
+
+    {op, value} = parse_match_op(map, idx)
+
+    %{path: Sark.Auth.JSONPath.parse(path_raw), op: op, value: value}
+  end
+
+  defp parse_match(other, idx),
+    do: raise("config: auth.idp.rules[#{idx}].match must be a map, got #{inspect(other)}")
+
+  @match_ops ~w(equals in suffix exists)
+
+  defp parse_match_op(map, idx) do
+    ops = Enum.filter(@match_ops, &Map.has_key?(map, &1))
+
+    case ops do
+      [op] ->
+        {String.to_atom(op), validate_op_value(op, Map.fetch!(map, op), idx)}
+
+      [] ->
+        raise "config: auth.idp.rules[#{idx}].match needs one of: #{Enum.join(@match_ops, ", ")}"
+
+      multi ->
+        raise "config: auth.idp.rules[#{idx}].match has conflicting operators #{inspect(multi)} — pick one"
+    end
+  end
+
+  defp validate_op_value("exists", true, _idx), do: true
+
+  defp validate_op_value("exists", other, idx),
+    do: raise("config: auth.idp.rules[#{idx}].match.exists must be `true`, got #{inspect(other)}")
+
+  defp validate_op_value(op, v, _idx) when op in ["equals", "in", "suffix"] and is_binary(v),
+    do: v
+
+  defp validate_op_value(op, v, _idx)
+       when op in ["equals", "in"] and (is_number(v) or is_boolean(v)), do: v
+
+  defp validate_op_value(op, other, idx),
+    do: raise("config: auth.idp.rules[#{idx}].match.#{op} value invalid: #{inspect(other)}")
 
   # `scope:` is an additive list of extras. Sark always sends the
   # baseline (`openid email profile`); operator's list tacks more onto
@@ -309,7 +394,7 @@ defmodule Sark.Config do
     Enum.reduce(list, %{}, fn entry, acc ->
       name = fetch!(entry, "name")
       token = fetch!(entry, "token")
-      allowed = parse_allowed(name, fetch!(entry, "plugins"), plugins)
+      allowed = parse_allowed("token `#{name}`", fetch!(entry, "plugins"), plugins)
 
       if Map.has_key?(acc, token) do
         raise "config: duplicate token (entries `#{acc[token].name}` and `#{name}` share value)"
@@ -324,69 +409,69 @@ defmodule Sark.Config do
   # Legacy shorthand: `plugins: ["*"]` → unrestricted everywhere. Kept
   # because it's terser than `[{"*": "*"}]` for the common "give me a
   # full-access token" case and matches the README example.
-  defp parse_allowed(_token_name, ["*"], _plugins), do: :all
+  defp parse_allowed(_where, ["*"], _plugins), do: :all
 
   # Scalar sugar — `plugins: "*"` / `plugins: "kv"` parse as list-of-one,
   # matching the same string→list affordance the per-plugin pattern value
   # already gives (`{kv: "read_*"}`).
-  defp parse_allowed(token_name, s, plugins) when is_binary(s),
-    do: parse_allowed(token_name, [s], plugins)
+  defp parse_allowed(where, s, plugins) when is_binary(s),
+    do: parse_allowed(where, [s], plugins)
 
-  defp parse_allowed(token_name, list, plugins) when is_list(list) do
+  defp parse_allowed(where, list, plugins) when is_list(list) do
     list
-    |> Enum.reduce(%{}, fn entry, acc -> merge_entry(entry, acc, token_name, plugins) end)
+    |> Enum.reduce(%{}, fn entry, acc -> merge_entry(entry, acc, where, plugins) end)
     |> expand_wildcard(plugins)
   end
 
-  defp parse_allowed(token_name, other, _) do
-    raise "config: token `#{token_name}` plugins must be a list, got #{inspect(other)}"
+  defp parse_allowed(where, other, _) do
+    raise "config: #{where} plugins must be a list, got #{inspect(other)}"
   end
 
-  defp merge_entry(plugin, acc, token_name, plugins) when is_binary(plugin) do
-    validate_plugin_or_wildcard!(plugin, token_name, plugins)
+  defp merge_entry(plugin, acc, where, plugins) when is_binary(plugin) do
+    validate_plugin_or_wildcard!(plugin, where, plugins)
     Map.update(acc, plugin, :all, &merge_patterns(&1, :all))
   end
 
-  defp merge_entry(map, acc, token_name, plugins) when is_map(map) and map_size(map) == 1 do
+  defp merge_entry(map, acc, where, plugins) when is_map(map) and map_size(map) == 1 do
     [{plugin, raw}] = Map.to_list(map)
 
     unless is_binary(plugin) do
-      raise "config: token `#{token_name}` plugin key must be string, got #{inspect(plugin)}"
+      raise "config: #{where} plugin key must be string, got #{inspect(plugin)}"
     end
 
-    validate_plugin_or_wildcard!(plugin, token_name, plugins)
-    patterns = parse_pattern_value(raw, token_name, plugin)
+    validate_plugin_or_wildcard!(plugin, where, plugins)
+    patterns = parse_pattern_value(raw, where, plugin)
     Map.update(acc, plugin, patterns, &merge_patterns(&1, patterns))
   end
 
-  defp merge_entry(other, _acc, token_name, _plugins) do
-    raise "config: token `#{token_name}` plugins entries must be a plugin name or a single-key map " <>
+  defp merge_entry(other, _acc, where, _plugins) do
+    raise "config: #{where} plugins entries must be a plugin name or a single-key map " <>
             "(got #{inspect(other)})"
   end
 
   defp validate_plugin_or_wildcard!("*", _token, _plugins), do: :ok
 
-  defp validate_plugin_or_wildcard!(name, token_name, plugins) do
+  defp validate_plugin_or_wildcard!(name, where, plugins) do
     unless Map.has_key?(plugins, name) do
-      raise "config: token `#{token_name}` references unknown plugin `#{name}`"
+      raise "config: #{where} references unknown plugin `#{name}`"
     end
   end
 
-  defp parse_pattern_value(s, token_name, plugin) when is_binary(s),
-    do: [compile_glob!(s, token_name, plugin)]
+  defp parse_pattern_value(s, where, plugin) when is_binary(s),
+    do: [compile_glob!(s, where, plugin)]
 
-  defp parse_pattern_value(list, token_name, plugin) when is_list(list) do
+  defp parse_pattern_value(list, where, plugin) when is_list(list) do
     Enum.map(list, fn
       s when is_binary(s) ->
-        compile_glob!(s, token_name, plugin)
+        compile_glob!(s, where, plugin)
 
       other ->
-        raise "config: token `#{token_name}` tool pattern for `#{plugin}` must be string, got #{inspect(other)}"
+        raise "config: #{where} tool pattern for `#{plugin}` must be string, got #{inspect(other)}"
     end)
   end
 
-  defp parse_pattern_value(other, token_name, plugin) do
-    raise "config: token `#{token_name}` tool patterns for `#{plugin}` must be string or list, got #{inspect(other)}"
+  defp parse_pattern_value(other, where, plugin) do
+    raise "config: #{where} tool patterns for `#{plugin}` must be string or list, got #{inspect(other)}"
   end
 
   defp merge_patterns(:all, _), do: :all
@@ -405,7 +490,7 @@ defmodule Sark.Config do
     end
   end
 
-  defp compile_glob!(s, token_name, plugin) do
+  defp compile_glob!(s, where, plugin) do
     regex =
       s
       |> String.graphemes()
@@ -420,7 +505,7 @@ defmodule Sark.Config do
         re
 
       {:error, reason} ->
-        raise "config: token `#{token_name}` bad tool pattern `#{s}` for plugin `#{plugin}`: #{inspect(reason)}"
+        raise "config: #{where} bad tool pattern `#{s}` for plugin `#{plugin}`: #{inspect(reason)}"
     end
   end
 

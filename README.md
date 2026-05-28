@@ -82,19 +82,16 @@ Shortest path:
           SELECT key, value FROM kv WHERE key = :key
     ```
 
-3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: /storage/plugins/kv`) and ensure a token is scoped to it.
+3. Add the plugin to `plugins:` in `config.yml` (e.g. `kv: /storage/plugins/kv`) and ensure a token is scoped to it. (Many more options available, see [`config.yml.example`](config.yml.example))
 
     ```yaml
     auth:
       tokens:
-        - { name: full,   plugins: "*",                              token: sk-full }
-        - { name: kvonly, plugins: [kv],                             token: sk-kv }
-        - { name: reader, plugins: [{kv: ["get", "list", "find"]}],  token: sk-ro }
-        - { name: mixed,  plugins: [myplugin, {kv: "report_*"}],     token: sk-mix }
+        - { name: demo, plugins: "*", token: sk-demo }
     ```
 
 4. Boot Sark. The plugin's database is created and migration 1 is applied.
-5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-mytoken"`. Clients that can't set custom headers can pass the token as `?token=mytoken` instead.
+5. Connect your MCP client, i.e. `claude mcp add --transport http --scope project sark-kv http://localhost:8080/kv/mcp --header "Authorization: Bearer sk-demo"`. Clients that can't set custom headers can pass the token as `?token=sk-demo` instead.
 6. Say something like: `use sark kv, store "x" = 1`, then in a new session `what did i store in sark kv for 'x'?`
 
 ### Tips
@@ -135,6 +132,10 @@ CREATE TABLE sessions (
 ```
 
 Useful if you enable `allow_sql` as then the `sark_catalog` tool will get the schema + comments in response.
+
+### Authentication
+
+Sark supports OIDC and bearer auth. The default policy is *deny* -> no tools available at all, can't actually do anything, so you need to give access to plugins and tools explicitly. See [`config.yml.example`](config.yml.example).
 
 ### `plugin.yml`
 

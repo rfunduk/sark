@@ -50,7 +50,8 @@ defmodule Sark.OAuth.BrokerTest do
       issuer: @issuer,
       audience: @client_id,
       client_id: @client_id,
-      client_secret: @client_secret
+      client_secret: @client_secret,
+      rules: [%{match: nil, plugins: :all}]
     }
 
     {:ok, _} = start_supervised(Sark.OAuth.Correlator)

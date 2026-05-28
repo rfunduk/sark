@@ -16,9 +16,15 @@ defmodule Sark.AuthPlug.JWTTest do
     {private, public_map, _kid} = JWTFixture.keypair()
     jwks_doc = JWTFixture.jwks(public_map)
 
+    # Default-allow rule (no match clause) keeps the legacy "any valid
+    # JWT reaches every plugin" semantics for the bulk of these tests;
+    # rule-specific deny / scope behavior is exercised below.
+    open_rule = %{match: nil, plugins: :all}
+
     idp = %Sark.Config.IdP{
       issuer: @issuer,
-      audience: @audience
+      audience: @audience,
+      rules: [open_rule]
     }
 
     Req.Test.stub(:sark_idp, fn conn ->
@@ -149,5 +155,67 @@ defmodule Sark.AuthPlug.JWTTest do
     conn = call(bearer(token))
     refute conn.halted
     assert conn.assigns.plugin == "kv"
+  end
+
+  describe "rules" do
+    defp put_rules(rules) do
+      idp = Application.get_env(:sark, :idp)
+      Application.put_env(:sark, :idp, %{idp | rules: rules})
+    end
+
+    defp rule(path, op, value, plugins) do
+      %{
+        match: %{path: String.split(path, "."), op: op, value: value},
+        plugins: plugins
+      }
+    end
+
+    test "empty rules → 403 forbidden (default deny)", ctx do
+      put_rules([])
+      token = JWTFixture.sign_with_kid(jwt_claims(), ctx.signer)
+
+      conn = call(bearer(token))
+      assert conn.status == 403
+    end
+
+    test "no matching rule → 403 forbidden", ctx do
+      put_rules([rule("email", :equals, "nope@nope", :all)])
+      token = JWTFixture.sign_with_kid(jwt_claims(), ctx.signer)
+
+      conn = call(bearer(token))
+      assert conn.status == 403
+    end
+
+    test "match → token_entry synthesized with rules-derived scope", ctx do
+      put_rules([rule("email", :suffix, "@example.com", %{"kv" => :all})])
+      token = JWTFixture.sign_with_kid(jwt_claims(), ctx.signer)
+
+      conn = call(bearer(token))
+      refute conn.halted
+      entry = conn.assigns.token_entry
+      assert entry.name == "ryan@example.com"
+      assert entry.allowed == %{"kv" => :all}
+    end
+
+    test "rule grants different plugin than requested path → 404 (plugin not in scope)", ctx do
+      put_rules([rule("email", :suffix, "@example.com", %{"other" => :all})])
+      token = JWTFixture.sign_with_kid(jwt_claims(), ctx.signer)
+
+      conn = call(bearer(token))
+      assert conn.status == 404
+    end
+
+    test "additive union across two matching rules", ctx do
+      put_rules([
+        rule("email", :suffix, "@example.com", %{"kv" => :all}),
+        rule("sub", :exists, true, %{"kb" => :all})
+      ])
+
+      token = JWTFixture.sign_with_kid(jwt_claims(), ctx.signer)
+      conn = call(bearer(token))
+
+      refute conn.halted
+      assert conn.assigns.token_entry.allowed == %{"kv" => :all, "kb" => :all}
+    end
   end
 end

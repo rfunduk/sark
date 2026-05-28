@@ -243,11 +243,22 @@ defmodule Sark.MCP.Registration do
   end
 
   @doc """
-  Compute the per-token tool name allow-list for `plugin` against
-  the currently registered tools, and apply it to `session`.
+  Compute the tool name allow-list for `plugin` against the currently
+  registered tools, and apply it to `session`.
+
+  `:token_entry` assign carries the effective scope, regardless of source:
+
+    * Bearer auth — `Sark.AuthPlug` stashes the matched entry directly
+      from `Sark.AuthRegistry`.
+    * JWT / session auth — `Sark.AuthPlug` evaluates `auth.idp.rules:`
+      against the JWT claims and synthesizes an entry whose `allowed`
+      field reflects the unioned scope. Same shape, same downstream
+      filtering. Zero rules match ⇒ AuthPlug 403s the request before
+      this function ever runs.
 
   Skipped (session left untouched) when the conn has no `:token_entry`
-  assign — e.g. internal handler calls in tests that bypass `Sark.AuthPlug`.
+  assign — only internal handler calls in tests that bypass
+  `Sark.AuthPlug` take this branch.
   """
   @spec apply_token_allowlist(map(), Plug.Conn.t() | map(), String.t()) :: map()
   def apply_token_allowlist(session, %Plug.Conn{} = conn, plugin) do

@@ -665,6 +665,170 @@ defmodule Sark.ConfigTest do
     end
   end
 
+  describe "auth.idp.rules" do
+    defp idp_config(dir, rules_yaml) do
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth:
+        tokens: []
+        idp:
+          issuer: https://idp.example.com
+          audience: sark
+          rules:
+      #{rules_yaml}
+      plugins:
+        kv: test/fixtures/plugins/kv
+      """)
+    end
+
+    test "absent → empty list (default deny — every claim eval misses)", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          tokens: []
+          idp:
+            issuer: https://idp.example.com
+            audience: sark
+        plugins: {}
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert cfg.idp.rules == []
+    end
+
+    test "parses a happy rule with each operator", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: groups,             in: admin },             plugins: ["*"] }
+              - { match: { path: email,              equals: ryan@figment.io }, plugins: [kv] }
+              - { match: { path: email,              suffix: "@figment.io" }, plugins: [{kv: ["read_*"]}] }
+              - { match: { path: sub,                exists: true },         plugins: [kv] }
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert [r1, r2, r3, r4] = cfg.idp.rules
+      assert r1.match.op == :in
+      assert r1.match.value == "admin"
+      assert r1.match.path == ["groups"]
+      assert r1.plugins == :all
+      assert r2.match.op == :equals
+      assert r3.match.op == :suffix
+      assert r3.match.value == "@figment.io"
+      assert r4.match.op == :exists
+      assert r4.match.value == true
+    end
+
+    test "nested path parses into segments", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: realm_access.roles, in: reader }, plugins: [kv] }
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert [%{match: %{path: ["realm_access", "roles"]}}] = cfg.idp.rules
+    end
+
+    test "rule without match is unconditional default-allow", %{tmp_dir: dir} do
+      path = idp_config(dir, "        - { plugins: [kv] }\n")
+
+      cfg = Sark.Config.load!(path)
+      assert [%{match: nil, plugins: %{"kv" => :all}}] = cfg.idp.rules
+    end
+
+    test "`match: true` is explicit unconditional sugar", %{tmp_dir: dir} do
+      path = idp_config(dir, "        - { match: true, plugins: [kv] }\n")
+
+      cfg = Sark.Config.load!(path)
+      assert [%{match: nil, plugins: %{"kv" => :all}}] = cfg.idp.rules
+    end
+
+    test "rejects `match: false` (dead rule)", %{tmp_dir: dir} do
+      path = idp_config(dir, "        - { match: false, plugins: [kv] }\n")
+
+      assert_raise RuntimeError, ~r/dead rule/, fn -> Sark.Config.load!(path) end
+    end
+
+    test "rejects rule missing plugins:", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: email, equals: x } }
+        """)
+
+      assert_raise RuntimeError, ~r/auth\.idp\.rules\[0\] missing required `plugins:`/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects match with conflicting operators", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: email, equals: x, suffix: y }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/conflicting operators/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects match with no operator", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: email }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/match needs one of/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects exists with non-true value", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: email, exists: false }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/exists must be `true`/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects empty path string", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: "", equals: x }, plugins: [kv] }
+        """)
+
+      assert_raise RuntimeError, ~r/match\.path must be non-empty string/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects unknown plugin in rule plugins:", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              - { match: { path: sub, exists: true }, plugins: [nonexistent] }
+        """)
+
+      assert_raise RuntimeError, ~r/references unknown plugin `nonexistent`/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+
+    test "rejects non-list rules:", %{tmp_dir: dir} do
+      path =
+        idp_config(dir, """
+              foo: bar
+        """)
+
+      assert_raise RuntimeError, ~r/auth\.idp\.rules must be a list/, fn ->
+        Sark.Config.load!(path)
+      end
+    end
+  end
+
   test "rejects non-map `auth:` block", %{tmp_dir: dir} do
     path =
       write_config(dir, """
