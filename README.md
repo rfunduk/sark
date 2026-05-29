@@ -146,8 +146,8 @@ In bearer token and IDP `plugins:`, you specify which plugins and their tools sh
 | ALL                                | every known plugin, every tool       |
 | `<plugin>`                         | that plugin, every tool              |
 | `- <plugin>`                       | remove plugin from accumulator       |
-| `{ <plugin>: <pat>|[<pat>, ...]}`  | that plugin, tools matching glob(s)  |
-| `{ALL: <pat>|[<pat>, ...]}`        | all plugins, tools matching glob(s)  |
+| `{<plugin>: <pat>\|[<pat>, ...]}` | that plugin, tools matching glob(s)  |
+| `{ ALL: <pat>\|[<pat>, ...] }`      | all plugins, tools matching glob(s)  |
 
 `<pat>` specifies the tools to provide:
 
@@ -164,7 +164,7 @@ Examples:
 |--------------------------------------------|-------------------------------|
 | `plugins: [ALL]`                           | all plugins, all tools        |
 | `plugins: [ALL, -secrets]`                 | all plugins except `secrets`  |
-| `plugins: [{kv: [ALL, -read_audit]}]       | kv minus one tool             |
+| `plugins: [{kv: [ALL, -read_audit]}]`      | kv minus one tool             |
 | `plugins: [{ALL: [ALL, -sark_%]}]`         | all plugins, no built-ins     |
 | `plugins: [ALL, -secrets, {kv: [read_%]}]` | mix plugin + tool levels      |
 
