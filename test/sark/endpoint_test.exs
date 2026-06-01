@@ -122,7 +122,71 @@ defmodule Sark.EndpointTest do
     assert doc["issuer"] == "https://accounts.google.com"
     assert doc["authorization_endpoint"] == "https://sark.example.com/oauth/authorize"
     assert doc["token_endpoint"] == "https://sark.example.com/oauth/token"
+    assert doc["registration_endpoint"] == "https://sark.example.com/oauth/register"
     assert doc["code_challenge_methods_supported"] == ["S256"]
+  end
+
+  describe "/oauth/register (RFC 7591 DCR stub)" do
+    defp put_idp(idp) do
+      prior = Application.get_env(:sark, :idp)
+      Application.put_env(:sark, :idp, idp)
+      on_exit(fn -> Application.put_env(:sark, :idp, prior) end)
+    end
+
+    defp register(body) do
+      conn(:post, "/oauth/register", Jason.encode!(body))
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> call()
+    end
+
+    test "returns the configured client_id, echoes redirect_uris, advertises none" do
+      put_idp(%Sark.Config.IdP{
+        issuer: "https://accounts.google.com",
+        audience: "sark-test",
+        client_id: "the-shared-client",
+        client_secret: "shh"
+      })
+
+      conn = register(%{"redirect_uris" => ["http://localhost:7777/callback"]})
+
+      assert conn.status == 201
+      doc = Jason.decode!(conn.resp_body)
+      assert doc["client_id"] == "the-shared-client"
+      assert doc["token_endpoint_auth_method"] == "none"
+      assert doc["redirect_uris"] == ["http://localhost:7777/callback"]
+      refute Map.has_key?(doc, "client_secret")
+      assert is_integer(doc["client_id_issued_at"])
+    end
+
+    test "is reachable without a bearer token" do
+      put_idp(%Sark.Config.IdP{
+        issuer: "https://accounts.google.com",
+        audience: "sark-test",
+        client_id: "the-shared-client"
+      })
+
+      conn = register(%{})
+      refute conn.halted
+      assert conn.status == 201
+    end
+
+    test "errors when idp has no client_id configured" do
+      put_idp(%Sark.Config.IdP{
+        issuer: "https://accounts.google.com",
+        audience: "sark-test"
+      })
+
+      conn = register(%{})
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body)["error"] == "registration_failed"
+    end
+
+    test "errors in bearer-only deployment (no idp)" do
+      put_idp(nil)
+
+      conn = register(%{})
+      assert conn.status == 502
+    end
   end
 
   test "auth-server metadata 404s in bearer-only deployment" do

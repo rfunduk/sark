@@ -144,7 +144,7 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      auth: { tokens: [] }
+      auth: { tokens: [{ name: t, plugins: [ALL], token: sk-t }] }
       plugins:
         workouts: plugins/workouts
       """)
@@ -867,7 +867,7 @@ defmodule Sark.ConfigTest do
       listen: 127.0.0.1:9090
       url: https://sark.example.com
       data_dir: #{Path.join(dir, "data")}
-      auth: { tokens: [] }
+      auth: { tokens: [{ name: t, plugins: [ALL], token: sk-t }] }
       plugins: {}
       """)
 
@@ -880,7 +880,7 @@ defmodule Sark.ConfigTest do
       write_config(dir, """
       listen: 127.0.0.1:9090
       data_dir: #{Path.join(dir, "data")}
-      auth: { tokens: [] }
+      auth: { tokens: [{ name: t, plugins: [ALL], token: sk-t }] }
       plugins: {}
       """)
 
@@ -894,7 +894,7 @@ defmodule Sark.ConfigTest do
       listen: 127.0.0.1:9090
       url: https://sark.example.com:443/
       data_dir: #{Path.join(dir, "data")}
-      auth: { tokens: [] }
+      auth: { tokens: [{ name: t, plugins: [ALL], token: sk-t }] }
       plugins: {}
       """)
 
@@ -955,12 +955,43 @@ defmodule Sark.ConfigTest do
         write_config(dir, """
         listen: 127.0.0.1:9090
         data_dir: #{Path.join(dir, "data")}
-        auth: { tokens: [] }
+        auth: { tokens: [{ name: t, plugins: [ALL], token: sk-t }] }
         plugins: {}
         """)
 
       cfg = Sark.Config.load!(path)
       assert cfg.idp == nil
+    end
+
+    test "idp without tokens is valid — tokens are optional", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          idp:
+            issuer: https://accounts.google.com
+            audience: sark.example.com
+        plugins: {}
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert %Sark.Config.IdP{} = cfg.idp
+      assert cfg.tokens == %{}
+    end
+
+    test "rejects auth with neither tokens nor idp", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth: { tokens: [] }
+        plugins: {}
+        """)
+
+      assert_raise RuntimeError, ~r/must define `tokens:` or `idp:`/, fn ->
+        Sark.Config.load!(path)
+      end
     end
 
     test "rejects missing issuer", %{tmp_dir: dir} do

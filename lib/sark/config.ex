@@ -29,8 +29,10 @@ defmodule Sark.Config do
         kb:  ~/code/sark-kb
         kv:  test/fixtures/plugins/kv
 
-  All identity config lives under `auth:`. Currently only `tokens:`; a
-  future OAuth IdP block will sit alongside it as `auth.idp:`.
+  All identity config lives under `auth:` — `tokens:` (bearer table)
+  and/or `idp:` (OAuth/OIDC broker). Both are optional individually,
+  but at least one must be present; an `auth:` block with neither is
+  rejected (idp-only is a legitimate deployment).
 
   `url:` is the externally-visible base URL of this sark instance.
   Required only when sark runs behind a reverse proxy (nginx, Cloudflare,
@@ -142,8 +144,13 @@ defmodule Sark.Config do
       raise "config: `auth` must be a map, got #{inspect(auth)}"
     end
 
-    tokens = parse_tokens(fetch!(auth, "tokens"), plugins)
+    tokens = parse_tokens(Map.get(auth, "tokens", []), plugins)
     idp = parse_idp(Map.get(auth, "idp"), plugins)
+
+    if tokens == %{} and is_nil(idp) do
+      raise "config: `auth` must define `tokens:` or `idp:` (or both) — neither present"
+    end
+
     providers = Sark.Providers.parse(Map.get(raw, "providers"))
     embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
 

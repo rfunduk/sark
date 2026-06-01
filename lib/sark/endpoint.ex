@@ -14,6 +14,11 @@ defmodule Sark.Endpoint do
       endpoint w/ scope injected.
     * `/oauth/token` — broker. Proxies POST to upstream token endpoint
       w/ client_secret injected from config.
+    * `/oauth/register` — RFC 7591 DCR stub. Unauthenticated. Stateless;
+      returns the single pre-configured `auth.idp.client_id` to every
+      caller (sark is one shared upstream client). Exists only because
+      spec-strict MCP clients (Claude Code) refuse auth servers lacking
+      a `registration_endpoint`.
     * `/<plugin>/mcp` — per-plugin MCP server (one Phantom router per
       plugin, looked up at request time so hot-reloaded plugins don't
       need an endpoint restart)
@@ -56,6 +61,10 @@ defmodule Sark.Endpoint do
 
   post "/oauth/token" do
     Sark.OAuth.Broker.token(conn)
+  end
+
+  post "/oauth/register" do
+    Sark.OAuth.Broker.register(conn)
   end
 
   match "/:plugin/mcp" do
@@ -126,6 +135,7 @@ defmodule Sark.Endpoint do
             "issuer" => issuer,
             "authorization_endpoint" => "#{base}/oauth/authorize",
             "token_endpoint" => "#{base}/oauth/token",
+            "registration_endpoint" => "#{base}/oauth/register",
             "response_types_supported" => ["code"],
             "grant_types_supported" => ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported" => ["S256"],

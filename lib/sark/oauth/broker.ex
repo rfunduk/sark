@@ -21,6 +21,15 @@ defmodule Sark.OAuth.Broker do
       token to the client as `access_token` (clients never see
       upstream JWTs).
 
+    * `POST /oauth/register` — RFC 7591 dynamic client registration
+      stub. Stateless: every caller gets the same pre-configured
+      `client_id` (sark is one shared upstream client; there's no
+      per-client identity to mint). Advertises `none` auth method —
+      downstream MCP clients are public (PKCE), and sark injects the
+      real `client_secret` upstream on `/token`. The secret never
+      leaves the server. Exists only to satisfy spec-strict MCP
+      clients that refuse auth servers lacking a `registration_endpoint`.
+
   This isolates clients from IdP quirks (Google's opaque access tokens,
   refresh-token id_token absence, etc). Once a session is established,
   AuthPlug looks it up directly; no per-request upstream calls.
@@ -81,6 +90,44 @@ defmodule Sark.OAuth.Broker do
       {:error, reason} -> send_broker_error(conn, "token_failed", reason)
     end
   end
+
+  # RFC 7591 dynamic client registration. Stateless projection of
+  # `auth.idp` config into the registration-response shape — no storage,
+  # same `client_id` every time. Echoes the client's `redirect_uris`
+  # (RFC 7591 requires them in the response) and advertises `none` so
+  # public clients use PKCE; sark holds the real secret for upstream.
+  @spec register(Plug.Conn.t()) :: Plug.Conn.t()
+  def register(conn) do
+    with {:ok, idp} <- idp(),
+         {:ok, client_id} <- registration_client_id(idp) do
+      response = build_registration_response(client_id, conn.body_params || %{})
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(201, Jason.encode!(response))
+    else
+      {:error, reason} -> send_broker_error(conn, "registration_failed", reason)
+    end
+  end
+
+  defp registration_client_id(%IdP{client_id: id}) when is_binary(id) and id != "",
+    do: {:ok, id}
+
+  defp registration_client_id(_), do: {:error, :no_client_id_configured}
+
+  defp build_registration_response(client_id, body) do
+    %{
+      "client_id" => client_id,
+      "client_id_issued_at" => System.system_time(:second),
+      "token_endpoint_auth_method" => "none",
+      "grant_types" => ["authorization_code", "refresh_token"],
+      "response_types" => ["code"],
+      "redirect_uris" => echo_redirect_uris(body)
+    }
+  end
+
+  defp echo_redirect_uris(%{"redirect_uris" => uris}) when is_list(uris), do: uris
+  defp echo_redirect_uris(_), do: []
 
   defp resolve_plugin(body) do
     case Map.get(body, "code_verifier") do
