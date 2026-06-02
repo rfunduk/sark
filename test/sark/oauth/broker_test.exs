@@ -131,27 +131,40 @@ defmodule Sark.OAuth.BrokerTest do
     :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
   end
 
-  defp do_authorize(challenge, resource) do
+  @client_redirect "http://localhost:7777/callback"
+  @client_state "client-state-abc"
+  # Plug.Test conn defaults to host www.example.com; :sark :url is unset
+  # in this suite, so Sark.URL.base derives the callback from the conn.
+  @sark_callback "http://www.example.com/oauth/callback"
+
+  defp do_authorize(challenge, resource, opts \\ []) do
     query =
-      URI.encode_query(%{
+      %{
         "response_type" => "code",
         "client_id" => @client_id,
-        "redirect_uri" => "http://localhost:7777/callback",
+        "redirect_uri" => Keyword.get(opts, :redirect_uri, @client_redirect),
         "code_challenge" => challenge,
         "code_challenge_method" => "S256",
-        "state" => "abc",
+        "state" => @client_state,
         "resource" => resource
-      })
+      }
+      |> Map.merge(Keyword.get(opts, :extra, %{}))
+      |> Map.drop(Keyword.get(opts, :drop, []))
+      |> URI.encode_query()
 
     call(conn(:get, "/oauth/authorize?" <> query))
   end
 
-  defp do_token(verifier) do
+  defp do_callback(query_map) do
+    call(conn(:get, "/oauth/callback?" <> URI.encode_query(query_map)))
+  end
+
+  defp do_token(sark_code, verifier) do
     body =
       URI.encode_query(%{
         "grant_type" => "authorization_code",
-        "code" => "auth-code-xyz",
-        "redirect_uri" => "http://localhost:7777/callback",
+        "code" => sark_code,
+        "redirect_uri" => @client_redirect,
         "code_verifier" => verifier,
         "client_id" => @client_id
       })
@@ -161,35 +174,119 @@ defmodule Sark.OAuth.BrokerTest do
     |> call()
   end
 
-  describe "/oauth/authorize" do
-    test "302s to upstream, stashes plugin correlation by code_challenge" do
-      verifier = gen_verifier()
-      challenge = challenge_for(verifier)
+  defp location_query(conn) do
+    [location] = get_resp_header(conn, "location")
+    {location, URI.decode_query(URI.parse(location).query)}
+  end
 
-      conn = do_authorize(challenge, "http://localhost:8080/kv/mcp")
+  # Drive the full broker dance up to (but not including) the token call.
+  # Returns the client's PKCE verifier + the sark-issued downstream code.
+  defp run_to_code(
+         resource \\ "http://localhost:8080/kv/mcp",
+         upstream_code \\ "upstream-code-xyz"
+       ) do
+    verifier = gen_verifier()
+    auth_conn = do_authorize(challenge_for(verifier), resource)
+    {_, up_params} = location_query(auth_conn)
+
+    cb_conn = do_callback(%{"code" => upstream_code, "state" => up_params["state"]})
+    {_, client_params} = location_query(cb_conn)
+
+    {verifier, client_params["code"]}
+  end
+
+  describe "/oauth/authorize" do
+    test "302s to upstream with sark's own callback + opaque state, not the client's" do
+      conn = do_authorize(challenge_for(gen_verifier()), "http://localhost:8080/kv/mcp")
+
       assert conn.status == 302
-      [location] = get_resp_header(conn, "location")
+      {location, params} = location_query(conn)
       assert location =~ @authorize_endpoint
-      assert {:ok, "kv"} = Sark.OAuth.Correlator.lookup(verifier)
+
+      # Sark substitutes its own fixed redirect + opaque state.
+      assert params["redirect_uri"] == @sark_callback
+      assert params["state"] != @client_state
+      assert is_binary(params["state"]) and params["state"] != ""
+      assert params["client_id"] == @client_id
+
+      # Downstream PKCE challenge stays downstream — never forwarded.
+      refute Map.has_key?(params, "code_challenge")
     end
 
     test "injects default scope when client omits it" do
-      verifier = gen_verifier()
-      challenge = challenge_for(verifier)
-      conn = do_authorize(challenge, "http://localhost:8080/kv/mcp")
-      [location] = get_resp_header(conn, "location")
-      params = URI.decode_query(URI.parse(location).query)
+      conn = do_authorize(challenge_for(gen_verifier()), "http://localhost:8080/kv/mcp")
+      {_, params} = location_query(conn)
       assert params["scope"] == "openid email profile"
+    end
+
+    test "rejects a non-loopback http redirect_uri" do
+      conn =
+        do_authorize(challenge_for(gen_verifier()), "http://localhost:8080/kv/mcp",
+          redirect_uri: "http://evil.example.com/callback"
+        )
+
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
+    end
+
+    test "requires a PKCE challenge" do
+      conn =
+        do_authorize("ignored", "http://localhost:8080/kv/mcp", drop: ["code_challenge"])
+
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
+    end
+  end
+
+  describe "/oauth/callback" do
+    test "bridges a sark code back to the client's redirect_uri with original state" do
+      verifier = gen_verifier()
+      auth_conn = do_authorize(challenge_for(verifier), "http://localhost:8080/kv/mcp")
+      {_, up_params} = location_query(auth_conn)
+
+      conn = do_callback(%{"code" => "upstream-code-xyz", "state" => up_params["state"]})
+
+      assert conn.status == 302
+      {location, params} = location_query(conn)
+      assert String.starts_with?(location, @client_redirect)
+      assert params["state"] == @client_state
+      # A freshly-minted sark code, not the upstream one.
+      assert is_binary(params["code"]) and params["code"] != ""
+      assert params["code"] != "upstream-code-xyz"
+    end
+
+    test "bridges an upstream error back to the client" do
+      auth_conn = do_authorize(challenge_for(gen_verifier()), "http://localhost:8080/kv/mcp")
+      {_, up_params} = location_query(auth_conn)
+
+      conn = do_callback(%{"error" => "access_denied", "state" => up_params["state"]})
+
+      assert conn.status == 302
+      {location, params} = location_query(conn)
+      assert String.starts_with?(location, @client_redirect)
+      assert params["error"] == "access_denied"
+      assert params["state"] == @client_state
+    end
+
+    test "rejects unknown / expired state" do
+      conn = do_callback(%{"code" => "x", "state" => "never-stashed"})
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body)["error"] == "callback_failed"
+    end
+
+    test "state is single-use" do
+      auth_conn = do_authorize(challenge_for(gen_verifier()), "http://localhost:8080/kv/mcp")
+      {_, up_params} = location_query(auth_conn)
+
+      assert do_callback(%{"code" => "c", "state" => up_params["state"]}).status == 302
+      assert do_callback(%{"code" => "c", "state" => up_params["state"]}).status == 502
     end
   end
 
   describe "/oauth/token" do
-    test "forwards code, injects client_secret, returns a sark session token", ctx do
-      verifier = gen_verifier()
-      challenge = challenge_for(verifier)
-
-      _ = do_authorize(challenge, "http://localhost:8080/kv/mcp")
-      conn = do_token(verifier)
+    test "verifies PKCE, swaps to the upstream code, injects secret, mints a session", ctx do
+      {verifier, sark_code} = run_to_code()
+      conn = do_token(sark_code, verifier)
 
       assert conn.status == 200
       body = Jason.decode!(conn.resp_body)
@@ -200,12 +297,14 @@ defmodule Sark.OAuth.BrokerTest do
       # JIT-refreshes upstream internally.
       assert body["expires_in"] >= 24 * 3600
 
-      # Upstream got our client_secret + the original code.
+      # Upstream got our client_secret + the UPSTREAM code (not sark's),
+      # sark's own callback redirect, and never the client's verifier.
       forwarded = captured_form(ctx.captured)
       assert forwarded["client_id"] == @client_id
       assert forwarded["client_secret"] == @client_secret
-      assert forwarded["code"] == "auth-code-xyz"
-      assert forwarded["code_verifier"] == verifier
+      assert forwarded["code"] == "upstream-code-xyz"
+      assert forwarded["redirect_uri"] == @sark_callback
+      refute Map.has_key?(forwarded, "code_verifier")
 
       # Session row landed in kv.sark.db.
       assert {:ok, %{"claims" => claims, "upstream_refresh" => "1//refresh-abc"}} =
@@ -215,19 +314,29 @@ defmodule Sark.OAuth.BrokerTest do
       assert claims["email"] == "ryan@example.com"
     end
 
-    test "fails cleanly when no correlation was stashed (no prior /authorize)" do
-      verifier = gen_verifier()
-      conn = do_token(verifier)
+    test "rejects a bad PKCE verifier" do
+      {_verifier, sark_code} = run_to_code()
+      conn = do_token(sark_code, gen_verifier())
 
       assert conn.status == 502
       assert Jason.decode!(conn.resp_body)["error"] == "token_failed"
     end
 
+    test "rejects an unknown / expired code" do
+      conn = do_token("never-issued", gen_verifier())
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body)["error"] == "token_failed"
+    end
+
+    test "sark code is single-use" do
+      {verifier, sark_code} = run_to_code()
+      assert do_token(sark_code, verifier).status == 200
+      assert do_token(sark_code, verifier).status == 502
+    end
+
     test "session token then works as a bearer through AuthPlug" do
-      verifier = gen_verifier()
-      challenge = challenge_for(verifier)
-      _ = do_authorize(challenge, "http://localhost:8080/kv/mcp")
-      conn = do_token(verifier)
+      {verifier, sark_code} = run_to_code()
+      conn = do_token(sark_code, verifier)
       session_token = Jason.decode!(conn.resp_body)["access_token"]
 
       # Drive AuthPlug directly to assert the session token resolves to

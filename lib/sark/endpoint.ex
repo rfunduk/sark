@@ -10,10 +10,15 @@ defmodule Sark.Endpoint do
     * `/.well-known/oauth-authorization-server` — RFC 8414 auth-server
       metadata. Unauthenticated. Advertises sark's `/oauth/authorize`
       + `/oauth/token`.
-    * `/oauth/authorize` — broker. 302s to upstream IdP's authorize
-      endpoint w/ scope injected.
-    * `/oauth/token` — broker. Proxies POST to upstream token endpoint
-      w/ client_secret injected from config.
+    * `/oauth/authorize` — broker. Stashes the client's redirect_uri +
+      PKCE challenge, 302s to upstream IdP's authorize endpoint with
+      sark's *own* fixed `/oauth/callback` redirect + opaque state.
+    * `/oauth/callback` — broker. Upstream redirects here (one fixed URI
+      the operator registers); sark bridges a freshly-minted code back
+      to the client's original (ephemeral localhost) redirect_uri.
+    * `/oauth/token` — broker. Verifies the client's PKCE, swaps the
+      sark code for the upstream code, proxies POST to upstream token
+      endpoint w/ client_secret injected from config.
     * `/oauth/register` — RFC 7591 DCR stub. Unauthenticated. Stateless;
       returns the single pre-configured `auth.idp.client_id` to every
       caller (sark is one shared upstream client). Exists only because
@@ -57,6 +62,10 @@ defmodule Sark.Endpoint do
 
   get "/oauth/authorize" do
     Sark.OAuth.Broker.authorize(conn)
+  end
+
+  get "/oauth/callback" do
+    Sark.OAuth.Broker.callback(conn)
   end
 
   post "/oauth/token" do

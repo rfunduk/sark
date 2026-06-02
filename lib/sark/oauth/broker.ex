@@ -1,25 +1,44 @@
 defmodule Sark.OAuth.Broker do
   @moduledoc """
-  Thin OAuth 2.1 proxy. Sits between MCP clients (Claude Code, claude.ai
+  Full OAuth 2.1 broker. Sits between MCP clients (Claude Code, claude.ai
   web, codex, custom scripts) and the configured upstream IdP. Clients
-  treat sark as the authorization server; sark forwards to upstream.
+  treat sark as the authorization server; sark federates to upstream.
+
+  Sark is *literally* the authorization server from the client's view —
+  it terminates the upstream OAuth dance at its own fixed
+  `/oauth/callback` and re-issues a sark-minted code to the client's own
+  (random, ephemeral) localhost redirect_uri. This is the standard
+  identity-broker pattern (Auth0/Cognito/Keycloak do the same fronting
+  upstream IdPs), and it sidesteps the redirect_uri problem: Okta (and
+  Auth0) only support *subdomain* wildcards, not wildcard loopback ports,
+  so the operator registers ONE fixed callback and sark bridges the
+  varying client port behind it.
 
   Endpoints:
 
-    * `GET /oauth/authorize` — 302 to upstream `authorization_endpoint`
-      with the client's query params; inject `scope=openid email profile`
-      if absent. The client's RFC 8707 `resource=` param identifies
-      which plugin the resulting session belongs to — sark stashes
-      `code_challenge → plugin` (see `Sark.OAuth.Correlator`) so the
-      `/token` exchange can route the resulting session row to the
-      right `<plugin>.sark.db`.
+    * `GET /oauth/authorize` — downstream client → sark. Mint an opaque
+      `sark_state`, stash the client's `{redirect_uri, state, PKCE
+      challenge, plugin}` under it (the plugin comes from the RFC 8707
+      `resource=` param), then 302 to upstream `authorization_endpoint`
+      with sark's *own* fixed `redirect_uri` (`/oauth/callback`) and
+      `state=sark_state`. The client's redirect_uri + PKCE challenge
+      never reach upstream.
 
-    * `POST /oauth/token` — form-POST proxy to upstream. Inject
-      `client_secret` from config. On success, extract claims from the
-      upstream id_token, write a row to `_sessions` in the matched
-      plugin's sark DB, and return a sark-issued `sk-sark-<random>`
-      token to the client as `access_token` (clients never see
-      upstream JWTs).
+    * `GET /oauth/callback` — upstream → sark. Pop the authorize context
+      by `sark_state`, mint an opaque `sark_code`, stash the upstream
+      auth code under it, then 302 to the client's original redirect_uri
+      with `code=sark_code` and the client's original `state`. Upstream
+      `error=` responses are bridged back to the client the same way.
+
+    * `POST /oauth/token` — downstream client → sark. Pop the token
+      context by `sark_code`, verify the client's PKCE `code_verifier`
+      against the stashed challenge (sark terminates downstream PKCE —
+      the verifier never reaches upstream), then POST the *upstream* auth
+      code to the upstream token endpoint with `client_secret` injected
+      from config. On success, extract claims from the upstream id_token,
+      write a row to `_sessions` in the matched plugin's sark DB, and
+      return a sark-issued `sk-sark-<random>` token to the client as
+      `access_token` (clients never see upstream JWTs).
 
     * `POST /oauth/register` — RFC 7591 dynamic client registration
       stub. Stateless: every caller gets the same pre-configured
@@ -29,6 +48,13 @@ defmodule Sark.OAuth.Broker do
       real `client_secret` upstream on `/token`. The secret never
       leaves the server. Exists only to satisfy spec-strict MCP
       clients that refuse auth servers lacking a `registration_endpoint`.
+
+  Upstream PKCE: the configured Okta/Auth0 app is a confidential (Web)
+  client — sark authenticates upstream with `client_secret`, so it does
+  NOT do PKCE on the upstream leg. Downstream PKCE (client↔sark) is still
+  verified by sark. A public upstream app (no secret) would need sark to
+  run PKCE upstream too; not implemented — `client_secret` is required
+  for the broker flow.
 
   This isolates clients from IdP quirks (Google's opaque access tokens,
   refresh-token id_token absence, etc). Once a session is established,
@@ -48,24 +74,81 @@ defmodule Sark.OAuth.Broker do
   # long as upstream refresh succeeds.
   @default_expires_in_sec 3600
 
-  @passthrough_authorize_params ~w(response_type client_id redirect_uri state code_challenge code_challenge_method scope resource)
-  @passthrough_token_params ~w(grant_type code redirect_uri code_verifier refresh_token client_id resource)
+  # Correlation TTLs. Authorize → callback spans an interactive login;
+  # callback → token is an immediate machine exchange.
+  @authorize_ttl_ms 5 * 60 * 1000
+  @code_ttl_ms 60 * 1000
 
   @spec authorize(Plug.Conn.t()) :: Plug.Conn.t()
   def authorize(conn) do
-    with {:ok, idp} <- idp(),
-         {:ok, upstream} <- KeyStore.fetch_endpoint("authorization_endpoint") do
-      conn = fetch_query_params(conn)
-      params = build_authorize_params(conn.query_params, idp)
-      stash_plugin_correlation(conn.query_params)
-      target = upstream <> "?" <> URI.encode_query(params)
+    conn = fetch_query_params(conn)
+    query = conn.query_params
 
-      conn
-      |> put_resp_header("location", target)
-      |> send_resp(302, "")
+    with {:ok, idp} <- idp(),
+         {:ok, upstream} <- KeyStore.fetch_endpoint("authorization_endpoint"),
+         {:ok, ctx} <- build_authorize_ctx(query) do
+      sark_state = gen_token()
+      Correlator.stash("state:" <> sark_state, ctx, @authorize_ttl_ms)
+
+      params = build_upstream_authorize_params(query, idp, sark_state, callback_url(conn))
+      target = upstream <> "?" <> URI.encode_query(params)
+      redirect(conn, target)
     else
       {:error, reason} -> send_broker_error(conn, "authorize_failed", reason)
     end
+  end
+
+  @spec callback(Plug.Conn.t()) :: Plug.Conn.t()
+  def callback(conn) do
+    conn = fetch_query_params(conn)
+    query = conn.query_params
+
+    case fetch_param(query, "state") do
+      {:ok, sark_state} ->
+        case Correlator.pop("state:" <> sark_state) do
+          {:ok, ctx} -> resume_callback(conn, query, ctx)
+          :not_found -> send_broker_error(conn, "callback_failed", :unknown_or_expired_state)
+        end
+
+      {:error, reason} ->
+        send_broker_error(conn, "callback_failed", reason)
+    end
+  end
+
+  # Upstream finished. Bridge either the auth code or an upstream error
+  # back to the downstream client's original redirect_uri.
+  defp resume_callback(conn, query, ctx) do
+    case query do
+      %{"error" => error} ->
+        bridge_to_client(conn, ctx, %{"error" => error}, query["error_description"])
+
+      %{"code" => upstream_code} when is_binary(upstream_code) and upstream_code != "" ->
+        sark_code = gen_token()
+
+        token_ctx = %{
+          upstream_code: upstream_code,
+          code_challenge: ctx.code_challenge,
+          code_challenge_method: ctx.code_challenge_method,
+          plugin: ctx.plugin
+        }
+
+        Correlator.stash("code:" <> sark_code, token_ctx, @code_ttl_ms)
+        bridge_to_client(conn, ctx, %{"code" => sark_code}, nil)
+
+      _ ->
+        send_broker_error(conn, "callback_failed", :upstream_missing_code)
+    end
+  end
+
+  defp bridge_to_client(conn, ctx, params, error_description) do
+    params =
+      params
+      |> maybe_put("state", ctx.client_state)
+      |> maybe_put("error_description", error_description)
+
+    sep = if String.contains?(ctx.client_redirect_uri, "?"), do: "&", else: "?"
+    target = ctx.client_redirect_uri <> sep <> URI.encode_query(params)
+    redirect(conn, target)
   end
 
   @spec token(Plug.Conn.t()) :: Plug.Conn.t()
@@ -73,14 +156,13 @@ defmodule Sark.OAuth.Broker do
     body = conn.body_params || %{}
 
     with {:ok, idp} <- idp(),
-         {:ok, plugin} <- resolve_plugin(body),
+         {:ok, ctx} <- resolve_token_ctx(body),
+         :ok <- verify_client_pkce(body, ctx),
          {:ok, upstream} <- KeyStore.fetch_endpoint("token_endpoint"),
-         params = build_token_params(body, idp),
+         params = build_upstream_token_params(ctx, idp, callback_url(conn)),
          {:ok, upstream_body} <- post_upstream(upstream, params),
          {:ok, claims} <- verify_id_token(upstream_body, idp),
-         {:ok, session_token} <- create_session(plugin, claims, upstream_body) do
-      forget_correlation(body)
-
+         {:ok, session_token} <- create_session(ctx.plugin, claims, upstream_body) do
       response = build_session_response(session_token, upstream_body)
 
       conn
@@ -91,11 +173,12 @@ defmodule Sark.OAuth.Broker do
     end
   end
 
-  # RFC 7591 dynamic client registration. Stateless projection of
-  # `auth.idp` config into the registration-response shape — no storage,
-  # same `client_id` every time. Echoes the client's `redirect_uris`
-  # (RFC 7591 requires them in the response) and advertises `none` so
-  # public clients use PKCE; sark holds the real secret for upstream.
+  # --- DCR (RFC 7591) ---------------------------------------------------------
+
+  # Stateless projection of `auth.idp` config into the registration-response
+  # shape — no storage, same `client_id` every time. Echoes the client's
+  # `redirect_uris` (RFC 7591 requires them in the response) and advertises
+  # `none` so public clients use PKCE; sark holds the real secret upstream.
   @spec register(Plug.Conn.t()) :: Plug.Conn.t()
   def register(conn) do
     with {:ok, idp} <- idp(),
@@ -129,28 +212,38 @@ defmodule Sark.OAuth.Broker do
   defp echo_redirect_uris(%{"redirect_uris" => uris}) when is_list(uris), do: uris
   defp echo_redirect_uris(_), do: []
 
-  defp resolve_plugin(body) do
-    case Map.get(body, "code_verifier") do
-      v when is_binary(v) and v != "" ->
-        case Correlator.lookup(v) do
-          {:ok, plugin} -> {:ok, plugin}
-          :not_found -> {:error, :unknown_plugin_correlation}
-        end
+  # --- authorize context ------------------------------------------------------
 
-      _ ->
-        # Refresh-grant calls don't have code_verifier. Defer per-plugin
-        # routing for now — refresh grant handled in Phase 4 step 3.
-        {:error, :refresh_grant_not_yet_supported}
+  # Pull the downstream client's request into a context we stash for the
+  # callback. PKCE challenge + a loopback-or-https redirect are required —
+  # MCP clients are public clients (OAuth 2.1 mandates PKCE).
+  defp build_authorize_ctx(query) do
+    with {:ok, redirect_uri} <- fetch_param(query, "redirect_uri"),
+         :ok <- validate_client_redirect(redirect_uri),
+         {:ok, code_challenge} <- fetch_param(query, "code_challenge"),
+         {:ok, resource} <- fetch_param(query, "resource"),
+         {:ok, plugin} <- plugin_from_resource(resource) do
+      {:ok,
+       %{
+         client_redirect_uri: redirect_uri,
+         client_state: Map.get(query, "state"),
+         code_challenge: code_challenge,
+         code_challenge_method: Map.get(query, "code_challenge_method", "S256"),
+         plugin: plugin
+       }}
     end
   end
 
-  defp stash_plugin_correlation(query) do
-    with code_challenge when is_binary(code_challenge) <- Map.get(query, "code_challenge"),
-         resource when is_binary(resource) <- Map.get(query, "resource"),
-         {:ok, plugin} <- plugin_from_resource(resource) do
-      Correlator.stash(code_challenge, plugin)
-    else
-      _ -> :ok
+  # Accept https anywhere; http only for loopback. Blocks an attacker
+  # redirecting the bridged code to an arbitrary http origin (defence in
+  # depth — PKCE already binds the exchange).
+  defp validate_client_redirect(uri_str) do
+    uri = URI.parse(uri_str)
+
+    case {uri.scheme, uri.host} do
+      {"https", h} when is_binary(h) and h != "" -> :ok
+      {"http", h} when h in ["localhost", "127.0.0.1", "::1"] -> :ok
+      _ -> {:error, {:invalid_redirect_uri, uri_str}}
     end
   end
 
@@ -162,12 +255,104 @@ defmodule Sark.OAuth.Broker do
 
     case Enum.reverse(segments) do
       ["mcp", plugin | _] -> {:ok, plugin}
-      _ -> :error
+      _ -> {:error, {:bad_resource, url}}
     end
   end
 
-  defp forget_correlation(%{"code_verifier" => v}) when is_binary(v), do: Correlator.forget(v)
-  defp forget_correlation(_), do: :ok
+  # --- token context + PKCE ---------------------------------------------------
+
+  defp resolve_token_ctx(body) do
+    case Map.get(body, "grant_type") do
+      "authorization_code" ->
+        case fetch_param(body, "code") do
+          {:ok, sark_code} ->
+            case Correlator.pop("code:" <> sark_code) do
+              {:ok, ctx} -> {:ok, ctx}
+              :not_found -> {:error, :unknown_or_expired_code}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      "refresh_token" ->
+        # Refresh-grant routing deferred — sessions JIT-refresh upstream
+        # internally (see `Sark.OAuth.Refresh`); clients don't refresh
+        # against the broker.
+        {:error, :refresh_grant_not_supported}
+
+      other ->
+        {:error, {:unsupported_grant_type, other}}
+    end
+  end
+
+  # Sark terminates downstream PKCE: the client proves possession of the
+  # verifier to sark (not upstream). Verifier never leaves for upstream.
+  defp verify_client_pkce(body, ctx) do
+    with {:ok, verifier} <- fetch_param(body, "code_verifier") do
+      case ctx.code_challenge_method do
+        "S256" ->
+          if pkce_s256(verifier) == ctx.code_challenge,
+            do: :ok,
+            else: {:error, :pkce_mismatch}
+
+        "plain" ->
+          if verifier == ctx.code_challenge,
+            do: :ok,
+            else: {:error, :pkce_mismatch}
+
+        other ->
+          {:error, {:unsupported_code_challenge_method, other}}
+      end
+    end
+  end
+
+  defp pkce_s256(verifier) do
+    :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
+  end
+
+  # --- upstream parameter builders --------------------------------------------
+
+  # Sark's own request to upstream. Inject sark's fixed redirect_uri +
+  # opaque state; drop the client's redirect_uri / state / PKCE challenge
+  # (downstream concerns). Inject baseline scope when absent.
+  #
+  # `access_type=offline` + `prompt=consent` for Google refresh tokens;
+  # other IdPs ignore unknown params. Operators wanting refresh from
+  # spec-clean IdPs (Okta etc.) add `offline_access` to `auth.idp.scope`.
+  defp build_upstream_authorize_params(query, %IdP{} = idp, sark_state, redirect_uri) do
+    base = [
+      {"response_type", "code"},
+      {"client_id", idp.client_id},
+      {"redirect_uri", redirect_uri},
+      {"state", sark_state},
+      {"scope", Enum.join(IdP.effective_scope(idp), " ")}
+    ]
+
+    base
+    |> maybe_append_param("resource", Map.get(query, "resource"))
+    |> ensure_param("access_type", "offline")
+    |> ensure_param("prompt", "consent")
+  end
+
+  # Upstream token exchange. Send the *upstream* auth code + sark's fixed
+  # redirect_uri (must match what we sent at authorize) + client_secret.
+  # No code_verifier upstream — sark is a confidential client there.
+  defp build_upstream_token_params(
+         ctx,
+         %IdP{client_id: client_id, client_secret: secret},
+         redirect_uri
+       ) do
+    [
+      {"grant_type", "authorization_code"},
+      {"code", ctx.upstream_code},
+      {"redirect_uri", redirect_uri},
+      {"client_id", client_id}
+    ]
+    |> ensure_param("client_secret", secret)
+  end
+
+  # --- upstream call + session ------------------------------------------------
 
   defp post_upstream(url, params) do
     case Req.post(req(), url: url, form: params) do
@@ -232,6 +417,8 @@ defmodule Sark.OAuth.Broker do
     }
   end
 
+  # --- helpers ----------------------------------------------------------------
+
   defp idp do
     case Application.get_env(:sark, :idp) do
       %IdP{} = idp -> {:ok, idp}
@@ -239,55 +426,24 @@ defmodule Sark.OAuth.Broker do
     end
   end
 
-  # Inject scope only if the client didn't supply one. Drop anything not
-  # on the passthrough list so the redirect to upstream stays minimal.
-  #
-  # Also inject `access_type=offline` + `prompt=consent`:
-  #   - Google requires `access_type=offline` to issue a refresh_token
-  #     at all. Without it Google returns access_token + id_token only,
-  #     no refresh_token, sark sessions die at id_token expiry.
-  #   - `prompt=consent` forces Google to reissue refresh_token even
-  #     when the user has previously consented. Costs a consent screen
-  #     per OAuth flow; in exchange sark always gets a usable refresh
-  #     token (otherwise: first dance gets one, every subsequent dance
-  #     against the same client_id+sub leaves refresh_token NULL).
-  # Other IdPs (Okta, Auth0, etc.) typically ignore unknown params, so
-  # these don't break the non-Google path. Operators wanting refresh
-  # tokens from Okta-style providers should add `offline_access` to
-  # their token scope config (Phase 4 follow-up).
-  defp build_authorize_params(query, %IdP{} = idp) do
-    base =
-      Enum.reduce(@passthrough_authorize_params, [], fn key, acc ->
-        case Map.get(query, key) do
-          v when is_binary(v) and v != "" -> [{key, v} | acc]
-          _ -> acc
-        end
-      end)
-      |> Enum.reverse()
+  defp callback_url(conn), do: Sark.URL.base(conn) <> "/oauth/callback"
 
-    base
-    |> ensure_param("scope", Enum.join(IdP.effective_scope(idp), " "))
-    |> ensure_param("access_type", "offline")
-    |> ensure_param("prompt", "consent")
+  defp gen_token, do: :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+  defp fetch_param(map, key) do
+    case Map.get(map, key) do
+      v when is_binary(v) and v != "" -> {:ok, v}
+      _ -> {:error, {:missing_param, key}}
+    end
   end
 
-  # Forward what the client sent; overwrite client_secret w/ our own.
-  # Some upstream IdPs accept client_secret in body, some require Basic
-  # auth — body form is the most portable.
-  defp build_token_params(body, %IdP{client_id: client_id, client_secret: secret}) do
-    forwarded =
-      Enum.reduce(@passthrough_token_params, [], fn key, acc ->
-        case Map.get(body, key) do
-          v when is_binary(v) and v != "" -> [{key, v} | acc]
-          _ -> acc
-        end
-      end)
-      |> Enum.reverse()
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-    forwarded
-    |> ensure_param("client_id", client_id)
-    |> ensure_param("client_secret", secret)
-  end
+  defp maybe_append_param(list, _key, nil), do: list
+  defp maybe_append_param(list, _key, ""), do: list
+  defp maybe_append_param(list, key, value), do: list ++ [{key, value}]
 
   defp ensure_param(list, _key, nil), do: list
   defp ensure_param(list, _key, ""), do: list
@@ -297,6 +453,12 @@ defmodule Sark.OAuth.Broker do
       nil -> list ++ [{key, value}]
       idx -> List.replace_at(list, idx, {key, value})
     end
+  end
+
+  defp redirect(conn, target) do
+    conn
+    |> put_resp_header("location", target)
+    |> send_resp(302, "")
   end
 
   defp send_broker_error(conn, code, reason) do

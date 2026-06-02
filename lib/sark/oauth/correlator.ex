@@ -1,17 +1,24 @@
 defmodule Sark.OAuth.Correlator do
   @moduledoc """
-  Bridges the OAuth `/authorize` → `/token` request gap with PKCE.
+  Short-TTL key→value store bridging the broker's redirect-uri dance.
 
-  At `/authorize` we know the plugin (parsed from RFC 8707 `resource=`
-  param) and the client's `code_challenge`. At `/token`, the client
-  sends `code_verifier` instead — sark computes `S256(code_verifier)`
-  to derive the original challenge and recover the plugin.
+  Sark is a full OAuth broker: it terminates the upstream callback at its
+  own fixed `/oauth/callback` and re-issues to the downstream client's
+  (random) localhost port. Two correlations span the request gaps:
 
-  In-memory ETS table; TTL'd by the natural shape of an auth-code flow
-  (clients exchange within seconds of authorize). Entries get explicitly
-  forgotten after the token exchange — no GC needed for the happy path.
-  Abandoned entries linger until VM restart; not worth a sweeper for
-  now.
+    * `state:<sark_state>` → authorize context, stashed on `/authorize`,
+      popped on `/oauth/callback`. Holds the downstream client's
+      redirect_uri / state / PKCE challenge + the target plugin. ~5min
+      TTL (covers the interactive login).
+
+    * `code:<sark_code>` → token context, stashed on `/oauth/callback`,
+      popped on `/oauth/token`. Holds the upstream auth code + the
+      downstream PKCE challenge + plugin. ~60s TTL (machine-to-machine
+      code exchange happens immediately).
+
+  In-memory ETS, single-node. Expiry enforced at `pop/1` (the security
+  boundary — an expired entry is never exchangeable); abandoned entries
+  linger until VM restart, which is harmless given they can't be popped.
   """
 
   use GenServer
@@ -28,38 +35,31 @@ defmodule Sark.OAuth.Correlator do
     {:ok, %{}}
   end
 
-  @doc """
-  Stash `code_challenge → plugin` for later lookup.
-  """
-  @spec stash(String.t(), String.t()) :: :ok
-  def stash(code_challenge, plugin)
-      when is_binary(code_challenge) and is_binary(plugin) do
-    :ets.insert(@table, {code_challenge, plugin})
+  @doc "Stash `value` under `key` for `ttl_ms` milliseconds."
+  @spec stash(String.t(), term(), pos_integer()) :: :ok
+  def stash(key, value, ttl_ms) when is_binary(key) and is_integer(ttl_ms) and ttl_ms > 0 do
+    expires_at = System.monotonic_time(:millisecond) + ttl_ms
+    :ets.insert(@table, {key, value, expires_at})
     :ok
   end
 
   @doc """
-  Look up the plugin associated with a `code_verifier` by computing
-  `S256(verifier)` and matching against stashed challenges.
+  Atomically remove + return the value for `key`. Single-use: a key can
+  be popped at most once. Returns `:not_found` for unknown or expired
+  keys (expired entries are deleted on the way out).
   """
-  @spec lookup(String.t()) :: {:ok, String.t()} | :not_found
-  def lookup(code_verifier) when is_binary(code_verifier) do
-    challenge = challenge_from_verifier(code_verifier)
+  @spec pop(String.t()) :: {:ok, term()} | :not_found
+  def pop(key) when is_binary(key) do
+    case :ets.take(@table, key) do
+      [{^key, value, expires_at}] ->
+        if System.monotonic_time(:millisecond) <= expires_at do
+          {:ok, value}
+        else
+          :not_found
+        end
 
-    case :ets.lookup(@table, challenge) do
-      [{^challenge, plugin}] -> {:ok, plugin}
-      [] -> :not_found
+      [] ->
+        :not_found
     end
-  end
-
-  @doc "Drop a stashed entry — call after a successful token exchange."
-  @spec forget(String.t()) :: :ok
-  def forget(code_verifier) when is_binary(code_verifier) do
-    :ets.delete(@table, challenge_from_verifier(code_verifier))
-    :ok
-  end
-
-  defp challenge_from_verifier(verifier) do
-    :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
   end
 end

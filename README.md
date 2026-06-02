@@ -195,6 +195,19 @@ rules:
 
 `<path>` is a bare (or dotted) name from the claims JSON (e.g. `email`, `realm_access.roles`).
 
+#### OIDC Broker — redirect URI
+
+When `auth.idp` is set, Sark acts as a full OAuth broker. Register with your upstream IDP:
+
+```
+https://<your-sark-host>/oauth/callback
+```
+
+Notes:
+
+- Public/PKCE-only upstream apps aren't supported.
+- Set `url:` in `config.yml` when Sark runs behind a TLS-terminating proxy.
+
 ### `plugin.yml`
 
 Create a `plugin.yml` for each plugin:

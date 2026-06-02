@@ -14,6 +14,7 @@ defmodule Sark.AuthPlug.Scope do
 
   @spec oauth_broker?([String.t()]) :: boolean
   def oauth_broker?(["oauth", "authorize"]), do: true
+  def oauth_broker?(["oauth", "callback"]), do: true
   def oauth_broker?(["oauth", "token"]), do: true
   def oauth_broker?(["oauth", "register"]), do: true
   def oauth_broker?(_), do: false
