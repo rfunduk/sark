@@ -158,9 +158,10 @@ defmodule Sark.OAuth.Broker do
     with {:ok, idp} <- idp(),
          {:ok, ctx} <- resolve_token_ctx(body),
          :ok <- verify_client_pkce(body, ctx),
+         {:ok, basic} <- upstream_basic_auth(idp),
          {:ok, upstream} <- KeyStore.fetch_endpoint("token_endpoint"),
-         params = build_upstream_token_params(ctx, idp, callback_url(conn)),
-         {:ok, upstream_body} <- post_upstream(upstream, params),
+         params = build_upstream_token_params(ctx, callback_url(conn)),
+         {:ok, upstream_body} <- post_upstream(upstream, params, basic),
          {:ok, claims} <- verify_id_token(upstream_body, idp),
          {:ok, session_token} <- create_session(ctx.plugin, claims, upstream_body) do
       response = build_session_response(session_token, upstream_body)
@@ -336,26 +337,33 @@ defmodule Sark.OAuth.Broker do
   end
 
   # Upstream token exchange. Send the *upstream* auth code + sark's fixed
-  # redirect_uri (must match what we sent at authorize) + client_secret.
+  # redirect_uri (must match what we sent at authorize). Client credentials
+  # go via HTTP Basic (`client_secret_basic`) — see `upstream_basic_auth/1`.
   # No code_verifier upstream — sark is a confidential client there.
-  defp build_upstream_token_params(
-         ctx,
-         %IdP{client_id: client_id, client_secret: secret},
-         redirect_uri
-       ) do
+  defp build_upstream_token_params(ctx, redirect_uri) do
     [
       {"grant_type", "authorization_code"},
       {"code", ctx.upstream_code},
-      {"redirect_uri", redirect_uri},
-      {"client_id", client_id}
+      {"redirect_uri", redirect_uri}
     ]
-    |> ensure_param("client_secret", secret)
   end
+
+  # Confidential-client auth for the upstream token call. HTTP Basic
+  # (`client_secret_basic`) is the OAuth 2.0 default (RFC 6749 §2.3) and
+  # the Okta/Auth0 Web-app default; Google accepts it too. Sending the
+  # secret in the form body (`client_secret_post`) instead trips Okta's
+  # `invalid_client` when the app is configured for Basic.
+  defp upstream_basic_auth(%IdP{client_id: id, client_secret: secret})
+       when is_binary(id) and is_binary(secret) and secret != "" do
+    {:ok, {:basic, id <> ":" <> secret}}
+  end
+
+  defp upstream_basic_auth(_), do: {:error, :missing_client_secret}
 
   # --- upstream call + session ------------------------------------------------
 
-  defp post_upstream(url, params) do
-    case Req.post(req(), url: url, form: params) do
+  defp post_upstream(url, params, auth) do
+    case Req.post(req(), url: url, form: params, auth: auth) do
       {:ok, %Req.Response{status: 200, body: body}} -> {:ok, decode_body(body)}
       {:ok, %Req.Response{status: status, body: body}} -> {:error, {:upstream, status, body}}
       {:error, reason} -> {:error, {:upstream_unreachable, reason}}
@@ -444,9 +452,6 @@ defmodule Sark.OAuth.Broker do
   defp maybe_append_param(list, _key, nil), do: list
   defp maybe_append_param(list, _key, ""), do: list
   defp maybe_append_param(list, key, value), do: list ++ [{key, value}]
-
-  defp ensure_param(list, _key, nil), do: list
-  defp ensure_param(list, _key, ""), do: list
 
   defp ensure_param(list, key, value) do
     case Enum.find_index(list, fn {k, _} -> k == key end) do

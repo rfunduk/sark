@@ -83,6 +83,11 @@ defmodule Sark.OAuth.BrokerTest do
           form = URI.decode_query(body)
           :ets.insert(captured_token_body, {:last, form})
 
+          :ets.insert(
+            captured_token_body,
+            {:auth, Plug.Conn.get_req_header(conn, "authorization")}
+          )
+
           id_token =
             JWTFixture.sign(private, %{
               "iss" => @issuer,
@@ -119,6 +124,13 @@ defmodule Sark.OAuth.BrokerTest do
     case :ets.lookup(captured, :last) do
       [{_, form}] -> form
       [] -> %{}
+    end
+  end
+
+  defp captured_auth(captured) do
+    case :ets.lookup(captured, :auth) do
+      [{_, header}] -> header
+      [] -> []
     end
   end
 
@@ -297,14 +309,18 @@ defmodule Sark.OAuth.BrokerTest do
       # JIT-refreshes upstream internally.
       assert body["expires_in"] >= 24 * 3600
 
-      # Upstream got our client_secret + the UPSTREAM code (not sark's),
-      # sark's own callback redirect, and never the client's verifier.
+      # Upstream got the UPSTREAM code (not sark's), sark's own callback
+      # redirect, and never the client's verifier. Client credentials go
+      # via HTTP Basic, not the form body.
       forwarded = captured_form(ctx.captured)
-      assert forwarded["client_id"] == @client_id
-      assert forwarded["client_secret"] == @client_secret
       assert forwarded["code"] == "upstream-code-xyz"
       assert forwarded["redirect_uri"] == @sark_callback
       refute Map.has_key?(forwarded, "code_verifier")
+      refute Map.has_key?(forwarded, "client_secret")
+
+      assert captured_auth(ctx.captured) == [
+               "Basic " <> Base.encode64("#{@client_id}:#{@client_secret}")
+             ]
 
       # Session row landed in kv.sark.db.
       assert {:ok, %{"claims" => claims, "upstream_refresh" => "1//refresh-abc"}} =
