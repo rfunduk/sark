@@ -248,6 +248,41 @@ defmodule Sark.OAuth.BrokerTest do
       assert conn.status == 502
       assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
     end
+
+    test "missing resource on the global endpoint fails cleanly" do
+      conn = do_authorize(challenge_for(gen_verifier()), "", drop: ["resource"])
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
+    end
+  end
+
+  describe "/:plugin/oauth/authorize (path-derived plugin, no resource)" do
+    test "302s to upstream using the plugin from the path, resource absent" do
+      query =
+        URI.encode_query(%{
+          "response_type" => "code",
+          "client_id" => @client_id,
+          "redirect_uri" => @client_redirect,
+          "code_challenge" => challenge_for(gen_verifier()),
+          "code_challenge_method" => "S256",
+          "state" => @client_state
+        })
+
+      conn = call(conn(:get, "/kv/oauth/authorize?" <> query))
+
+      assert conn.status == 302
+      {location, params} = location_query(conn)
+      assert location =~ @authorize_endpoint
+      assert params["redirect_uri"] == @sark_callback
+      assert params["state"] != @client_state
+
+      # And the bridged session lands in the kv plugin's DB — proving the
+      # path plugin threaded through stash → callback → token.
+      {_, up_params} = location_query(conn)
+      cb = do_callback(%{"code" => "upstream-code-xyz", "state" => up_params["state"]})
+      {_, client_params} = location_query(cb)
+      assert client_params["code"] != nil
+    end
   end
 
   describe "/oauth/callback" do

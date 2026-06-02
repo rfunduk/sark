@@ -10,10 +10,13 @@ defmodule Sark.AuthPlug.Scope do
   @spec well_known?([String.t()]) :: boolean
   def well_known?([_plugin, ".well-known", "oauth-protected-resource"]), do: true
   def well_known?([".well-known", "oauth-authorization-server"]), do: true
+  def well_known?([_plugin, ".well-known", "oauth-authorization-server"]), do: true
+  def well_known?([".well-known", "oauth-authorization-server", _plugin]), do: true
   def well_known?(_), do: false
 
   @spec oauth_broker?([String.t()]) :: boolean
   def oauth_broker?(["oauth", "authorize"]), do: true
+  def oauth_broker?([_plugin, "oauth", "authorize"]), do: true
   def oauth_broker?(["oauth", "callback"]), do: true
   def oauth_broker?(["oauth", "token"]), do: true
   def oauth_broker?(["oauth", "register"]), do: true

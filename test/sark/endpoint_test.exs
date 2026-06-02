@@ -94,7 +94,7 @@ defmodule Sark.EndpointTest do
     conn = call(conn(:get, "/kv/.well-known/oauth-protected-resource"))
     doc = Jason.decode!(conn.resp_body)
 
-    assert doc["authorization_servers"] == ["https://sark.example.com"]
+    assert doc["authorization_servers"] == ["https://sark.example.com/kv"]
     assert doc["bearer_methods_supported"] == ["header", "query"]
     assert doc["scopes_supported"] == ["openid", "email", "profile"]
   end
@@ -124,6 +124,38 @@ defmodule Sark.EndpointTest do
     assert doc["token_endpoint"] == "https://sark.example.com/oauth/token"
     assert doc["registration_endpoint"] == "https://sark.example.com/oauth/register"
     assert doc["code_challenge_methods_supported"] == ["S256"]
+  end
+
+  test "per-plugin auth-server metadata carries the plugin in issuer + authorize" do
+    idp = %Sark.Config.IdP{issuer: "https://accounts.google.com", audience: "sark-test"}
+
+    prior_idp = Application.get_env(:sark, :idp)
+    prior_url = Application.get_env(:sark, :url)
+    Application.put_env(:sark, :idp, idp)
+    Application.put_env(:sark, :url, "https://sark.example.com")
+
+    on_exit(fn ->
+      Application.put_env(:sark, :idp, prior_idp)
+      Application.put_env(:sark, :url, prior_url)
+    end)
+
+    # Both discovery URL shapes (suffix + RFC 8414 path-insertion) resolve
+    # to the same per-plugin doc.
+    for path <- [
+          "/kv/.well-known/oauth-authorization-server",
+          "/.well-known/oauth-authorization-server/kv"
+        ] do
+      conn = call(conn(:get, path))
+      assert conn.status == 200
+      doc = Jason.decode!(conn.resp_body)
+
+      # RFC 8414 issuer-match: issuer == the URL the client discovered.
+      assert doc["issuer"] == "https://sark.example.com/kv"
+      assert doc["authorization_endpoint"] == "https://sark.example.com/kv/oauth/authorize"
+      # token/register stay global.
+      assert doc["token_endpoint"] == "https://sark.example.com/oauth/token"
+      assert doc["registration_endpoint"] == "https://sark.example.com/oauth/register"
+    end
   end
 
   describe "/oauth/register (RFC 7591 DCR stub)" do

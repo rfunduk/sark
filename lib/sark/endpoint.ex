@@ -4,15 +4,20 @@ defmodule Sark.Endpoint do
 
     * `/health` — unauthenticated liveness
     * `/<plugin>/.well-known/oauth-protected-resource` — RFC 9728
-      protected-resource metadata. Unauthenticated. Tells MCP clients
-      where to find this resource's auth servers (sark itself, in
-      broker mode).
-    * `/.well-known/oauth-authorization-server` — RFC 8414 auth-server
-      metadata. Unauthenticated. Advertises sark's `/oauth/authorize`
-      + `/oauth/token`.
-    * `/oauth/authorize` — broker. Stashes the client's redirect_uri +
-      PKCE challenge, 302s to upstream IdP's authorize endpoint with
-      sark's *own* fixed `/oauth/callback` redirect + opaque state.
+      protected-resource metadata. Unauthenticated. Points MCP clients
+      at this resource's per-plugin authorization server (`{base}/{plugin}`).
+    * `/<plugin>/.well-known/oauth-authorization-server` (+ the RFC 8414
+      path-insertion variant `/.well-known/oauth-authorization-server/<plugin>`)
+      — per-plugin RFC 8414 auth-server metadata. Advertises a per-plugin
+      `/<plugin>/oauth/authorize`; token/register stay global.
+    * `/.well-known/oauth-authorization-server` — legacy global auth-server
+      metadata (clients that discovered the bare base as the AS).
+    * `/<plugin>/oauth/authorize` — broker. Plugin from the path. Stashes
+      the client's redirect_uri + PKCE challenge, 302s to upstream IdP's
+      authorize endpoint with sark's *own* fixed `/oauth/callback` redirect
+      + opaque state.
+    * `/oauth/authorize` — legacy global authorize; plugin from the RFC
+      8707 `resource` param (clients that send it).
     * `/oauth/callback` — broker. Upstream redirects here (one fixed URI
       the operator registers); sark bridges a freshly-minted code back
       to the client's original (ephemeral localhost) redirect_uri.
@@ -60,8 +65,23 @@ defmodule Sark.Endpoint do
     serve_authorization_server_metadata(conn)
   end
 
+  get "/:plugin/.well-known/oauth-authorization-server" do
+    serve_authorization_server_metadata(conn, plugin)
+  end
+
+  # RFC 8414 §3.1 path-insertion variant — some clients build the metadata
+  # URL by inserting the well-known segment after the host instead of
+  # suffixing it onto the issuer path. Serve both shapes.
+  get "/.well-known/oauth-authorization-server/:plugin" do
+    serve_authorization_server_metadata(conn, plugin)
+  end
+
   get "/oauth/authorize" do
     Sark.OAuth.Broker.authorize(conn)
+  end
+
+  get "/:plugin/oauth/authorize" do
+    Sark.OAuth.Broker.authorize(conn, plugin)
   end
 
   get "/oauth/callback" do
@@ -122,7 +142,9 @@ defmodule Sark.Endpoint do
     case Application.get_env(:sark, :idp) do
       %Sark.Config.IdP{} ->
         Map.merge(base, %{
-          "authorization_servers" => [Sark.URL.base(conn)],
+          # Per-plugin authorization server — the plugin then rides in the
+          # authorize path, so clients need not send an RFC 8707 resource.
+          "authorization_servers" => ["#{Sark.URL.base(conn)}/#{plugin}"],
           "bearer_methods_supported" => ["header", "query"],
           "scopes_supported" => ["openid", "email", "profile"]
         })
@@ -132,17 +154,22 @@ defmodule Sark.Endpoint do
     end
   end
 
-  # RFC 8414 authorization-server metadata. Advertises sark's broker
-  # endpoints (sark IS the auth server, from the client's perspective).
-  defp serve_authorization_server_metadata(conn) do
+  # RFC 8414 authorization-server metadata. Sark IS the auth server from
+  # the client's perspective. `plugin == nil` is the legacy global doc
+  # (plugin from the `resource` param); a plugin yields a per-plugin doc
+  # whose authorize endpoint carries the plugin in the path.
+  defp serve_authorization_server_metadata(conn, plugin \\ nil) do
     case Application.get_env(:sark, :idp) do
-      %Sark.Config.IdP{issuer: issuer} ->
+      %Sark.Config.IdP{issuer: upstream_issuer} ->
         base = Sark.URL.base(conn)
 
         body =
           Jason.encode!(%{
-            "issuer" => issuer,
-            "authorization_endpoint" => "#{base}/oauth/authorize",
+            # RFC 8414 issuer-match: must equal the URL the client
+            # discovered this doc under. Per-plugin → `{base}/{plugin}`;
+            # legacy global keeps the upstream issuer it always advertised.
+            "issuer" => if(plugin, do: "#{base}/#{plugin}", else: upstream_issuer),
+            "authorization_endpoint" => authorize_url(base, plugin),
             "token_endpoint" => "#{base}/oauth/token",
             "registration_endpoint" => "#{base}/oauth/register",
             "response_types_supported" => ["code"],
@@ -160,6 +187,9 @@ defmodule Sark.Endpoint do
         send_resp(conn, 404, "not found")
     end
   end
+
+  defp authorize_url(base, nil), do: "#{base}/oauth/authorize"
+  defp authorize_url(base, plugin), do: "#{base}/#{plugin}/oauth/authorize"
 
   defp resource_url(conn, plugin), do: "#{Sark.URL.base(conn)}/#{plugin}/mcp"
 end

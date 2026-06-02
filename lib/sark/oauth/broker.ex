@@ -79,14 +79,29 @@ defmodule Sark.OAuth.Broker do
   @authorize_ttl_ms 5 * 60 * 1000
   @code_ttl_ms 60 * 1000
 
+  # Two entry points, one body. Per-plugin (`/<plugin>/oauth/authorize`)
+  # reads the plugin from the path — the durable path that doesn't depend
+  # on the client sending an RFC 8707 `resource`. The global
+  # (`/oauth/authorize`) legacy path derives it from `resource`.
   @spec authorize(Plug.Conn.t()) :: Plug.Conn.t()
   def authorize(conn) do
     conn = fetch_query_params(conn)
+    do_authorize(conn, plugin_from_resource_param(conn.query_params))
+  end
+
+  @spec authorize(Plug.Conn.t(), String.t()) :: Plug.Conn.t()
+  def authorize(conn, plugin) when is_binary(plugin) do
+    conn = fetch_query_params(conn)
+    do_authorize(conn, {:ok, plugin})
+  end
+
+  defp do_authorize(conn, plugin_result) do
     query = conn.query_params
 
-    with {:ok, idp} <- idp(),
+    with {:ok, plugin} <- plugin_result,
+         {:ok, idp} <- idp(),
          {:ok, upstream} <- KeyStore.fetch_endpoint("authorization_endpoint"),
-         {:ok, ctx} <- build_authorize_ctx(query) do
+         {:ok, ctx} <- build_authorize_ctx(query, plugin) do
       sark_state = gen_token()
       Correlator.stash("state:" <> sark_state, ctx, @authorize_ttl_ms)
 
@@ -95,6 +110,15 @@ defmodule Sark.OAuth.Broker do
       redirect(conn, target)
     else
       {:error, reason} -> send_broker_error(conn, "authorize_failed", reason)
+    end
+  end
+
+  # Legacy global authorize: recover the plugin from the RFC 8707
+  # `resource` indicator (a URL like `https://host/<plugin>/mcp`).
+  defp plugin_from_resource_param(query) do
+    case Map.get(query, "resource") do
+      r when is_binary(r) and r != "" -> plugin_from_resource(r)
+      _ -> {:error, {:missing_param, "resource"}}
     end
   end
 
@@ -216,14 +240,13 @@ defmodule Sark.OAuth.Broker do
   # --- authorize context ------------------------------------------------------
 
   # Pull the downstream client's request into a context we stash for the
-  # callback. PKCE challenge + a loopback-or-https redirect are required —
-  # MCP clients are public clients (OAuth 2.1 mandates PKCE).
-  defp build_authorize_ctx(query) do
+  # callback. Plugin is resolved by the caller (path or `resource`). PKCE
+  # challenge + a loopback-or-https redirect are required — MCP clients are
+  # public clients (OAuth 2.1 mandates PKCE).
+  defp build_authorize_ctx(query, plugin) do
     with {:ok, redirect_uri} <- fetch_param(query, "redirect_uri"),
          :ok <- validate_client_redirect(redirect_uri),
-         {:ok, code_challenge} <- fetch_param(query, "code_challenge"),
-         {:ok, resource} <- fetch_param(query, "resource"),
-         {:ok, plugin} <- plugin_from_resource(resource) do
+         {:ok, code_challenge} <- fetch_param(query, "code_challenge") do
       {:ok,
        %{
          client_redirect_uri: redirect_uri,
