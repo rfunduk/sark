@@ -950,6 +950,26 @@ defmodule Sark.ConfigTest do
              } = cfg.idp
     end
 
+    test "trims surrounding whitespace on idp credentials", %{tmp_dir: dir} do
+      path =
+        write_config(dir, """
+        listen: 127.0.0.1:9090
+        data_dir: #{Path.join(dir, "data")}
+        auth:
+          idp:
+            issuer: "  https://accounts.google.com  "
+            audience: sark.example.com
+            client_id: "abc123 "
+            client_secret: "shh-secret\\n"
+        plugins: {}
+        """)
+
+      cfg = Sark.Config.load!(path)
+      assert cfg.idp.issuer == "https://accounts.google.com"
+      assert cfg.idp.client_id == "abc123"
+      assert cfg.idp.client_secret == "shh-secret"
+    end
+
     test "idp defaults to nil when block absent", %{tmp_dir: dir} do
       path =
         write_config(dir, """

@@ -335,19 +335,35 @@ defmodule Sark.Config do
   defp parse_audience(other, _),
     do: raise("config: auth.idp.audience must be a string, got #{inspect(other)}")
 
+  # Trim surrounding whitespace — credential values sourced from files,
+  # Docker secrets, or `${ENV}` interpolation routinely pick up a trailing
+  # newline/space, which upstream IdPs reject as an invalid secret.
   defp parse_optional_idp_string(map, key) do
     case Map.get(map, key) do
-      nil -> nil
-      "" -> nil
-      v when is_binary(v) -> v
-      other -> raise "config: auth.idp.#{key} must be a string, got #{inspect(other)}"
+      nil ->
+        nil
+
+      v when is_binary(v) ->
+        case String.trim(v) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      other ->
+        raise "config: auth.idp.#{key} must be a string, got #{inspect(other)}"
     end
   end
 
   defp fetch_idp_string!(map, key) do
     case Map.get(map, key) do
-      v when is_binary(v) and v != "" -> v
-      _ -> raise "config: auth.idp.#{key} is required"
+      v when is_binary(v) ->
+        case String.trim(v) do
+          "" -> raise "config: auth.idp.#{key} is required"
+          trimmed -> trimmed
+        end
+
+      _ ->
+        raise "config: auth.idp.#{key} is required"
     end
   end
 
