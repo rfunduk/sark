@@ -33,6 +33,11 @@ ARG VERSION=0.0.0-dev
 ENV VERSION=${VERSION}
 
 RUN mix compile --force
+
+# Fetch the sqlite-vec (vec0) loadable for this build's native arch,
+# sha-verified + asserted 64-bit. Runs per-arch on each native build leg.
+RUN mix sark.vec0
+
 RUN mix release
 
 # ---- runtime ----

@@ -189,10 +189,7 @@ defmodule Sark.Embedder do
 
         case adapter.embed([text], spec) do
           {:ok, [floats | _]} ->
-            vec_bin =
-              floats
-              |> SqliteVec.Float32.new()
-              |> SqliteVec.Float32.to_binary()
+            vec_bin = Sark.SqliteVec.float32_to_binary(floats)
 
             :ok = Sark.Embedder.Cache.insert(spec.model, text, vec_bin)
             {:ok, vec_bin}

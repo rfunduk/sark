@@ -36,7 +36,6 @@ defmodule Sark.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:anthropix, "~> 0.6"},
       {:crontab, "~> 1.2"},
-      {:sqlite_vec, "~> 0.1"},
       {:joken, "~> 2.6"},
       {:req, "~> 0.5"}
     ]

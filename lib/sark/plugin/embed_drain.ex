@@ -416,7 +416,7 @@ defmodule Sark.Plugin.EmbedDrain do
 
     Enum.zip(chunks, vectors)
     |> Enum.each(fn {chunk, vector} ->
-      vec_bin = SqliteVec.Float32.new(vector) |> SqliteVec.Float32.to_binary()
+      vec_bin = Sark.SqliteVec.float32_to_binary(vector)
 
       {:ok, %Result{rows: [[meta_id]]}} =
         Exqlite.query(

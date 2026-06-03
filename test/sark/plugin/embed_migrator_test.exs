@@ -82,7 +82,7 @@ defmodule Sark.Plugin.EmbedMigratorTest do
         "/tmp/should-not-be-touched.db",
         embed_for("nodes", ["body"]),
         nil,
-        SqliteVec.path()
+        Sark.SqliteVec.path()
       )
     end
   end
@@ -104,12 +104,12 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("nodes", ["summary", "body"]),
           embedder(),
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
       :ok = Sqlite3.enable_load_extension(db, true)
-      execute!(db, "SELECT load_extension('#{SqliteVec.path()}')")
+      execute!(db, "SELECT load_extension('#{Sark.SqliteVec.path()}')")
       :ok = Sqlite3.enable_load_extension(db, false)
 
       tables = query!(db, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -152,7 +152,7 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("nodes", ["body"]),
           embedder(),
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
@@ -183,9 +183,9 @@ defmodule Sark.Plugin.EmbedMigratorTest do
 
       embed = embed_for("nodes", ["body"])
 
-      :ok = EmbedMigrator.apply!("p", db_path, embed, embedder(), SqliteVec.path())
-      :ok = EmbedMigrator.apply!("p", db_path, embed, embedder(), SqliteVec.path())
-      :ok = EmbedMigrator.apply!("p", db_path, embed, embedder(), SqliteVec.path())
+      :ok = EmbedMigrator.apply!("p", db_path, embed, embedder(), Sark.SqliteVec.path())
+      :ok = EmbedMigrator.apply!("p", db_path, embed, embedder(), Sark.SqliteVec.path())
+      :ok = EmbedMigrator.apply!("p", db_path, embed, embedder(), Sark.SqliteVec.path())
 
       db = open!(db_path)
       execute!(db, "INSERT INTO nodes (body) VALUES ('x')")
@@ -209,7 +209,7 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("docs", ["content"], pk: "uri"),
           embedder(),
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
@@ -231,12 +231,12 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("nodes", ["body"]),
           %EmbedConfig{provider: "ollama", model: "x", dim: 384},
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
       :ok = Sqlite3.enable_load_extension(db, true)
-      execute!(db, "SELECT load_extension('#{SqliteVec.path()}')")
+      execute!(db, "SELECT load_extension('#{Sark.SqliteVec.path()}')")
       :ok = Sqlite3.enable_load_extension(db, false)
 
       [[sql]] = query!(db, "SELECT sql FROM sqlite_master WHERE name='_embeddings_nodes'")
@@ -259,7 +259,7 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("nodes", ["body"]) |> Map.merge(embed_for("docs", ["content"])),
           embedder(),
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
@@ -276,12 +276,12 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("nodes", ["body"]),
           embedder(),
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
       :ok = Sqlite3.enable_load_extension(db, true)
-      execute!(db, "SELECT load_extension('#{SqliteVec.path()}')")
+      execute!(db, "SELECT load_extension('#{Sark.SqliteVec.path()}')")
       :ok = Sqlite3.enable_load_extension(db, false)
 
       tables =
@@ -326,13 +326,13 @@ defmodule Sark.Plugin.EmbedMigratorTest do
           db_path,
           embed_for("nodes", ["body"]),
           embedder(),
-          SqliteVec.path()
+          Sark.SqliteVec.path()
         )
 
       db = open!(db_path)
       # Trying to load_extension via SQL on a fresh conn should fail
       # since the conn opens with load_extension off by default.
-      result = Sqlite3.execute(db, "SELECT load_extension('#{SqliteVec.path()}')")
+      result = Sqlite3.execute(db, "SELECT load_extension('#{Sark.SqliteVec.path()}')")
       assert match?({:error, _}, result)
       Sqlite3.close(db)
     end

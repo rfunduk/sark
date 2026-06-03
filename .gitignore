@@ -17,3 +17,6 @@ erl_crash.dump
 /config*.yml
 !/config.example.yml
 *.db
+
+# fetched at build/dev time via `mix sark.vec0`
+/priv/sqlite_vec/

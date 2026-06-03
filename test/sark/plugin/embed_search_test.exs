@@ -95,7 +95,7 @@ defmodule Sark.Plugin.EmbedSearchTest do
 
   defp start_pools!(plugin, db_path) do
     children =
-      DB.pool_children(plugin, db_path, data_load_extensions: [SqliteVec.path()])
+      DB.pool_children(plugin, db_path, data_load_extensions: [Sark.SqliteVec.path()])
 
     {:ok, sup} = Supervisor.start_link(children, strategy: :one_for_one)
     Process.unlink(sup)
@@ -132,7 +132,7 @@ defmodule Sark.Plugin.EmbedSearchTest do
   end
 
   defp install_embed!(plugin, db_path, embed) do
-    EmbedMigrator.apply!(plugin, db_path, embed, embedder(), SqliteVec.path())
+    EmbedMigrator.apply!(plugin, db_path, embed, embedder(), Sark.SqliteVec.path())
   end
 
   defp search_tool do

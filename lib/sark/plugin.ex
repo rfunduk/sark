@@ -113,7 +113,7 @@ defmodule Sark.Plugin do
 
   defp maybe_apply_embed_migrations!(%Spec{name: name, embed: embed}, db_path) do
     embedder = Sark.Boot.load_config!().embedder
-    EmbedMigrator.apply!(name, db_path, embed, embedder, SqliteVec.path())
+    EmbedMigrator.apply!(name, db_path, embed, embedder, Sark.SqliteVec.path())
   end
 
   defp pool_opts(%Spec{embed: embed, db: db}) when map_size(embed) == 0 do
@@ -121,7 +121,7 @@ defmodule Sark.Plugin do
   end
 
   defp pool_opts(%Spec{db: db}) do
-    [data_load_extensions: [SqliteVec.path()]] ++ db_opts(db)
+    [data_load_extensions: [Sark.SqliteVec.path()]] ++ db_opts(db)
   end
 
   defp db_opts(db) when is_map(db) do

@@ -111,14 +111,14 @@ defmodule Sark.MCP.Handlers.EmbedTest do
 
     embed = %{"nodes" => %Embed{table: "nodes", fields: ["body"], pk: "id"}}
 
-    EmbedMigrator.apply!(name, db_path, embed, embedder(), SqliteVec.path())
+    EmbedMigrator.apply!(name, db_path, embed, embedder(), Sark.SqliteVec.path())
 
     {db_path, embed}
   end
 
   defp start_pools!(plugin, db_path) do
     children =
-      DB.pool_children(plugin, db_path, data_load_extensions: [SqliteVec.path()])
+      DB.pool_children(plugin, db_path, data_load_extensions: [Sark.SqliteVec.path()])
 
     {:ok, sup} = Supervisor.start_link(children, strategy: :one_for_one)
     Process.unlink(sup)
@@ -325,7 +325,7 @@ defmodule Sark.MCP.Handlers.EmbedTest do
         }
       }
 
-      EmbedMigrator.apply!(name, db_path, embed, embedder(), SqliteVec.path())
+      EmbedMigrator.apply!(name, db_path, embed, embedder(), Sark.SqliteVec.path())
 
       spec = %Spec{
         name: name,
