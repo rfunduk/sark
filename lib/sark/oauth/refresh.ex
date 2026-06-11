@@ -35,7 +35,33 @@ defmodule Sark.OAuth.Refresh do
   def maybe_refresh(_plugin, row, nil), do: {:ok, row}
 
   def maybe_refresh(plugin, row, %IdP{} = idp) do
-    if needs_refresh?(row), do: do_refresh(plugin, row, idp), else: {:ok, row}
+    if needs_refresh?(row), do: locked_refresh(plugin, row, idp), else: {:ok, row}
+  end
+
+  # Single-flight per session token. MCP clients fire concurrent
+  # requests; without this, every request in the refresh window runs
+  # its own upstream exchange with the same refresh token. Under
+  # IdP-side refresh-token rotation the losers get `invalid_grant`,
+  # which the 4xx branch below reads as revocation — deleting the
+  # session the winner just refreshed (and reuse detection can revoke
+  # the whole token family upstream). Waiters re-read the row inside
+  # the lock and skip the upstream call when the winner already
+  # extended it.
+  defp locked_refresh(plugin, %{"token" => token}, idp) do
+    :global.trans({{__MODULE__, plugin, token}, self()}, fn ->
+      case Session.lookup(plugin, token) do
+        {:ok, row} ->
+          if needs_refresh?(row), do: do_refresh(plugin, row, idp), else: {:ok, row}
+
+        # Deleted while we waited — a concurrent loser can no longer do
+        # this, but an explicit logout/prune can.
+        :not_found ->
+          {:error, :revoked}
+
+        {:error, _} = err ->
+          err
+      end
+    end)
   end
 
   defp needs_refresh?(%{"expires_at" => iso}) when is_binary(iso) do
@@ -80,11 +106,16 @@ defmodule Sark.OAuth.Refresh do
 
       {:ok, refreshed_row}
     else
-      {:error, {:upstream_4xx, status, _body}} when status in 400..401 ->
+      {:error, {:upstream_4xx, status, body}} when status in 400..401 ->
         # Google / Okta return 400 or 401 when refresh_token is
         # invalid / revoked. Drop the session — caller must redo OAuth.
+        # The body's `error` code matters operationally: `invalid_grant`
+        # = the refresh token itself was refused (revoked/expired/
+        # rotated), `invalid_client` = our credentials/auth-method were
+        # refused — so it's logged, not discarded.
         Logger.info(
-          "auth: session #{mask(token)} refresh rejected by IdP (status=#{status}); dropping"
+          "auth: session #{mask(token)} refresh rejected by IdP " <>
+            "(status=#{status} body=#{inspect(body, limit: 10, printable_limit: 300)}); dropping"
         )
 
         _ = Session.delete(plugin, token)
@@ -96,16 +127,26 @@ defmodule Sark.OAuth.Refresh do
     end
   end
 
+  # Client credentials via HTTP Basic (`client_secret_basic`), matching
+  # the broker's authorization_code exchange — Okta rejects secret-in-body
+  # (`invalid_client`, HTTP 401) when the app is configured for Basic,
+  # which this path's 400..401 branch then misread as a revoked refresh
+  # token and dropped the session. No secret (public client) → client_id
+  # in the form.
   defp post_refresh(url, refresh_token, %IdP{client_id: client_id, client_secret: secret}) do
-    form =
-      [
-        {"grant_type", "refresh_token"},
-        {"refresh_token", refresh_token}
-      ]
-      |> add_param("client_id", client_id)
-      |> add_param("client_secret", secret)
+    form = [
+      {"grant_type", "refresh_token"},
+      {"refresh_token", refresh_token}
+    ]
 
-    case Req.post(req(), url: url, form: form) do
+    {form, req_opts} =
+      if is_binary(secret) and secret != "" do
+        {form, [auth: {:basic, client_id <> ":" <> secret}]}
+      else
+        {add_param(form, "client_id", client_id), []}
+      end
+
+    case Req.post(req(), [url: url, form: form] ++ req_opts) do
       {:ok, %Req.Response{status: 200, body: body}} ->
         {:ok, decode_body(body)}
 

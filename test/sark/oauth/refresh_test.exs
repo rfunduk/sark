@@ -58,6 +58,12 @@ defmodule Sark.OAuth.RefreshTest do
         "/token" ->
           {:ok, body, conn} = Plug.Conn.read_body(conn)
           :ets.insert(captured_form, {:last, URI.decode_query(body)})
+          :ets.update_counter(captured_form, :calls, 1, {:calls, 0})
+
+          :ets.insert(
+            captured_form,
+            {:auth_header, Plug.Conn.get_req_header(conn, "authorization")}
+          )
 
           case :ets.lookup(upstream_behavior, :mode) do
             [{:mode, :revoked}] ->
@@ -130,7 +136,12 @@ defmodule Sark.OAuth.RefreshTest do
     [{:last, form}] = :ets.lookup(ctx.captured_form, :last)
     assert form["grant_type"] == "refresh_token"
     assert form["refresh_token"] == "1//refresh-abc"
-    assert form["client_secret"] == @client_secret
+
+    # client_secret_basic — secret rides the Authorization header, never
+    # the form body (Okta apps configured for Basic 401 on form secrets).
+    refute Map.has_key?(form, "client_secret")
+    expected = "Basic " <> Base.encode64(@client_id <> ":" <> @client_secret)
+    assert [{:auth_header, [^expected]}] = :ets.lookup(ctx.captured_form, :auth_header)
 
     {:ok, persisted} = Session.lookup("kv", token)
 
@@ -151,6 +162,18 @@ defmodule Sark.OAuth.RefreshTest do
 
     assert {:error, _} = Refresh.maybe_refresh("kv", row, ctx.idp)
     assert {:ok, _row_still_there} = Session.lookup("kv", token)
+  end
+
+  test "concurrent requests near expiry hit upstream exactly once", ctx do
+    {_token, row} = seed_session("kv", expires_in_sec: 60)
+
+    results =
+      1..5
+      |> Enum.map(fn _ -> Task.async(fn -> Refresh.maybe_refresh("kv", row, ctx.idp) end) end)
+      |> Task.await_many()
+
+    assert Enum.all?(results, &match?({:ok, _}, &1))
+    assert [{:calls, 1}] = :ets.lookup(ctx.captured_form, :calls)
   end
 
   test "session w/ null upstream_refresh does not attempt refresh", ctx do
