@@ -109,9 +109,55 @@ defmodule Sark.OAuth.Broker do
       target = upstream <> "?" <> URI.encode_query(params)
       redirect(conn, target)
     else
-      {:error, reason} -> send_broker_error(conn, "authorize_failed", reason)
+      {:error, reason} -> authorize_error(conn, query, reason)
     end
   end
+
+  # Authorize errors land in a browser (this endpoint is a navigation
+  # target), and the mistake usually happened a step earlier — e.g. a
+  # client connected to bare `/mcp` walks root discovery and arrives here
+  # with no resolvable plugin. Per RFC 6749 §4.1.2.1: with a valid
+  # redirect_uri, bounce the error back so the client surfaces it in its
+  # own UI; without one, render readable text — not inspected tuples.
+  defp authorize_error(conn, query, reason) do
+    redirect_uri = Map.get(query, "redirect_uri")
+
+    if is_binary(redirect_uri) and validate_client_redirect(redirect_uri) == :ok do
+      params =
+        %{"error" => authorize_error_code(reason), "error_description" => describe(reason)}
+        |> maybe_put("state", Map.get(query, "state"))
+
+      sep = if String.contains?(redirect_uri, "?"), do: "&", else: "?"
+      redirect(conn, redirect_uri <> sep <> URI.encode_query(params))
+    else
+      conn
+      |> put_resp_content_type("text/plain")
+      |> send_resp(400, "authorize failed: " <> describe(reason) <> "\n")
+    end
+  end
+
+  defp authorize_error_code({:missing_param, _}), do: "invalid_request"
+  defp authorize_error_code({:bad_resource, _}), do: "invalid_request"
+  defp authorize_error_code(_), do: "server_error"
+
+  defp describe({:missing_param, "resource"}) do
+    "could not determine which MCP endpoint this authorization is for — " <>
+      "the client is usually connected to an incomplete URL; endpoints on " <>
+      "this server look like https://<host>/<name>/mcp — check the address you were given"
+  end
+
+  defp describe({:bad_resource, url}),
+    do:
+      "resource #{inspect(url)} is not an MCP endpoint on this server " <>
+        "(expected https://<host>/<name>/mcp)"
+
+  defp describe({:missing_param, name}), do: "missing required parameter #{inspect(name)}"
+
+  defp describe({:invalid_redirect_uri, uri}),
+    do: "redirect_uri #{inspect(uri)} must be https, or http on loopback"
+
+  defp describe(:no_idp), do: "no identity provider configured (auth.idp)"
+  defp describe(reason), do: inspect(reason)
 
   # Legacy global authorize: recover the plugin from the RFC 8707
   # `resource` indicator (a URL like `https://host/<plugin>/mcp`).

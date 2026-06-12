@@ -67,11 +67,31 @@ defmodule Sark.AuthPlug do
 
   @impl true
   def call(conn, _opts) do
-    if exempt?(conn.path_info) do
-      conn
-    else
-      authenticate(conn)
+    cond do
+      exempt?(conn.path_info) -> conn
+      conn.path_info == ["mcp"] -> missing_plugin(conn)
+      true -> authenticate(conn)
     end
+  end
+
+  # Bare `/mcp` (no plugin segment) is the classic mis-pasted client URL.
+  # A plain 401 here can't carry a resource_metadata challenge (no plugin
+  # to build it from), so the client falls back to root-level discovery
+  # and fails much later at /oauth/authorize with an unrelated-looking
+  # error. Name the actual mistake at the first request instead.
+  defp missing_plugin(conn) do
+    body =
+      Jason.encode!(%{
+        "error" => "not_found",
+        "error_description" =>
+          "no MCP endpoint at /mcp — endpoints on this server look like " <>
+            "/<name>/mcp; check the URL you were given"
+      })
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(404, body)
+    |> halt()
   end
 
   defp exempt?(["health"]), do: true

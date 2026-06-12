@@ -46,6 +46,20 @@ defmodule Sark.AuthPlugTest do
     assert conn.halted
   end
 
+  # Bare /mcp = client URL missing the plugin segment. 404 + hint, even
+  # with a valid token — a 401 would send the client down root-level
+  # OAuth discovery that can only fail later with a worse error.
+  test "bare /mcp → 404 with plugin-path hint" do
+    conn =
+      conn(:post, "/mcp")
+      |> put_req_header("authorization", "Bearer #{@valid}")
+      |> call()
+
+    assert conn.status == 404
+    assert conn.halted
+    assert Jason.decode!(conn.resp_body)["error_description"] =~ "/<name>/mcp"
+  end
+
   test "bearer header passes" do
     conn =
       conn(:post, "/kv/mcp")

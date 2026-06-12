@@ -231,28 +231,49 @@ defmodule Sark.OAuth.BrokerTest do
       assert params["scope"] == "openid email profile"
     end
 
+    # Invalid redirect_uri → no redirect back (RFC 6749 §4.1.2.1) —
+    # readable text error rendered directly in the browser.
     test "rejects a non-loopback http redirect_uri" do
       conn =
         do_authorize(challenge_for(gen_verifier()), "http://localhost:8080/kv/mcp",
           redirect_uri: "http://evil.example.com/callback"
         )
 
-      assert conn.status == 502
-      assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
+      assert conn.status == 400
+      assert conn.resp_body =~ "redirect_uri"
     end
 
-    test "requires a PKCE challenge" do
+    # Valid redirect_uri + bad request → error bridged back to the
+    # client's callback so its own UI surfaces the description.
+    test "missing PKCE challenge bridges error back to the client" do
       conn =
         do_authorize("ignored", "http://localhost:8080/kv/mcp", drop: ["code_challenge"])
 
-      assert conn.status == 502
-      assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
+      assert conn.status == 302
+      {location, params} = location_query(conn)
+      assert location =~ @client_redirect
+      assert params["error"] == "invalid_request"
+      assert params["error_description"] =~ "code_challenge"
+      assert params["state"] == @client_state
     end
 
-    test "missing resource on the global endpoint fails cleanly" do
+    test "missing resource on the global endpoint explains the per-plugin URL shape" do
       conn = do_authorize(challenge_for(gen_verifier()), "", drop: ["resource"])
-      assert conn.status == 502
-      assert Jason.decode!(conn.resp_body)["error"] == "authorize_failed"
+
+      assert conn.status == 302
+      {location, params} = location_query(conn)
+      assert location =~ @client_redirect
+      assert params["error"] == "invalid_request"
+      assert params["error_description"] =~ "/<name>/mcp"
+      assert params["state"] == @client_state
+    end
+
+    test "missing resource AND no redirect_uri renders readable text" do
+      conn =
+        do_authorize(challenge_for(gen_verifier()), "", drop: ["resource", "redirect_uri"])
+
+      assert conn.status == 400
+      assert conn.resp_body =~ "/<name>/mcp"
     end
   end
 
