@@ -135,7 +135,7 @@ Useful if you enable `allow_sql` as then the `sark_catalog` tool will get the sc
 
 ### Authentication
 
-Sark supports OIDC and bearer auth. The default policy is *deny* -> no tools available at all, can't actually do anything, so you need to give access to plugins and tools explicitly. See [`config.yml.example`](config.yml.example).
+Sark supports OIDC, bearer auth, and open anonymous access. The default policy is *deny* -> no tools available at all, can't actually do anything, so you need to give access to plugins and tools explicitly. See [`config.yml.example`](config.yml.example).
 
 #### Limiting Access
 
@@ -442,7 +442,7 @@ Use them for things like writing system-only event kinds, flipping server-manage
 
 ## Caller Identity (`:sark_auth`)
 
-Every tool call gets one implicit SQL binding: `:sark_auth` -> JSON envelope describing whoever invoked the tool. Always present, JWT-shaped, three sources:
+Every tool call gets one implicit SQL binding: `:sark_auth` -> JSON envelope describing whoever invoked the tool. Always present, JWT-shaped, four sources:
 
 ```json
 // Bearer token (from auth.tokens)
@@ -450,6 +450,9 @@ Every tool call gets one implicit SQL binding: `:sark_auth` -> JSON envelope des
 
 // Pipeline (scheduled or manual)
 {"sub": "system", "name": "<pipeline>", "iss": "sark.pipeline"}
+
+// auth: none
+{"sub": "anon", "name": "anon", "iss": "sark.none"}
 
 // OAuth
 {"sub": "<idp sub>", "email": "...", "name": "...", "iss": "<idp>", ...rest of JWT}

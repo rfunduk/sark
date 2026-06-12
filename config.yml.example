@@ -28,6 +28,8 @@ embedder:
   defaults:
     chunk: { size: 1024, overlap: 128 }
 
+# Required. For local / trusted-network use, opt out explicitly with
+# `auth: none` — every request is then anonymous w/ full plugin access.
 auth:
   tokens:
     - { name: default, plugins: <scope>, token: "${SARK_TOKEN}" }

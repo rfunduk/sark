@@ -155,6 +155,38 @@ defmodule Sark.AuthPlugTest do
     refute conn.halted
   end
 
+  describe "auth: none" do
+    setup do
+      Application.put_env(:sark, :auth_none, true)
+      on_exit(fn -> Application.delete_env(:sark, :auth_none) end)
+      :ok
+    end
+
+    test "request without any token passes with the anon envelope" do
+      conn = call(conn(:post, "/kv/mcp"))
+
+      refute conn.halted
+      assert conn.assigns.token_name == "anon"
+      assert conn.assigns.plugin == "kv"
+      assert conn.assigns.token_entry == %{name: "anon", allowed: :all}
+
+      assert %{"sub" => "anon", "name" => "anon", "iss" => "sark.none"} =
+               Jason.decode!(conn.assigns.sark_auth)
+    end
+
+    test "non-plugin-shaped path still 404s" do
+      conn = call(conn(:post, "/whatever"))
+      assert conn.status == 404
+      assert conn.halted
+    end
+
+    test "bare /mcp still gets the plugin-path hint" do
+      conn = call(conn(:post, "/mcp"))
+      assert conn.status == 404
+      assert Jason.decode!(conn.resp_body)["error_description"] =~ "/<name>/mcp"
+    end
+  end
+
   test "challenge URL honors the configured external url when set" do
     prior = Application.get_env(:sark, :url)
     Application.put_env(:sark, :url, "https://sark.example.com")

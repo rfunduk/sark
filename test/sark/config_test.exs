@@ -38,6 +38,50 @@ defmodule Sark.ConfigTest do
     assert File.dir?(data_dir)
   end
 
+  test "auth: none disables auth explicitly", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth: none
+      plugins: {}
+      """)
+
+    cfg = Sark.Config.load!(path)
+
+    assert cfg.auth_none
+    assert cfg.tokens == %{}
+    assert cfg.idp == nil
+  end
+
+  test "auth with a bogus scalar is rejected with a hint", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth: open
+      plugins: {}
+      """)
+
+    assert_raise RuntimeError, ~r/`auth` must be a map or the literal `none`/, fn ->
+      Sark.Config.load!(path)
+    end
+  end
+
+  test "empty auth map still rejected, hint mentions none", %{tmp_dir: dir} do
+    path =
+      write_config(dir, """
+      listen: 127.0.0.1:9090
+      data_dir: #{Path.join(dir, "data")}
+      auth: {}
+      plugins: {}
+      """)
+
+    assert_raise RuntimeError, ~r/or be the literal `none`/, fn ->
+      Sark.Config.load!(path)
+    end
+  end
+
   test "resolves relative data_dir against config file dir", %{tmp_dir: dir} do
     path =
       write_config(dir, """

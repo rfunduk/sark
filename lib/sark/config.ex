@@ -34,6 +34,12 @@ defmodule Sark.Config do
   but at least one must be present; an `auth:` block with neither is
   rejected (idp-only is a legitimate deployment).
 
+  `auth: none` (the literal) disables authentication entirely: every
+  request is anonymous with full access to every plugin, carrying a
+  synthesized `{"sub": "anon", "iss": "sark.none"}` envelope. Explicit
+  opt-out for local / trusted-network deployments — sark doesn't gate
+  it on bind address; saying `none` is the consent.
+
   `url:` is the externally-visible base URL of this sark instance.
   Required only when sark runs behind a reverse proxy (nginx, Cloudflare,
   Caddy) — the proxy terminates TLS and forwards a different host/scheme
@@ -87,6 +93,7 @@ defmodule Sark.Config do
     :plugins,
     :source_path,
     idp: nil,
+    auth_none: false,
     providers: %Sark.Providers{},
     embedder: nil
   ]
@@ -102,6 +109,7 @@ defmodule Sark.Config do
           data_dir: String.t(),
           log_level: atom(),
           tokens: %{String.t() => token_entry()},
+          auth_none: boolean(),
           plugins: %{String.t() => String.t()},
           source_path: String.t(),
           providers: Sark.Providers.t(),
@@ -138,18 +146,7 @@ defmodule Sark.Config do
               "nest your tokens list inside an `auth:` block"
     end
 
-    auth = fetch!(raw, "auth")
-
-    unless is_map(auth) do
-      raise "config: `auth` must be a map, got #{inspect(auth)}"
-    end
-
-    tokens = parse_tokens(Map.get(auth, "tokens", []), plugins)
-    idp = parse_idp(Map.get(auth, "idp"), plugins)
-
-    if tokens == %{} and is_nil(idp) do
-      raise "config: `auth` must define `tokens:` or `idp:` (or both) — neither present"
-    end
+    {tokens, idp, auth_none} = parse_auth(fetch!(raw, "auth"), plugins)
 
     providers = Sark.Providers.parse(Map.get(raw, "providers"))
     embedder = Sark.Embedder.Config.parse(Map.get(raw, "embedder"))
@@ -163,11 +160,33 @@ defmodule Sark.Config do
       log_level: parse_log_level(Map.get(raw, "log_level", "info")),
       tokens: tokens,
       idp: idp,
+      auth_none: auth_none,
       plugins: plugins,
       source_path: abs,
       providers: providers,
       embedder: embedder
     }
+  end
+
+  # `auth: none` — explicit opt-out: every request is anonymous with
+  # full access to every plugin. The operator said so; sark doesn't
+  # second-guess where it's deployed.
+  defp parse_auth("none", _plugins), do: {%{}, nil, true}
+
+  defp parse_auth(auth, plugins) when is_map(auth) do
+    tokens = parse_tokens(Map.get(auth, "tokens", []), plugins)
+    idp = parse_idp(Map.get(auth, "idp"), plugins)
+
+    if tokens == %{} and is_nil(idp) do
+      raise "config: `auth` must define `tokens:` or `idp:` (or both) — " <>
+              "or be the literal `none` to disable auth entirely"
+    end
+
+    {tokens, idp, false}
+  end
+
+  defp parse_auth(other, _plugins) do
+    raise "config: `auth` must be a map or the literal `none`, got #{inspect(other)}"
   end
 
   defp parse_idp(nil, _plugins), do: nil

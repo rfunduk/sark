@@ -26,6 +26,10 @@ defmodule Sark.Application do
     # nil → bearer-only deployment.
     Application.put_env(:sark, :idp, config.idp)
 
+    # `auth: none` — Sark.AuthPlug skips authentication entirely and
+    # synthesizes an anonymous identity envelope.
+    Application.put_env(:sark, :auth_none, config.auth_none)
+
     {ip, port} = config.listen
 
     children =
@@ -41,9 +45,12 @@ defmodule Sark.Application do
           {Plug.Cowboy, scheme: :http, plug: Sark.Endpoint, options: [ip: ip, port: port]}
         ]
 
+    auth_summary =
+      if config.auth_none, do: "auth=none ", else: "tokens=#{map_size(config.tokens)} "
+
     Logger.info(
       "sark starting — listen=#{:inet.ntoa(ip)}:#{port} " <>
-        "tokens=#{map_size(config.tokens)} " <>
+        auth_summary <>
         "plugins=#{map_size(config.plugins)} " <>
         "data_dir=#{config.data_dir}"
     )

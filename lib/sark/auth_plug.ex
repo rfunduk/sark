@@ -28,7 +28,9 @@ defmodule Sark.AuthPlug do
   Bearer-token gate + per-plugin scope check.
 
   Routing shape: `/<plugin>/mcp[/...]`. `/health` is exempt for
-  unauthenticated liveness; everything else requires a bearer.
+  unauthenticated liveness; everything else requires a bearer — unless
+  the operator set `auth: none`, which makes every request anonymous
+  (`{"sub": "anon", "iss": "sark.none"}` envelope, full plugin access).
 
   Token sources (checked in order):
 
@@ -70,8 +72,30 @@ defmodule Sark.AuthPlug do
     cond do
       exempt?(conn.path_info) -> conn
       conn.path_info == ["mcp"] -> missing_plugin(conn)
+      Application.get_env(:sark, :auth_none, false) -> anonymous(conn)
       true -> authenticate(conn)
     end
+  end
+
+  # `auth: none` — explicit operator opt-out of authentication. Every
+  # plugin-shaped request passes with full access and a synthesized
+  # envelope, so plugin SQL reading `:sark_auth` keeps working.
+  defp anonymous(conn) do
+    case Scope.plugin_from_path(conn.path_info) do
+      {:ok, plugin} ->
+        conn
+        |> assign(:token_name, "anon")
+        |> assign(:plugin, plugin)
+        |> assign(:token_entry, %{name: "anon", allowed: :all})
+        |> assign(:sark_auth, anon_envelope())
+
+      :error ->
+        not_found(conn)
+    end
+  end
+
+  defp anon_envelope do
+    Jason.encode!(%{"sub" => "anon", "name" => "anon", "iss" => "sark.none"})
   end
 
   # Bare `/mcp` (no plugin segment) is the classic mis-pasted client URL.
