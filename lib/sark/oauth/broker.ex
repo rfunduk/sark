@@ -63,6 +63,8 @@ defmodule Sark.OAuth.Broker do
 
   import Plug.Conn
 
+  require Logger
+
   alias Sark.Auth.JWT
   alias Sark.Auth.KeyStore
   alias Sark.Auth.Session
@@ -460,8 +462,22 @@ defmodule Sark.OAuth.Broker do
   defp create_session(plugin, claims, upstream_body) do
     expires_at = compute_expiry(upstream_body)
     refresh = Map.get(upstream_body, "refresh_token")
-    Session.create(plugin, claims, refresh, expires_at)
+
+    case Session.create(plugin, claims, refresh, expires_at) do
+      {:ok, token} = ok ->
+        Logger.info(
+          "auth: session #{mask(token)} created for #{claims["sub"]} " <>
+            "(refresh_token=#{is_binary(refresh)} expires_at=#{DateTime.to_iso8601(expires_at)})"
+        )
+
+        ok
+
+      err ->
+        err
+    end
   end
+
+  defp mask(token) when is_binary(token), do: String.slice(token, 0, 12) <> "…"
 
   defp compute_expiry(%{"expires_in" => seconds}) when is_integer(seconds) and seconds > 0 do
     DateTime.utc_now() |> DateTime.add(seconds, :second)

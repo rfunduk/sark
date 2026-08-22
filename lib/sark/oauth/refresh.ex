@@ -98,6 +98,11 @@ defmodule Sark.OAuth.Refresh do
           upstream_refresh: new_refresh
         )
 
+      Logger.info(
+        "auth: session #{mask(token)} refreshed (idle=#{idle_for(row)} " <>
+          "rotated=#{new_refresh != refresh} next_expiry=#{DateTime.to_iso8601(new_expires_at)})"
+      )
+
       refreshed_row =
         row
         |> Map.put("claims", claims)
@@ -115,7 +120,8 @@ defmodule Sark.OAuth.Refresh do
         # refused — so it's logged, not discarded.
         Logger.info(
           "auth: session #{mask(token)} refresh rejected by IdP " <>
-            "(status=#{status} body=#{inspect(body, limit: 10, printable_limit: 300)}); dropping"
+            "(status=#{status} body=#{inspect(body, limit: 10, printable_limit: 300)} " <>
+            "created=#{row["created_at"]} last_refreshed=#{row["last_refreshed_at"]}); dropping"
         )
 
         _ = Session.delete(plugin, token)
@@ -201,4 +207,13 @@ defmodule Sark.OAuth.Refresh do
   end
 
   defp mask(token) when is_binary(token), do: String.slice(token, 0, 12) <> "…"
+
+  defp idle_for(%{"last_refreshed_at" => iso}) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} -> "#{DateTime.diff(DateTime.utc_now(), dt, :second)}s"
+      _ -> "?"
+    end
+  end
+
+  defp idle_for(_), do: "?"
 end
